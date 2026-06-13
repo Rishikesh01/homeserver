@@ -131,6 +131,39 @@ This stack stores your passwords and files, so treat the server like a safe.
 
 ---
 
+## Changing & rotating passwords
+
+After first setup it's good practice to set your real passwords *inside each app*. For the
+human logins, the value in `.env` is only used to bootstrap the account — once you change
+it in the app, the `.env` value is stale (and for Nextcloud you can blank it).
+
+- **Vaultwarden** — your **master password** isn't in `.env` at all; you set it when you
+  create your account and change it in the web vault (*Account settings → Master password*).
+  The only `.env` value is the `/admin` panel token (`VW_ADMIN_TOKEN`): change it by editing
+  `vaultwarden/.env` then `cd vaultwarden && docker compose up -d --force-recreate`. (You can
+  store it as an irreversible Argon2 hash with `docker run --rm vaultwarden/server /vaultwarden hash`.)
+- **Nextcloud** — `NC_ADMIN_PASSWORD` is used **only on first install** to create the admin
+  user. Change the password in the web UI (*Personal → Security*) or:
+  ```bash
+  docker compose -f nextcloud/docker-compose.yml exec -u www-data app php occ user:resetpassword admin
+  ```
+  After that the `.env` value does nothing — you can blank it.
+- **Pi-hole** — the admin password is re-applied from the env on each start, so edit
+  `PIHOLE_PASSWORD` in `pihole/.env` then `cd pihole && docker compose up -d --force-recreate`.
+- **Postgres / Redis** (the machine passwords) — these are never typed by a human, so leave
+  them as the long random values `hsctl` generated. Rotating them is a **coordinated** change
+  (and note `POSTGRES_PASSWORD` only sets the password on the *first* DB init — changing it in
+  `.env` later does nothing). To actually rotate the DB password:
+  ```bash
+  docker exec -it nextcloud-db psql -U nextcloud -c "ALTER USER nextcloud PASSWORD 'NEW';"
+  # then set the same value in nextcloud/.env (POSTGRES_PASSWORD) and recreate the app:
+  cd nextcloud && docker compose up -d --force-recreate
+  ```
+
+See your current generated logins anytime with `hsctl secrets show`.
+
+---
+
 ## Backup & restore
 
 Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
