@@ -58,7 +58,7 @@ func (c backupCfg) save(repo string) error {
 func cmdBackup(args []string) error {
 	repo := repoDir()
 	if len(args) == 0 {
-		return fmt.Errorf("usage: hsctl backup <config|init|run|list|forget>")
+		return fmt.Errorf("usage: hsctl backup <config|init|run|list|restore|forget>")
 	}
 	sub, rest := args[0], args[1:]
 	if sub == "config" {
@@ -76,6 +76,8 @@ func cmdBackup(args []string) error {
 		return backupRun(repo, cfg)
 	case "list", "snapshots":
 		return resticRun(repo, cfg, "snapshots")
+	case "restore":
+		return backupRestore(repo, cfg, rest)
 	case "forget":
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
 	default:
@@ -137,6 +139,38 @@ func backupRun(repo string, cfg backupCfg) error {
 	if cfg.Retention != "" {
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
 	}
+	return nil
+}
+
+// backupRestore extracts a snapshot to a directory (default ./restore). It does NOT
+// overwrite live data — putting volumes/DB back into the stack is the manual final step
+// (printed below, and in README -> Backup & restore), because it's destructive.
+//
+//	hsctl backup restore                 # latest snapshot -> ./restore
+//	hsctl backup restore <id> --target /mnt/x
+func backupRestore(repo string, cfg backupCfg, args []string) error {
+	fs := flag.NewFlagSet("backup restore", flag.ContinueOnError)
+	target := fs.String("target", filepath.Join(repo, "restore"), "directory to restore into")
+	if err := fs.Parse(args); err != nil { // flags must come before the snapshot id
+		return err
+	}
+	snap := "latest"
+	if fs.NArg() > 0 {
+		snap = fs.Arg(0)
+	}
+	ensureResticPassword(repo)
+	if err := os.MkdirAll(*target, 0700); err != nil {
+		return err
+	}
+	if err := resticRun(repo, cfg, "restore", snap, "--target", *target); err != nil {
+		return err
+	}
+	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, *target)
+	fmt.Println("To put it back into the stack (disaster recovery):")
+	fmt.Println("  1. hsctl down")
+	fmt.Println("  2. copy each restored volume's files back into /var/lib/docker/volumes/<name>/_data")
+	fmt.Println("  3. import the Postgres dump into the nextcloud-db container (see README)")
+	fmt.Println("  4. hsctl up")
 	return nil
 }
 

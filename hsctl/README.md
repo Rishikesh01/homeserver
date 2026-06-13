@@ -25,10 +25,15 @@ hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
 hsctl install           # run the dashboard as a systemd service (auto-start on boot)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
-hsctl backup config --repo /mnt/usb/restic   # set a destination
-sudo hsctl backup init  # create the restic repo
-sudo hsctl backup run   # snapshot DB dump + volumes + config
+hsctl backup config --repo /mnt/usb/restic   # set a destination (USB/sftp:/b2:/s3:)
+sudo hsctl backup init  # create the encrypted restic repo (first time)
+sudo hsctl backup run   # snapshot: DB dump + data volumes + config
+hsctl backup list       # list snapshots
+sudo hsctl backup restore latest --target /tmp/restore   # extract a snapshot (then see README)
 ```
+
+Backups are encrypted by restic — keep `.restic-password` safe (lost = unrecoverable). The
+full restore (disaster-recovery) walkthrough is in the main [README](../README.md#backup--restore).
 
 `setup` autodetects the LAN IP/timezone, picks free host ports, reads any existing
 `.env` so it stays consistent with a running stack, and saves answers to `setup.conf`

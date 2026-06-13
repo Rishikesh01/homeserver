@@ -1,100 +1,229 @@
 # Homeserver
 
-A self-hosted stack, managed by **`hsctl`** (a small Go tool with a web dashboard).
-Each service lives in its own folder with its own `docker-compose.yml`. Apps are reached
-over **HTTPS at the server's LAN IP + a port**. `HOST` below = the server's LAN IP.
+A self-hosted stack for your home network — a password manager, cloud file storage, an
+ad-blocker, and a few web tools — managed by **`hsctl`**, a small command-line tool with a
+web dashboard. Everything runs in Docker on one always-on Linux machine and is reached over
+HTTPS at that machine's IP address. `HOST` below = your server's LAN IP (e.g. `192.168.0.150`).
 
-| Tile | What | Folder | URL |
-|------|------|--------|-----|
-| 🏠 **Dashboard** | Home page — links to everything (from `services.json`) | `hsctl/` | **https://HOST** |
-| 🔑 Vaultwarden | Password manager (Bitwarden-compatible) | `vaultwarden/` | https://HOST:8443 |
-| ☁️ Nextcloud | Cloud file storage | `nextcloud/` | https://HOST:8444 |
-| 🛡️ Pi-hole | Network ad-blocker | `pihole/` | https://HOST:8445/admin |
+| Tile | What it is | Folder | URL |
+|------|-----------|--------|-----|
+| 🏠 **Dashboard** | Home page — links to everything | `hsctl/` | **https://HOST** |
+| 🔑 Vaultwarden | Password manager (works with the Bitwarden apps) | `vaultwarden/` | https://HOST:8443 |
+| ☁️ Nextcloud | Cloud file storage / photos / calendar | `nextcloud/` | https://HOST:8444 |
+| 🛡️ Pi-hole | Network ad-blocker (admin) | `pihole/` | https://HOST:8445/admin |
 | 📄 Stirling-PDF | Compress / merge / split / convert PDFs | `stirling/` | https://HOST:8446 |
-| 🧰 IT-Tools | Converters, QR, hashes, image↔base64 | `it-tools/` | https://HOST:8447 |
-| 🖼️ Image tool | Resize / compress-to-KB / convert (in-browser) | `imagetools/` | https://HOST:8448 |
-| Caddy | HTTPS front door — one cert per app, serves the CA on http://HOST/ | `caddy/` | — |
+| 🧰 IT-Tools | Converters, QR codes, hashes, image↔base64 | `it-tools/` | https://HOST:8447 |
+| 🖼️ Image tool | Resize / compress-to-KB / convert (in your browser) | `imagetools/` | https://HOST:8448 |
+| Caddy | The HTTPS front door — one cert per app | `caddy/` | — |
 
-The dashboard at **https://HOST** is the home page; it renders from `services.json`, so
+The dashboard at **https://HOST** is the home page; it's built from `services.json`, so
 adding or removing an app updates it automatically.
 
-## Quick start
+---
 
-`hsctl` is a single Go binary (no external deps). Build it once, then:
+## Prerequisites
 
-```bash
-cd hsctl && ~/sdk/go/bin/go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
-hsctl setup        # configure: LAN IP, timezone, admin email, ports (Enter = autodetected default)
-hsctl up           # start everything (apps + tools, then caddy)
-hsctl install      # run the dashboard as a service (auto-starts on boot)
-hsctl get-ca       # extract caddy-root-ca.crt to install on your devices
-```
+You need, on the machine that will be the server:
 
-- Add yourself to the docker group once so `hsctl` needs no sudo: `sudo usermod -aG docker $USER` (then re-login).
-- `setup` autodetects sensible defaults, reads existing `.env` to stay consistent, and saves
-  answers to `setup.conf`. It never overwrites an existing `.env` (`--force` regenerates);
-  `--yes` runs unattended. Generated logins are printed and saved to `.secrets.txt`.
-- Full CLI reference: **[hsctl/README.md](hsctl/README.md)**.
+1. **A Linux machine that stays on** (a spare PC, mini-PC, or NUC). These steps assume
+   Ubuntu/Debian; adjust package commands for other distros.
+2. **A user account with `sudo`.**
+3. **Docker Engine + Docker Compose v2:**
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   docker --version && docker compose version    # both should print a version
+   ```
+4. **Go** (to build `hsctl` once). Either `sudo apt install golang-go`, or download from
+   <https://go.dev/dl/> and unpack into `~/sdk/go` (then use `~/sdk/go/bin/go`).
+5. **A fixed LAN IP for the server.** In your router, give the server a **DHCP reservation**
+   (a.k.a. static lease) so its IP never changes. Note that IP — it's `HOST` everywhere below.
 
-## Accessing the apps — install the certificate first
+---
 
-Caddy serves HTTPS using its own local CA (the cert carries the server IP). Each device
-must **trust that CA once**, or browsers warn and the Bitwarden/Nextcloud apps refuse to
-connect:
-
-1. On the device, open **http://HOST/** and download `root.crt`.
-2. Install it as a trusted CA (per-OS steps + the rest of the family flow are in
-   **[ONBOARDING.md](ONBOARDING.md)**).
-
-After that, every `https://HOST[:port]` URL is trusted.
-
-## Operations
+## Setup — step by step
 
 ```bash
-hsctl up            # start the stack (apps + tools -> caddy)
-hsctl down          # stop it (down --volumes also deletes data)
-hsctl status        # container status
-hsctl backup config --repo <dest>   # set a destination (USB / sftp: / b2: / s3:)
-hsctl backup run    # encrypted snapshot (restic): Postgres dump + data volumes + config
+# 1. Get the code onto the server, then enter the folder
+git clone <this-repo> homeserver && cd homeserver
+
+# 2. Build hsctl and install it so you can run it from anywhere
+cd hsctl && go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
+
+# 3. Let your user run Docker without sudo (log out + back in afterwards)
+sudo usermod -aG docker $USER
+
+# 4. Configure (press Enter to accept each suggested default)
+hsctl setup
+
+# 5. Start everything
+hsctl up
+
+# 6. Keep the dashboard running + auto-start it on every boot
+hsctl install
 ```
 
-The app **containers** auto-start on boot (`restart: unless-stopped`); `hsctl install` does
-the same for the dashboard. Backups are encrypted client-side by restic — keep
-`.restic-password` somewhere safe (without it, backups are unrecoverable). Backed-up
-volumes: `vaultwarden_vw-data`, `nextcloud_nc-data`, `nextcloud_db-data`, `caddy_caddy-data`.
+**What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, and the host
+ports for each app — all pre-filled with sensible autodetected values, so you can usually
+just press Enter through it. It writes the configuration to `setup.conf` and generates each
+service's secrets. The **generated logins are printed at the end and saved to `.secrets.txt`**
+— copy them somewhere safe (ideally into Vaultwarden, once it's up).
+
+After `hsctl up`, check everything is running with `hsctl status`.
+
+---
+
+## Accessing the apps — install the certificate (once per device)
+
+The server makes its own HTTPS certificate (there's no public domain). Each phone/laptop
+must **trust that certificate once**, or browsers show a warning and the Bitwarden/Nextcloud
+apps refuse to connect.
+
+1. On the device, open **http://HOST/** in a browser and download **`root.crt`**.
+2. Install it as a *trusted certificate authority*. Step-by-step per OS (Android, iPhone,
+   Windows, Mac), plus the whole "add a family member" flow, is in
+   **[ONBOARDING.md](ONBOARDING.md)**.
+
+Then open **https://HOST** — that's your dashboard, linking to every app.
+
+---
+
+## Security
+
+This stack stores your passwords and files, so treat the server like a safe.
+
+- **Encrypt the server's disk (most important).** The apps store data *unencrypted on disk*
+  — anyone who takes the drive can read your passwords and files. Use **full-disk encryption
+  (LUKS)**: the easiest way is to tick **"Encrypt the new installation"** when installing
+  Ubuntu. Without it, none of the rest matters if the machine is stolen.
+- **Keep it on your LAN only — do not expose it to the internet.** Don't port-forward any of
+  these ports on your router. The stack is designed for home-network access; there's no
+  remote access by design (a home box you can't guarantee is online shouldn't be a VPN
+  endpoint).
+- **Firewall (optional but nice).** If you run `ufw`, allow only what's needed:
+  ```bash
+  sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp
+  ```
+- **Protect the secret files.** `.env`, `.secrets.txt`, `.ui-password`, `.restic-password`
+  are all `chmod 600` and git-ignored — never commit them, and back up `.restic-password`
+  separately (see below). The **certificate authority's private key** lives in the
+  `caddy-data` volume; anyone with it could impersonate your sites, so it's backed up and
+  shouldn't leak.
+- **Use strong, unique passwords and turn on 2FA.** Especially the Vaultwarden master
+  password (nobody can reset it for you) and the Nextcloud/Pi-hole admin logins.
+- **Keep things updated.** Periodically `cd <service> && docker compose pull && docker
+  compose up -d` for each app, and keep the OS patched (`sudo apt update && sudo apt
+  upgrade`). The web-tool images are pinned to `:latest` — pin them to a tested tag once
+  you've confirmed they work.
+- **Encrypt Nextcloud (optional).** Server-side encryption is off by default; enable it in
+  *Nextcloud → Admin → Settings → Security* if you want it on top of disk encryption.
+
+---
+
+## Backup & restore
+
+Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
+ciphertext) and cover a **Postgres dump + every data volume + your config**.
+
+### Choose a destination — off the server
+
+A backup on the same disk only protects against mistakes, not disk failure or theft. Point
+it somewhere **off the box**:
+
+| Destination | `--repo` value |
+|-------------|----------------|
+| External USB drive | `/mnt/usb/restic` |
+| Another machine (NAS, Pi) over SSH | `sftp:user@nas:/backups` |
+| Cloud (Backblaze B2) | `b2:your-bucket:homeserver` |
+| Cloud (S3-compatible) | `s3:s3.region.amazonaws.com/your-bucket` |
+
+### Set it up and run
+
+```bash
+sudo apt install -y restic                       # one-time
+hsctl backup config --repo /mnt/usb/restic       # set the destination
+sudo hsctl backup init                           # create the encrypted repo (first time only)
+sudo hsctl backup run                             # take a snapshot
+hsctl backup list                                 # see snapshots
+```
+
+> **Back up `.restic-password` somewhere else** (e.g. write it down, or store it in
+> Vaultwarden). It encrypts your backups — **without it, the backups are unrecoverable.**
+
+`backup run` needs `sudo` because it reads the Docker volume files (owned by root).
+
+### Schedule it nightly
+
+```bash
+make -C hsctl install-services    # installs a systemd timer (edit systemd/*.service: set __DIR__ first)
+```
+
+### Restore (disaster recovery)
+
+```bash
+# 1. Extract a snapshot to a folder (latest, or a specific id from `backup list`)
+sudo hsctl backup restore latest --target /tmp/restore
+
+# 2. Stop the stack
+hsctl down
+
+# 3. Put each volume's files back (the restored tree mirrors the original paths)
+for v in vaultwarden_vw-data nextcloud_nc-data nextcloud_db-data caddy_caddy-data; do
+  sudo cp -a /tmp/restore/var/lib/docker/volumes/$v/_data/. /var/lib/docker/volumes/$v/_data/
+done
+
+# 4. Bring the DB back up and import the SQL dump
+( cd nextcloud && docker compose up -d db )
+docker exec -i nextcloud-db psql -U nextcloud -d nextcloud \
+  < /tmp/restore/$(pwd)/backups/staging/nextcloud-db.sql
+
+# 5. Start everything
+hsctl up
+```
+
+On a brand-new machine, restore the config files too (the restored `<repo>/*/.env` and
+`<repo>/setup.conf`) before `hsctl up`. The restic repo password must be the same one you
+saved.
+
+---
 
 ## Pi-hole / ad-blocking
 
-Pi-hole is a network-wide ad-blocker. To ad-block every device automatically, point the
-router's DHCP **Primary DNS** at the server's IP (leave Secondary blank) and give the
-server a **DHCP reservation**.
+Pi-hole is a network-wide ad-blocker. To ad-block **every** device automatically, point your
+router's DHCP **Primary DNS** at the server's IP (leave Secondary blank) and keep the server's
+DHCP reservation.
 
-> **Tradeoff:** Pi-hole then becomes the LAN's only resolver — if the box is down, the LAN
+> **Tradeoff:** Pi-hole then becomes the only DNS on the LAN — if the server is down, the LAN
 > loses DNS until you clear that field (~30-second revert). Don't add a public "secondary"
-> (OSes query both in parallel, so blocking leaks). Or set it per device, or skip it — the
-> apps work regardless.
+> (devices query both at random, so blocking leaks). Or set it per device, or skip it.
 
 **Port 53:** if another resolver already holds it (`systemd-resolved`'s loopback stub, or
-libvirt/LXC dnsmasq), `hsctl setup` binds Pi-hole to the LAN IP so they don't clash; where
-:53 is free it uses `0.0.0.0`. Check with `sudo ss -tulpn | grep ':53 '`.
+libvirt/LXC dnsmasq), `hsctl setup` binds Pi-hole to the LAN IP so they don't clash. Check
+with `sudo ss -tulpn | grep ':53 '`. If the server is on **WiFi**, disable "client/AP
+isolation" on the router or other devices can't reach it.
 
-If the server is on **WiFi**, disable "client/AP isolation" on the router or it'll be
-unreachable from other LAN devices.
+---
+
+## Day-to-day
+
+```bash
+hsctl up | down | status        # start / stop / show the stack
+hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
+hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
+hsctl backup run | list | restore
+```
+
+The app containers restart automatically on reboot (`restart: unless-stopped`); `hsctl
+install` does the same for the dashboard.
 
 ## Adding an app to the dashboard
 
 1. Create `myapp/docker-compose.yml` (publish its HTTP port, e.g. `8093:80`).
 2. In `caddy/Caddyfile` add an HTTPS block on a new port; add the upstream + port to
-   `caddy/docker-compose.yml`, `caddy/.env`, and (so a fresh `setup` includes them)
-   `hsctl/env.go`.
+   `caddy/docker-compose.yml`, `caddy/.env`, and `hsctl/env.go` (so a fresh `setup` includes them).
 3. Add a tile to **`services.json`** with that `https_port`.
-4. `hsctl up` (and recreate caddy). The tile appears on the dashboard automatically.
+4. `hsctl up`. The tile appears on the dashboard.
 
-## Notes
+## More docs
 
-- **Nextcloud server-side encryption** is off by default — enable it in *Admin → Settings →
-  Security* (or `occ app:enable encryption && occ encryption:enable`). The host disk is
-  already LUKS-encrypted, which covers at-rest.
-- **Firewall:** if you run `ufw`, allow `sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp`.
-- **More docs:** [hsctl/README.md](hsctl/README.md) (the tool reference) and
-  [ONBOARDING.md](ONBOARDING.md) (per-device setup for family).
+- **[hsctl/README.md](hsctl/README.md)** — the `hsctl` command reference.
+- **[ONBOARDING.md](ONBOARDING.md)** — per-device setup for family members.
