@@ -45,12 +45,15 @@ hsctl ui              # binds :<UI port>; reach it at https://<server-ip> via Ca
 - **`/admin`** — basic-auth (user `admin`, password in `.ui-password`): container
   status + Start/Stop/Restart, and **Backups** (set destination, run, view snapshots).
 
-Run it as a service + nightly backups (edit `systemd/*.service`: set `__DIR__` to this
-repo first):
+**Make it permanent (auto-start on boot):**
 
 ```bash
-make install-services
+hsctl install        # installs + enables the dashboard systemd service (uses sudo)
 ```
+
+The app **containers** already come back on reboot (`restart: unless-stopped`); `hsctl
+install` does the same for the dashboard process. For the nightly backup timer too, use
+`make install-services` (edit `systemd/*.service` first: set `__DIR__` to this repo).
 
 ## Files it creates (all gitignored)
 

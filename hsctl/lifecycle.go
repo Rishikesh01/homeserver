@@ -36,7 +36,14 @@ func cmdUp(_ []string) error {
 		}
 	}
 	fmt.Println()
-	return cmdStatus(nil)
+	if err := cmdStatus(nil); err != nil {
+		return err
+	}
+	if !uiServiceActive() {
+		fmt.Println("\nNote: the dashboard isn't running as a service yet — run `hsctl install`")
+		fmt.Println("so it auto-starts on boot (or `hsctl ui` to just run it now).")
+	}
+	return nil
 }
 
 func cmdDown(args []string) error {

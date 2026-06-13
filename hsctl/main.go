@@ -32,6 +32,8 @@ func main() {
 		err = cmdBackup(args)
 	case "ui":
 		err = cmdUI(args)
+	case "install":
+		err = cmdInstall(args)
 	case "version", "-v", "--version":
 		fmt.Println("hsctl", version)
 	case "help", "-h", "--help":
@@ -59,6 +61,7 @@ usage: hsctl <command> [flags]
   get-ca     write caddy-root-ca.crt for installing on devices
   backup     run or configure backups (restic)
   ui         serve the web dashboard (default :8088)
+  install    install the dashboard as a systemd service (auto-start on boot)
   version    print version
 `)
 }
