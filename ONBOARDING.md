@@ -40,6 +40,8 @@ connect**.
   sudo cp root.crt /usr/local/share/ca-certificates/homeserver-ca.crt && sudo update-ca-certificates
   # Fedora/RHEL:
   sudo cp root.crt /etc/pki/ca-trust/source/anchors/homeserver-ca.crt && sudo update-ca-trust
+  # Arch:
+  sudo trust anchor root.crt
   ```
   **Firefox** (and Chrome on Linux) keep their own trust store, so also: *Settings →
   Privacy & Security → Certificates → View Certificates → Authorities → Import* →
