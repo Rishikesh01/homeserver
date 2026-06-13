@@ -1,0 +1,12 @@
+[Unit]
+Description=hsctl homeserver backup (restic)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# Root so restic can read Docker volume files under /var/lib/docker/volumes.
+# Replace __DIR__ with the repo path.
+WorkingDirectory=__DIR__
+ExecStart=/usr/local/bin/hsctl backup run
+User=root

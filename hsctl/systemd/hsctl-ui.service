@@ -1,0 +1,16 @@
+[Unit]
+Description=hsctl homeserver web UI
+After=docker.service
+Wants=docker.service
+
+[Service]
+# Runs as root so it can control Docker and read the data volumes. Keep it LAN/VPN
+# only via --addr (bind to your LAN IP, never 0.0.0.0 on an internet-facing host).
+# Replace __DIR__ with the repo path and __ADDR__ with your LAN IP:port.
+WorkingDirectory=__DIR__
+ExecStart=/usr/local/bin/hsctl ui --addr __ADDR__
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target

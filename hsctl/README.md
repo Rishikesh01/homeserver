@@ -1,0 +1,57 @@
+# hsctl — homeserver control tool
+
+A single Go binary (no external Go deps) that configures, runs, and backs up the
+stack, and serves a **web UI** so non-technical users never need the terminal.
+
+## Build & install
+
+Go is at `~/sdk/go` on this box (no sudo needed to build).
+
+```bash
+cd hsctl
+make build              # -> ./hsctl   (or: ~/sdk/go/bin/go build -o hsctl .)
+make install            # -> /usr/local/bin/hsctl   (uses sudo)
+```
+
+So the UI can control Docker without password prompts, add yourself to the docker
+group once: `sudo usermod -aG docker $USER` then log out/in.
+
+## CLI
+
+```bash
+hsctl setup             # interactive config -> writes every .env + setup.conf
+hsctl up                # start the stack (services -> caddy -> wireguard)
+hsctl status            # container status
+hsctl down              # stop (down --volumes also deletes data)
+hsctl get-ca            # write caddy-root-ca.crt for installing on devices
+hsctl backup config --repo /mnt/usb/restic   # set a destination
+sudo hsctl backup init  # create the restic repo
+sudo hsctl backup run   # snapshot DB dump + volumes + config
+```
+
+`setup` autodetects the LAN IP/timezone, picks free host ports, reads any existing
+`.env` so it stays consistent with a running stack, and saves answers to `setup.conf`
+(re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
+
+## Web UI
+
+```bash
+hsctl ui --addr 192.168.0.150:8088    # bind to your LAN IP — NOT 0.0.0.0 if exposed
+```
+
+- **`/`** — family portal: cards linking to Vaultwarden/Nextcloud/Pi-hole/VPN and a
+  one-click **certificate install**. No login.
+- **`/admin`** — basic-auth (user `admin`, password in `.ui-password`): container
+  status + Start/Stop/Restart, and **Backups** (set destination, run, view snapshots).
+
+Run it as a service + nightly backups (edit `systemd/*.service`: set `__DIR__` to this
+repo and `__ADDR__` to your LAN IP:port first):
+
+```bash
+make install-services
+```
+
+## Files it creates (all gitignored)
+
+`setup.conf` (your settings) · `WELCOME.txt` (handout) · `.secrets.txt` (logins) ·
+`.ui-password` · `backup.conf` · `.restic-password` (back this up separately!).
