@@ -22,8 +22,8 @@ services:
       FTLCONF_dns_listeningMode: ALL
     volumes:
       - pihole-etc:/etc/pihole
-      # Local DNS A-records (*.lan -> your server). Edit custom.list, then:
-      #   docker exec pihole pihole reloaddns
+      # Optional local DNS records (normally empty — apps are reached by IP). To add
+      # any: edit custom.list, then `docker exec pihole pihole reloaddns`.
       - ./custom.list:/etc/pihole/hosts/custom.list:ro
     cap_add:
       - SYS_NICE       # lets FTL tune its own priority; harmless if denied

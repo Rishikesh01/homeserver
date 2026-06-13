@@ -11,7 +11,7 @@ import (
 )
 
 // Config is everything a user can configure. It round-trips to setup.conf as
-// KEY=value (same keys bootstrap.sh used, so the two interoperate).
+// KEY=value pairs.
 type Config struct {
 	ServerIP         string
 	TZ               string

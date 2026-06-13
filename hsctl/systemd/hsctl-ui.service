@@ -6,7 +6,7 @@ Wants=docker.service
 [Service]
 # Runs as root so it can control Docker and read the data volumes.
 # With no --addr it binds :<UI port from setup.conf> on all interfaces, so it's
-# reachable both directly (http://<server>:<port>) and via Caddy at https://home.lan.
+# reachable both directly (http://<server>:<port>) and via Caddy at https://<server-ip>.
 # Safe as long as that port is NOT forwarded on your router (it isn't by default);
 # the admin area is password-protected regardless. Replace __DIR__ with the repo path.
 WorkingDirectory=__DIR__
