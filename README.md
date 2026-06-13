@@ -185,10 +185,16 @@ it somewhere **off the box**:
 ```bash
 sudo apt install -y restic                       # one-time
 hsctl backup config --repo /mnt/usb/restic       # set the destination
+hsctl backup config --password 'StrongPassword'  # OPTIONAL: set your own repo password
+                                                 #   (omit and one is auto-generated)
 sudo hsctl backup init                           # create the encrypted repo (first time only)
 sudo hsctl backup run                             # take a snapshot
 hsctl backup list                                 # see snapshots
 ```
+
+The repo password lives in **`.restic-password`** (set via `--password`, or auto-generated
+on first init). Full details — including changing it later and restoring with plain restic
+(no hsctl) — are in **[CONFIG.md → Backups](CONFIG.md#backups)**.
 
 > **Back up `.restic-password` somewhere else** (e.g. write it down, or store it in
 > Vaultwarden). It encrypts your backups — **without it, the backups are unrecoverable.**
@@ -269,5 +275,6 @@ install` does the same for the dashboard.
 
 ## More docs
 
+- **[CONFIG.md](CONFIG.md)** — every configurable value, in one place (incl. the restic password).
 - **[hsctl/README.md](hsctl/README.md)** — the `hsctl` command reference.
 - **[ONBOARDING.md](ONBOARDING.md)** — per-device setup for family members.

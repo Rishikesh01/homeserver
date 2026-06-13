@@ -49,8 +49,10 @@ Two config files (gitignored, in the repo root):
   policy). Written by `backup config`; see [`backup.conf.example`](../backup.conf.example).
   Destinations: local path / USB (`/mnt/usb/restic`), another host (`sftp:user@host:/path`),
   Backblaze (`b2:bucket:path`), or S3 (`s3:…`).
-- **`.restic-password`** — the repo encryption password, auto-generated on first
-  `init`/`run`. **Back this up separately** — without it the backups are unrecoverable.
+- **`.restic-password`** — the repo encryption password. Set your own with
+  `hsctl backup config --password '…'` (before `init`), or leave it to auto-generate on
+  first `init`/`run`. **Back this up separately** — without it the backups are unrecoverable.
+  Full details (changing it later, restoring with plain restic) → [CONFIG.md](../CONFIG.md#backups).
 
 `init`/`run`/`restore`/`forget` need **restic installed** and **root** (to read the Docker
 volume files). The full disaster-recovery walkthrough (putting the volumes + DB dump back)
