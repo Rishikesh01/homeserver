@@ -4,8 +4,10 @@ A short, repeatable checklist for adding a family member (and each of their
 devices) to the homeserver. Do the **one-time cert step** on every device, then
 the per-app steps. Hand someone this page and they can self-serve most of it.
 
-Server LAN IP: **192.168.0.150**. Friendly names (need Pi-hole DNS or the VPN):
-`vault.lan` (passwords), `cloud.lan` (files), `pihole.lan` (ad-block admin).
+Below, replace **`SERVER_IP`** with your server's LAN address and use the host ports
+your setup chose — both are printed in **`WELCOME.txt`** (created by `bootstrap.sh`), or
+ask your admin. Friendly names (need Pi-hole DNS or the VPN): `vault.lan` (passwords),
+`cloud.lan` (files), `pihole.lan` (ad-block admin).
 
 ---
 
@@ -15,7 +17,7 @@ Because the names end in `.lan` (not a public domain), the server runs its own
 certificate authority. Each device must trust it once, or browsers warn and the
 **Bitwarden / Nextcloud apps will refuse to connect**.
 
-**Get the cert:** on the home WiFi, open **http://192.168.0.150/** in a browser
+**Get the cert:** on the home WiFi, open **http://SERVER_IP/** in a browser
 (or **http://ca.lan/** if the device already uses Pi-hole DNS) and tap **Download
 root.crt**. That's the whole transfer step — no AirDrop/USB needed. Then install it:
 
@@ -28,7 +30,7 @@ root.crt**. That's the whole transfer step — no AirDrop/USB needed. Then insta
 - **macOS:** open in Keychain Access → **System** → double-click the cert → *Trust*
   → **Always Trust**.
 
-> If you skip this, everything still works **by IP** (e.g. `http://192.168.0.150:8082`)
+> If you skip this, everything still works **by IP** (e.g. `http://SERVER_IP:8080`)
 > — you just get cert warnings on the `vault.lan` style names.
 
 ---
@@ -36,7 +38,7 @@ root.crt**. That's the whole transfer step — no AirDrop/USB needed. Then insta
 ## 2. Passwords — Vaultwarden (Bitwarden app)
 
 1. On the home WiFi (or with the VPN on), open **https://vault.lan** — or
-   **http://192.168.0.150:8082** if you haven't installed the cert yet.
+   **http://SERVER_IP:8080** if you haven't installed the cert yet.
 2. **Create account** → email + a strong master password. **The master password is
    the one thing nobody can reset for you — write it down somewhere safe.**
 3. Phone: install **Bitwarden** (App Store / Play Store). On the login screen tap
@@ -47,7 +49,7 @@ root.crt**. That's the whole transfer step — no AirDrop/USB needed. Then insta
 
 ## 3. Files — Nextcloud
 
-1. Open **https://cloud.lan** (or `http://192.168.0.150:8081`). Ask the admin to
+1. Open **https://cloud.lan** (or `http://SERVER_IP:8081`). Ask the admin to
    create your user, or log in with the one you were given.
 2. Phone: install **Nextcloud** → server `https://cloud.lan` → log in. Enable
    *Auto upload* for photos if you want phone backups.
@@ -63,7 +65,7 @@ server is down.
 
 1. Install the **WireGuard** app (App Store / Play Store, or wireguard.com for a
    laptop).
-2. The admin opens the wg-easy panel (`http://192.168.0.150:51821`), clicks **New
+2. The admin opens the wg-easy panel (`http://SERVER_IP:51821`), clicks **New
    Client**, names it after your device, and shows you the **QR code**.
 3. In the WireGuard app: **＋ → Scan from QR code** → scan it → toggle the tunnel on.
 4. Test: load **https://vault.lan**. Turn the tunnel off when you don't need it.

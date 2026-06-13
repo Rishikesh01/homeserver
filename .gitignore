@@ -11,3 +11,6 @@
 caddy-root-ca.crt
 # generated from custom.list.example by bootstrap.sh
 pihole/custom.list
+# your saved answers / personalized handout (settings, not secrets — still per-host)
+setup.conf
+WELCOME.txt

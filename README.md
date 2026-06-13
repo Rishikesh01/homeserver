@@ -5,7 +5,7 @@ and `.env`, so you can start/stop them independently.
 
 | Service | What | Folder | Direct URL | Via Caddy (HTTPS) |
 |---------|------|--------|-----------|-------------------|
-| Vaultwarden | FOSS password manager (Bitwarden-compatible) | `vaultwarden/` | http://HOST:8082 | https://vault.lan |
+| Vaultwarden | FOSS password manager (Bitwarden-compatible) | `vaultwarden/` | http://HOST:8080 | https://vault.lan |
 | Nextcloud | Encrypted cloud file storage | `nextcloud/` | http://HOST:8081 | https://cloud.lan |
 | Pi-hole | Network-wide DNS ad-blocker | `pihole/` | http://HOST:8053/admin | https://pihole.lan |
 | Caddy | Reverse proxy / HTTPS front door | `caddy/` | — | ports 80 + 443 |
@@ -19,18 +19,20 @@ Start order: the three services first, then `caddy/`, then `wireguard/`.
 
 ## First-time setup
 
-**Fast path (reproducible):** generate every `.env` with fresh random secrets and
-bring the stack up:
+**Fast path (reproducible):** `bootstrap.sh` interactively asks for everything you can
+configure — LAN IP, timezone, admin email, hostnames, ports, TLS mode — defaulting to
+autodetected/sensible values (it even bumps a port if one's already in use). It then
+writes every `.env` with fresh random secrets and saves your answers to `setup.conf`.
 
 ```bash
-./bootstrap.sh     # writes all .env + pihole/custom.list; prints logins to .secrets.txt
+./bootstrap.sh     # prompts (Enter = accept default); writes .env + setup.conf + WELCOME.txt
 ./up.sh            # starts everything in order; ./down.sh stops it
 ./get-ca.sh        # extract Caddy's root CA to install on your devices
 ```
 
-`bootstrap.sh` never overwrites an existing `.env`, so re-running is safe. Deploying on
-a different machine? Override the host's IP: `SERVER_IP=192.168.1.50 ./bootstrap.sh`.
-Onboarding a family member / new device → see **[ONBOARDING.md](ONBOARDING.md)**.
+- Re-running is safe — existing `.env` files are never overwritten (`--force` regenerates).
+- Unattended install: pre-fill `setup.conf` (see `setup.conf.example`) then `./bootstrap.sh --yes`.
+- Onboarding a family member / new device → see **[ONBOARDING.md](ONBOARDING.md)**.
 
 **Manual path (per service):**
 
@@ -49,21 +51,20 @@ Generate strong secrets with: `openssl rand -base64 32`
 Nothing is hardcoded to a particular machine. To stand this up on the real homeserver
 and make it reachable across the whole LAN:
 
-1. **Copy the folder** to the homeserver and do the per-service `.env` setup above.
-2. **Pi-hole local DNS** — `cp pihole/custom.list.example pihole/custom.list` and set the
-   IP to the homeserver's LAN IP for all three names.
-3. **Port 53** — this host runs `systemd-resolved`, which holds :53 on its loopback stub,
-   so Pi-hole is pinned to the LAN IP via `PIHOLE_DNS_BIND` (see below) instead of
-   `0.0.0.0`. On a host where :53 is free, you can set `PIHOLE_DNS_BIND=0.0.0.0` to serve
-   every interface.
-4. **Give the server a static IP** (or a DHCP reservation). A DNS server whose address
+1. **Copy the folder** to the homeserver and run `./bootstrap.sh` (it writes
+   `pihole/custom.list` and binds DNS appropriately for you).
+2. **Port 53** — if another resolver already holds it (`systemd-resolved`'s loopback stub,
+   or libvirt/LXC dnsmasq), bootstrap sets `PIHOLE_DNS_BIND` to your LAN IP so the binds
+   don't clash; where :53 is free it uses `0.0.0.0` to serve every interface. Check with
+   `sudo ss -tulpn | grep ':53 '`.
+3. **Give the server a static IP** (or a DHCP reservation). A DNS server whose address
    changes breaks everything pointing at it.
-5. **Hand out DNS** — see "DNS strategy" below. With a single server, **do not** set
+4. **Hand out DNS** — see "DNS strategy" below. With a single server, **do not** set
    Pi-hole as the router's DHCP DNS.
 
-Everything is already LAN-listenable by design: Caddy (`:80`/`:443`) and every service
-port bind `0.0.0.0`. There's no host firewall here; if your homeserver runs `ufw`, allow
-the ports: `sudo ufw allow 80,443,53,8082,8081,8053/tcp && sudo ufw allow 53/udp`.
+Caddy (`:80`/`:443`) and the service ports listen on the LAN. There's no host firewall
+here; if your homeserver runs `ufw`, allow the ports (use whatever ports bootstrap chose):
+`sudo ufw allow 80,443,53,8080,8081,8053/tcp && sudo ufw allow 53/udp`.
 
 ### DNS strategy (single server = no SPOF)
 
@@ -88,13 +89,14 @@ the whole LAN loses internet. So:
 
 ## ⚠️ Pi-hole + port 53
 
-On this host `systemd-resolved` is **active** and holds port 53 on its loopback stub
-(`127.0.0.53` / `127.0.0.54`). Binding Pi-hole to `0.0.0.0:53` would clash with it, so
-`pihole/.env` pins `PIHOLE_DNS_BIND=192.168.0.150` (this server's LAN IP) — Pi-hole then
-serves DNS on the LAN while the stub keeps handling the host's own lookups. If the LAN IP
-changes, update `PIHOLE_DNS_BIND` in `pihole/.env`.
+Pi-hole needs port 53. Many hosts already have something on it — `systemd-resolved`'s
+loopback stub (`127.0.0.53`), or libvirt/LXC `dnsmasq`. Binding Pi-hole to `0.0.0.0:53`
+would then clash. `bootstrap.sh` detects this and sets `PIHOLE_DNS_BIND` to your LAN IP
+so Pi-hole serves DNS on the LAN while the stub keeps handling the host's own lookups; on
+a host where :53 is free it uses `0.0.0.0`. If your LAN IP changes, update
+`PIHOLE_DNS_BIND` in `pihole/.env`.
 
-Alternatively, free :53 entirely (then you can bind `0.0.0.0`):
+Alternatively, free :53 entirely (then you can bind `0.0.0.0`) — e.g. for systemd-resolved:
 
 ```bash
 sudo sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf

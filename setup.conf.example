@@ -1,0 +1,24 @@
+# Example configuration for bootstrap.sh.
+#
+# You normally DON'T create this by hand — running ./bootstrap.sh prompts for each
+# value and writes setup.conf for you. Copy this to setup.conf only if you want to
+# pre-seed answers for an unattended `./bootstrap.sh --yes` run.
+#
+# These are settings, not secrets (secrets are generated into each .env). setup.conf
+# is gitignored.
+
+SERVER_IP=192.168.1.10          # this host's LAN IP (bootstrap autodetects it)
+TZ_VAL=Etc/UTC                  # e.g. Europe/Brussels, Asia/Kolkata
+ACME_EMAIL=you@example.com      # Let's Encrypt contact (only used if USE_LE=yes)
+VAULT_HOST=vault.lan
+CLOUD_HOST=cloud.lan
+PIHOLE_HOST=pihole.lan
+CA_HOST=ca.lan                  # plain-HTTP name that serves the local root CA
+USE_LE=no                       # yes = Let's Encrypt (real public domain); no = local CA
+VW_HTTP_PORT=8080               # bootstrap bumps this if the port is already in use
+NC_HTTP_PORT=8081
+PIHOLE_WEB_PORT=8053
+PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver holds :53
+WG_SUBNET=192.168.1.0/24        # your LAN subnet (split tunnel)
+WG_HOST=192.168.1.10            # public DDNS hostname for real remote access
+VW_SIGNUPS_ALLOWED=true         # false = invitation-only

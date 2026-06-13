@@ -13,7 +13,7 @@ services:
       # Web admin UI. Reach it at http://<host>:8053/admin
       - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
     environment:
-      TZ: ${TZ:-Asia/Kolkata}
+      TZ: ${TZ:-Etc/UTC}
       # Web/API password for the admin panel.
       FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD}
       # Upstream resolvers (semicolon separated). Cloudflare + Quad9 here.
