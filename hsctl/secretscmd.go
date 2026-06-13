@@ -6,50 +6,69 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 const secretsListFile = ".secrets.txt"
 
-// secretsCmd shows or securely deletes the generated-logins file. The plaintext logins
-// live ONLY in .secrets.txt (a convenience copy) — the running stack reads from each
-// service's .env. The intended flow: `hsctl secrets show` -> save them into Vaultwarden
-// -> `hsctl secrets shred`.
+// secretsCmd shows the generated logins (read live from the .env files, so it always
+// works) and can shred a legacy .secrets.txt convenience file. The canonical secrets
+// live in each service's .env — there is no separate plaintext copy to manage.
 func secretsCmd() *cobra.Command {
-	s := &cobra.Command{Use: "secrets", Short: "Show or securely delete the generated-logins file (.secrets.txt)"}
+	s := &cobra.Command{Use: "secrets", Short: "Show the generated logins (from the .env files)"}
 	s.AddCommand(
-		&cobra.Command{Use: "show", Short: "Print " + secretsListFile + " (copy these into Vaultwarden)",
+		&cobra.Command{Use: "show", Short: "Print the logins (read from the .env files)",
 			Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return secretsShow(repoDir()) }},
-		&cobra.Command{Use: "shred", Short: "Overwrite " + secretsListFile + " with random data, then delete it",
+		&cobra.Command{Use: "shred", Short: "Securely remove a legacy " + secretsListFile + " file (if present)",
 			Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return secretsShred(repoDir()) }},
 	)
 	return s
 }
 
+// secretsShow reads each login from the live .env files (+ the dashboard password file).
+// It keeps working after `secrets shred`, because it never depended on .secrets.txt.
 func secretsShow(repo string) error {
-	b, err := os.ReadFile(filepath.Join(repo, secretsListFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%s not found (already shredded, or nothing was generated)", secretsListFile)
+	type item struct{ label, file, key string }
+	var any bool
+	for _, it := range []item{
+		{"Vaultwarden /admin token", "vaultwarden/.env", "VW_ADMIN_TOKEN"},
+		{"Nextcloud (user 'admin')", "nextcloud/.env", "NC_ADMIN_PASSWORD"},
+		{"Pi-hole admin", "pihole/.env", "PIHOLE_PASSWORD"},
+	} {
+		if kv, err := readKV(filepath.Join(repo, it.file)); err == nil {
+			if v := kv[it.key]; v != "" {
+				fmt.Printf("%-28s %s\n", it.label+":", v)
+				any = true
+			}
 		}
-		return err
 	}
-	os.Stdout.Write(b)
+	if b, err := os.ReadFile(filepath.Join(repo, ".ui-password")); err == nil {
+		if v := strings.TrimSpace(string(b)); v != "" {
+			fmt.Printf("%-28s %s (user 'admin')\n", "Dashboard:", v)
+			any = true
+		}
+	}
+	if !any {
+		fmt.Println("No logins found — has the stack been set up? Run: hsctl setup")
+		return nil
+	}
+	fmt.Println("\nThese live in the .env files (plaintext on disk) — protect them with full-disk")
+	fmt.Println("encryption, and save them into Vaultwarden.")
 	return nil
 }
 
-// secretsShred overwrites the file with random bytes (3 passes), fsyncs, then removes it.
-//
-// Caveat: on SSDs (wear-leveling) and copy-on-write filesystems (btrfs/ZFS), overwriting
-// a file's logical blocks does NOT guarantee the physical blocks are erased. Full-disk
-// encryption (LUKS) is the real at-rest protection — with it, any remnant is ciphertext.
+// secretsShred removes a legacy .secrets.txt (older setups wrote one), overwriting it
+// with random data first. Note: overwriting a file's blocks is NOT a guaranteed erase on
+// SSDs / copy-on-write filesystems — full-disk encryption (LUKS) is the real protection.
 func secretsShred(repo string) error {
 	path := filepath.Join(repo, secretsListFile)
 	fi, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("already gone:", secretsListFile)
+			fmt.Printf("no %s to remove — logins live only in the .env files now.\n", secretsListFile)
+			fmt.Println("(those are plaintext on disk by necessity; full-disk encryption protects them.)")
 			return nil
 		}
 		return err
@@ -73,8 +92,8 @@ func secretsShred(repo string) error {
 	if err := os.Remove(path); err != nil {
 		return err
 	}
-	fmt.Printf("shredded %s (3 random-data passes, then removed)\n", secretsListFile)
-	fmt.Println("note: with full-disk encryption this is belt-and-suspenders; without it, SSD/CoW")
-	fmt.Println("filesystems may still retain remnants — disk encryption is the real protection.")
+	fmt.Printf("shredded %s (3 random passes, then removed).\n", secretsListFile)
+	fmt.Println("Reminder: the logins still exist in the .env files (needed by the stack) —")
+	fmt.Println("full-disk encryption is what actually protects them at rest.")
 	return nil
 }

@@ -67,19 +67,18 @@ ports for each app — all pre-filled with sensible autodetected values, so you 
 just press Enter through it. It writes the configuration to `setup.conf` and generates each
 service's secrets.
 
-**Your generated logins** are printed at the end and saved to **`.secrets.txt`** (in the
-repo folder, `chmod 600`, git-ignored). Recommended flow:
+**Your generated logins** are printed once at the end of `setup`. You can see them again
+anytime — `hsctl secrets show` reads them straight from the `.env` files:
 
 ```bash
-hsctl secrets show     # the admin token + Vaultwarden/Pi-hole/dashboard passwords
-# ... save those into Vaultwarden once it's up ...
-hsctl secrets shred    # overwrite the file with random data, then delete it
+hsctl secrets show     # admin token + Vaultwarden/Pi-hole/dashboard passwords
+# ... save those into Vaultwarden ...
 ```
 
-`.secrets.txt` is just a convenience copy — the running stack reads each secret from the
-service's own `.env`, so shredding it doesn't break anything. (On a LUKS-encrypted disk
-the shred is belt-and-suspenders; without disk encryption, SSD/CoW filesystems may retain
-remnants regardless — disk encryption is the real protection.)
+> **These secrets are plaintext on disk** (in each service's `.env` — the stack needs them
+> there). There's no extra copy to clean up, and **full-disk encryption is what protects
+> them at rest** — see [Security](#security). (`hsctl secrets shred` exists only to
+> securely remove a leftover `.secrets.txt` from older versions.)
 
 After `hsctl up`, check everything is running with `hsctl status`.
 
