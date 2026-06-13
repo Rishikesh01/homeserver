@@ -28,6 +28,9 @@ func cmdUI(args []string) error {
 	mux.HandleFunc("/root.crt", s.handleCert)
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
+	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
+	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
+	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	fmt.Printf("hsctl ui listening on %s\n", *addr)
 	fmt.Printf("  family portal : http://<server>%s/\n", portOf(*addr))
 	fmt.Printf("  admin         : http://<server>%s/admin   (user: admin, password in %s)\n",
@@ -173,6 +176,51 @@ func (s *uiServer) runLifecycle(action string) string {
 		return fmt.Sprintf("%s: FAILED for %s", action, strings.Join(failed, ", "))
 	}
 	return action + ": ok"
+}
+
+type backupData struct {
+	Repo, Retention, Snapshots, Msg string
+	ResticOK                        bool
+}
+
+func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
+	cfg := loadBackupCfg(s.repo)
+	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, ResticOK: resticInstalled(),
+		Msg: r.URL.Query().Get("msg")}
+	if d.ResticOK {
+		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
+			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
+		} else {
+			d.Snapshots = out
+		}
+	}
+	render(w, backupTmpl, d)
+}
+
+func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
+		return
+	}
+	msg := "Backup complete."
+	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
+		msg = "Backup failed: " + err.Error()
+	}
+	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+}
+
+func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		cfg := loadBackupCfg(s.repo)
+		if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
+			cfg.Repo = v
+		}
+		if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
+			cfg.Retention = v
+		}
+		_ = cfg.save(s.repo)
+	}
+	http.Redirect(w, r, "/admin/backup?msg=Destination+saved", http.StatusSeeOther)
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).

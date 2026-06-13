@@ -17,3 +17,7 @@ WELCOME.txt
 # hsctl: compiled binary + web-UI admin password
 hsctl/hsctl
 .ui-password
+# backups: destination config, restic repo password, local snapshots/staging
+backup.conf
+.restic-password
+backups/

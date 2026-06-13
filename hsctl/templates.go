@@ -66,7 +66,37 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   onsubmit="return confirm('Stop all services?')">
   <input type="hidden" name="do" value="down"><button class="btn gray">Stop all</button></form>
 
-<div class="note">Backups are configured on the command line for now (<code>hsctl backup</code>) — a
-panel here is coming next.</div>
+<p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a></p>
 <p class="foot"><a href="/">← Home portal</a></p>
+</div></body></html>`
+
+const backupTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Backups</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>💾 Backups</h1>
+<p class="sub">Encrypted, deduplicated snapshots via restic.</p>
+{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{if not .ResticOK}}<div class="banner">restic isn't installed on the server yet.
+Install it: <code>sudo apt-get install -y restic</code>, then reload this page.</div>{{end}}
+
+<h3>Destination</h3>
+<form method="post" action="/admin/backup/config">
+  <p>Where to store backups (off-box strongly recommended):<br>
+  <input name="repo" value="{{.Repo}}" style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px">
+  </p>
+  <p class="foot">Examples — USB: <code>/mnt/usb/restic</code> · another host:
+  <code>sftp:user@host:/backups</code> · Backblaze: <code>b2:bucket:homeserver</code></p>
+  <p>Retention: <input name="retention" value="{{.Retention}}" style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <button class="btn gray">Save destination</button>
+</form>
+
+<h3 style="margin-top:24px">Snapshots</h3>
+<form method="post" action="/admin/backup/run" style="display:inline">
+  <button class="btn">Back up now</button></form>
+<pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto;margin-top:12px">{{if .Snapshots}}{{.Snapshots}}{{else}}(restic not available){{end}}</pre>
+
+<div class="note">Backing up reads Docker volume files, which need root — so the
+scheduled backups run from a root timer, and a UI/CLI run needs the tool to have that
+access. First time: set a destination above, then run <code>sudo hsctl backup init</code>.</div>
+<p class="foot"><a href="/admin">← Admin</a></p>
 </div></body></html>`
