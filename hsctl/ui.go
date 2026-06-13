@@ -23,9 +23,9 @@ func cmdUI(args []string) error {
 		return err
 	}
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir())}
+	c := LoadConfig(s.repo)
+	c.Normalize()
 	if *addr == "" {
-		c := LoadConfig(s.repo)
-		c.Normalize()
 		*addr = fmt.Sprintf(":%d", c.UIPort)
 	}
 	mux := http.NewServeMux()
@@ -36,10 +36,11 @@ func cmdUI(args []string) error {
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
+	port := portOf(*addr)
 	fmt.Printf("hsctl ui listening on %s\n", *addr)
-	fmt.Printf("  family portal : http://<server>%s/\n", portOf(*addr))
-	fmt.Printf("  admin         : http://<server>%s/admin   (user: admin, password in %s)\n",
-		portOf(*addr), filepath.Join(s.repo, ".ui-password"))
+	fmt.Printf("  family portal : http://%s%s/   ·   https://%s/  (via Caddy)\n", c.ServerIP, port, c.HomeHost)
+	fmt.Printf("  admin         : http://%s%s/admin   ·   https://%s/admin\n", c.ServerIP, port, c.HomeHost)
+	fmt.Printf("  admin login   : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
 	return http.ListenAndServe(*addr, mux)
 }
 
