@@ -20,9 +20,10 @@ group once: `sudo usermod -aG docker $USER` then log out/in.
 
 ```bash
 hsctl setup             # interactive config -> writes every .env + setup.conf
-hsctl up                # start the stack (services -> caddy)
+hsctl up                # start the stack (apps + tools -> caddy)
 hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
+hsctl install           # run the dashboard as a systemd service (auto-start on boot)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl backup config --repo /mnt/usb/restic   # set a destination
 sudo hsctl backup init  # create the restic repo
