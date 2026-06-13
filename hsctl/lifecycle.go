@@ -25,7 +25,7 @@ func missingEnv() []string {
 	return miss
 }
 
-func cmdUp(_ []string) error {
+func cmdUp() error {
 	if m := missingEnv(); len(m) > 0 {
 		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
 	}
@@ -36,7 +36,7 @@ func cmdUp(_ []string) error {
 		}
 	}
 	fmt.Println()
-	if err := cmdStatus(nil); err != nil {
+	if err := cmdStatus(); err != nil {
 		return err
 	}
 	if !uiServiceActive() {
@@ -46,13 +46,11 @@ func cmdUp(_ []string) error {
 	return nil
 }
 
-func cmdDown(args []string) error {
+func cmdDown(volumes bool) error {
 	down := []string{"compose", "down"}
-	for _, a := range args {
-		if a == "--volumes" || a == "-v" {
-			down = append(down, "-v")
-			fmt.Println("!! --volumes: data volumes will be DELETED")
-		}
+	if volumes {
+		down = append(down, "-v")
+		fmt.Println("!! --volumes: data volumes will be DELETED")
 	}
 	for i := len(services) - 1; i >= 0; i-- {
 		s := services[i]
@@ -64,7 +62,7 @@ func cmdDown(args []string) error {
 	return nil
 }
 
-func cmdStatus(_ []string) error {
+func cmdStatus() error {
 	args := []string{"ps", "--format", "table {{.Names}}\t{{.Status}}"}
 	for _, n := range stackContainers {
 		args = append(args, "--filter", "name="+n)
@@ -72,7 +70,7 @@ func cmdStatus(_ []string) error {
 	return dockerRun(repoDir(), args...)
 }
 
-func cmdGetCA(_ []string) error {
+func cmdGetCA() error {
 	out, err := dockerOut(repoDir(), "exec", "caddy", "cat",
 		"/data/caddy/pki/authorities/local/root.crt")
 	if err != nil {

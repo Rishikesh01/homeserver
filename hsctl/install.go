@@ -13,7 +13,7 @@ const uiUnit = "/etc/systemd/system/hsctl-ui.service"
 // cmdInstall installs + enables the systemd service for the dashboard, so it runs
 // persistently and auto-starts on boot (the containers already do, via
 // restart: unless-stopped). Uses sudo for the /etc/systemd writes.
-func cmdInstall(_ []string) error {
+func cmdInstall() error {
 	repo := repoDir()
 	exe, err := os.Executable()
 	if err != nil {

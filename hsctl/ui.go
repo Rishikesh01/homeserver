@@ -2,13 +2,14 @@ package main
 
 import (
 	"crypto/subtle"
-	"flag"
 	"fmt"
 	"html/template"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 type uiServer struct {
@@ -16,17 +17,13 @@ type uiServer struct {
 	pass string
 }
 
-func cmdUI(args []string) error {
-	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
-	addr := fs.String("addr", "", "listen address (default :<UI port from setup.conf>)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+func runUI(cmd *cobra.Command, _ []string) error {
+	addr, _ := cmd.Flags().GetString("addr")
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir())}
 	c := LoadConfig(s.repo)
 	c.Normalize()
-	if *addr == "" {
-		*addr = fmt.Sprintf(":%d", c.UIPort)
+	if addr == "" {
+		addr = fmt.Sprintf(":%d", c.UIPort)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
@@ -36,12 +33,12 @@ func cmdUI(args []string) error {
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
-	port := portOf(*addr)
-	fmt.Printf("hsctl ui listening on %s\n", *addr)
+	port := portOf(addr)
+	fmt.Printf("hsctl ui listening on %s\n", addr)
 	fmt.Printf("  dashboard : https://%s/   (via Caddy)   ·   http://%s%s/   (direct)\n", c.ServerIP, c.ServerIP, port)
 	fmt.Printf("  admin     : https://%s/admin   ·   http://%s%s/admin\n", c.ServerIP, c.ServerIP, port)
 	fmt.Printf("  login     : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
-	return http.ListenAndServe(*addr, mux)
+	return http.ListenAndServe(addr, mux)
 }
 
 func portOf(addr string) string {

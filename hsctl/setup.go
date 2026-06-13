@@ -2,31 +2,45 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
-func cmdSetup(args []string) error {
-	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	var yes, force bool
-	fs.BoolVar(&yes, "yes", false, "non-interactive: accept defaults/setup.conf/flags")
-	fs.BoolVar(&force, "force", false, "regenerate ALL secrets (DESTRUCTIVE for live data)")
+func runSetup(cmd *cobra.Command, _ []string) error {
+	f := cmd.Flags()
+	yes, _ := f.GetBool("yes")
+	force, _ := f.GetBool("force")
 	repo := repoDir()
 	c := LoadConfig(repo)
-	fs.StringVar(&c.ServerIP, "server-ip", c.ServerIP, "server LAN IP")
-	fs.StringVar(&c.TZ, "tz", c.TZ, "timezone")
-	fs.StringVar(&c.ACMEEmail, "email", c.ACMEEmail, "admin email (Let's Encrypt contact)")
-	fs.IntVar(&c.VWPort, "vw-port", c.VWPort, "Vaultwarden host port")
-	fs.IntVar(&c.NCPort, "nc-port", c.NCPort, "Nextcloud host port")
-	fs.IntVar(&c.PiholeWebPort, "pihole-port", c.PiholeWebPort, "Pi-hole web port")
-	fs.StringVar(&c.PiholeDNSBind, "pihole-dns-bind", c.PiholeDNSBind, "Pi-hole :53 bind IP")
-	fs.BoolVar(&c.VWSignupsAllowed, "vw-signups", c.VWSignupsAllowed, "allow open Vaultwarden signups")
-	if err := fs.Parse(args); err != nil {
-		return err
+	// apply only the flags the user actually set, over the loaded config
+	if f.Changed("server-ip") {
+		c.ServerIP, _ = f.GetString("server-ip")
+	}
+	if f.Changed("tz") {
+		c.TZ, _ = f.GetString("tz")
+	}
+	if f.Changed("email") {
+		c.ACMEEmail, _ = f.GetString("email")
+	}
+	if f.Changed("vw-port") {
+		c.VWPort, _ = f.GetInt("vw-port")
+	}
+	if f.Changed("nc-port") {
+		c.NCPort, _ = f.GetInt("nc-port")
+	}
+	if f.Changed("pihole-port") {
+		c.PiholeWebPort, _ = f.GetInt("pihole-port")
+	}
+	if f.Changed("pihole-dns-bind") {
+		c.PiholeDNSBind, _ = f.GetString("pihole-dns-bind")
+	}
+	if f.Changed("vw-signups") {
+		c.VWSignupsAllowed, _ = f.GetBool("vw-signups")
 	}
 
 	if !yes && isTTY() {

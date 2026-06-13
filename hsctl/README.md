@@ -39,6 +39,16 @@ full restore (disaster-recovery) walkthrough is in the main [README](../README.m
 `.env` so it stays consistent with a running stack, and saves answers to `setup.conf`
 (re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
 
+## Shell completion
+
+hsctl uses Cobra, so `hsctl <Tab>` completes commands and flags. Enable it for your shell:
+
+```bash
+source <(hsctl completion bash)        # this session (use zsh / fish as needed)
+# persistent (bash):
+hsctl completion bash | sudo tee /etc/bash_completion.d/hsctl >/dev/null
+```
+
 ## Web UI
 
 ```bash

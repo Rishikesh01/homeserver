@@ -1,12 +1,13 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 // Backups use restic: encrypted, deduplicated, snapshotted, many backends (local
@@ -55,47 +56,58 @@ func (c backupCfg) save(repo string) error {
 			"RESTIC_REPO=%s\nRETENTION=%s\n", c.Repo, c.Retention))
 }
 
-func cmdBackup(args []string) error {
-	repo := repoDir()
-	if len(args) == 0 {
-		return fmt.Errorf("usage: hsctl backup <config|init|run|list|restore|forget>")
+// backupCmd builds the `hsctl backup` command tree.
+func backupCmd() *cobra.Command {
+	b := &cobra.Command{Use: "backup", Short: "Encrypted backups (restic)"}
+
+	cfgCmd := &cobra.Command{Use: "config", Short: "Set the backup destination / retention / password",
+		Args: cobra.NoArgs, RunE: runBackupConfig}
+	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp: / b2: / s3:)")
+	cfgCmd.Flags().String("retention", "", "restic forget policy")
+	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
+
+	// withRestic wraps a run that needs restic + a loaded config.
+	withRestic := func(run func(repo string, cfg backupCfg) error) func(*cobra.Command, []string) error {
+		return func(*cobra.Command, []string) error {
+			if err := requireRestic(); err != nil {
+				return err
+			}
+			repo := repoDir()
+			return run(repo, loadBackupCfg(repo))
+		}
 	}
-	sub, rest := args[0], args[1:]
-	if sub == "config" {
-		return backupConfig(repo, rest)
-	}
-	if err := requireRestic(); err != nil {
-		return err
-	}
-	cfg := loadBackupCfg(repo)
-	switch sub {
-	case "init":
-		ensureResticPassword(repo)
-		return resticRun(repo, cfg, "init")
-	case "run":
-		return backupRun(repo, cfg)
-	case "list", "snapshots":
-		return resticRun(repo, cfg, "snapshots")
-	case "restore":
-		return backupRestore(repo, cfg, rest)
-	case "forget":
-		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
-	default:
-		return fmt.Errorf("unknown backup subcommand %q", sub)
-	}
+
+	initCmd := &cobra.Command{Use: "init", Short: "Create the encrypted restic repo (first time)", Args: cobra.NoArgs,
+		RunE: withRestic(func(repo string, cfg backupCfg) error { ensureResticPassword(repo); return resticRun(repo, cfg, "init") })}
+	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
+		RunE: withRestic(backupRun)}
+	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
+		RunE: withRestic(func(repo string, cfg backupCfg) error { return resticRun(repo, cfg, "snapshots") })}
+	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
+		RunE: withRestic(func(repo string, cfg backupCfg) error {
+			return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+		})}
+
+	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
+		Args: cobra.MaximumNArgs(1), RunE: runBackupRestore}
+	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
+
+	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, forgetCmd)
+	return b
 }
 
-func backupConfig(repo string, args []string) error {
-	fs := flag.NewFlagSet("backup config", flag.ContinueOnError)
+func runBackupConfig(cmd *cobra.Command, _ []string) error {
+	repo := repoDir()
 	cfg := loadBackupCfg(repo)
-	fs.StringVar(&cfg.Repo, "repo", cfg.Repo, "restic repository (local path / sftp: / b2: / s3:)")
-	fs.StringVar(&cfg.Retention, "retention", cfg.Retention, "restic forget policy")
-	pw := fs.String("password", "", "set the restic repo password (stored in .restic-password)")
-	if err := fs.Parse(args); err != nil {
-		return err
+	f := cmd.Flags()
+	if f.Changed("repo") {
+		cfg.Repo, _ = f.GetString("repo")
 	}
-	if *pw != "" {
-		if err := writeFile0600(filepath.Join(repo, resticPassFile), *pw+"\n"); err != nil {
+	if f.Changed("retention") {
+		cfg.Retention, _ = f.GetString("retention")
+	}
+	if pw, _ := f.GetString("password"); pw != "" {
+		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
 			return err
 		}
 	}
@@ -142,30 +154,31 @@ func backupRun(repo string, cfg backupCfg) error {
 	return nil
 }
 
-// backupRestore extracts a snapshot to a directory (default ./restore). It does NOT
-// overwrite live data — putting volumes/DB back into the stack is the manual final step
-// (printed below, and in README -> Backup & restore), because it's destructive.
-//
-//	hsctl backup restore                 # latest snapshot -> ./restore
-//	hsctl backup restore <id> --target /mnt/x
-func backupRestore(repo string, cfg backupCfg, args []string) error {
-	fs := flag.NewFlagSet("backup restore", flag.ContinueOnError)
-	target := fs.String("target", filepath.Join(repo, "restore"), "directory to restore into")
-	if err := fs.Parse(args); err != nil { // flags must come before the snapshot id
+// runBackupRestore extracts a snapshot to a directory (default <repo>/restore). It does
+// NOT overwrite live data — putting volumes/DB back into the stack is the manual final
+// step (printed below, and in README -> Backup & restore), because it's destructive.
+func runBackupRestore(cmd *cobra.Command, args []string) error {
+	if err := requireRestic(); err != nil {
 		return err
+	}
+	repo := repoDir()
+	cfg := loadBackupCfg(repo)
+	target, _ := cmd.Flags().GetString("target")
+	if target == "" {
+		target = filepath.Join(repo, "restore")
 	}
 	snap := "latest"
-	if fs.NArg() > 0 {
-		snap = fs.Arg(0)
+	if len(args) > 0 {
+		snap = args[0]
 	}
 	ensureResticPassword(repo)
-	if err := os.MkdirAll(*target, 0700); err != nil {
+	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
 	}
-	if err := resticRun(repo, cfg, "restore", snap, "--target", *target); err != nil {
+	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {
 		return err
 	}
-	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, *target)
+	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, target)
 	fmt.Println("To put it back into the stack (disaster recovery):")
 	fmt.Println("  1. hsctl down")
 	fmt.Println("  2. copy each restored volume's files back into /var/lib/docker/volumes/<name>/_data")
