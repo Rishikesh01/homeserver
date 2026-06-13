@@ -14,3 +14,6 @@ pihole/custom.list
 # your saved answers / personalized handout (settings, not secrets — still per-host)
 setup.conf
 WELCOME.txt
+# hsctl: compiled binary + web-UI admin password
+hsctl/hsctl
+.ui-password
