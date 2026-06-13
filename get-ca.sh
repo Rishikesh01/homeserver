@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Extract Caddy's internal root CA so you can install it on each device
-# (browsers + the Bitwarden/Nextcloud apps must trust it to use *.lan over HTTPS).
+# (browsers + the Bitwarden/Nextcloud apps must trust it to use the apps over HTTPS).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -13,4 +13,4 @@ echo "wrote $(pwd)/$OUT"
 echo
 echo "Install it as a trusted CA:"
 echo "  Linux (this box): sudo cp $OUT /usr/local/share/ca-certificates/ && sudo update-ca-certificates"
-echo "  Phones/laptops:   copy the file over, then follow CONFIGURE.md section 3 / ONBOARDING.md"
+echo "  Phones/laptops:   copy the file over, then follow ONBOARDING.md"

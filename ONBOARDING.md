@@ -55,7 +55,7 @@ connect**.
 2. Phone: install **Nextcloud** → server `https://SERVER_IP:8444` → log in. Enable
    *Auto upload* for photos if you want phone backups.
 
-> These work on the **home network** only (there's no VPN).
+> These work on the **home network**.
 
 ---
 

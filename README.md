@@ -2,8 +2,7 @@
 
 A self-hosted stack, managed by **`hsctl`** (a small Go tool with a web dashboard).
 Each service lives in its own folder with its own `docker-compose.yml`. Apps are reached
-over **HTTPS at the server's LAN IP + a port** — no hostnames, no VPN. `HOST` below = the
-server's LAN IP.
+over **HTTPS at the server's LAN IP + a port**. `HOST` below = the server's LAN IP.
 
 | Tile | What | Folder | URL |
 |------|------|--------|-----|
@@ -47,8 +46,7 @@ connect:
 2. Install it as a trusted CA (per-OS steps + the rest of the family flow are in
    **[ONBOARDING.md](ONBOARDING.md)**).
 
-After that, every `https://HOST[:port]` URL is trusted. (No `.lan` names — apps are reached
-by IP:port.)
+After that, every `https://HOST[:port]` URL is trusted.
 
 ## Operations
 
@@ -67,9 +65,9 @@ volumes: `vaultwarden_vw-data`, `nextcloud_nc-data`, `nextcloud_db-data`, `caddy
 
 ## Pi-hole / ad-blocking
 
-Apps are reached by IP, so Pi-hole serves **no local names** — it's purely a network
-ad-blocker. To ad-block every device automatically, point the router's DHCP **Primary DNS**
-at the server's IP (leave Secondary blank) and give the server a **DHCP reservation**.
+Pi-hole is a network-wide ad-blocker. To ad-block every device automatically, point the
+router's DHCP **Primary DNS** at the server's IP (leave Secondary blank) and give the
+server a **DHCP reservation**.
 
 > **Tradeoff:** Pi-hole then becomes the LAN's only resolver — if the box is down, the LAN
 > loses DNS until you clear that field (~30-second revert). Don't add a public "secondary"
@@ -98,5 +96,5 @@ unreachable from other LAN devices.
   Security* (or `occ app:enable encryption && occ encryption:enable`). The host disk is
   already LUKS-encrypted, which covers at-rest.
 - **Firewall:** if you run `ufw`, allow `sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp`.
-- **More docs:** [hsctl/README.md](hsctl/README.md) (the tool), [ONBOARDING.md](ONBOARDING.md)
-  (per-device setup). `CONFIGURE.md` is older background (pre-`hsctl`) and partly outdated.
+- **More docs:** [hsctl/README.md](hsctl/README.md) (the tool reference) and
+  [ONBOARDING.md](ONBOARDING.md) (per-device setup for family).
