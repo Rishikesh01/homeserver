@@ -16,12 +16,6 @@ type Config struct {
 	ServerIP         string
 	TZ               string
 	ACMEEmail        string
-	VaultHost        string
-	CloudHost        string
-	PiholeHost       string
-	CAHost           string
-	HomeHost         string // friendly name for the hsctl web UI (Caddy -> UI)
-	UseLE            bool
 	VWPort           int
 	NCPort           int
 	PiholeWebPort    int
@@ -32,9 +26,8 @@ type Config struct {
 
 const confFile = "setup.conf"
 
-// Defaults returns a config seeded from autodetected host values. Fields that derive
-// from ServerIP (WGSubnet/WGHost/PiholeDNSBind) are left blank and filled by Normalize
-// AFTER any overrides, so they always follow the final IP.
+// Defaults returns a config seeded from autodetected host values. PiholeDNSBind is left
+// blank and filled by Normalize AFTER any overrides, so it follows the final IP.
 func Defaults() Config {
 	ip := detectIP()
 	if ip == "" {
@@ -44,12 +37,6 @@ func Defaults() Config {
 		ServerIP:         ip,
 		TZ:               detectTZ(),
 		ACMEEmail:        "you@example.com",
-		VaultHost:        "vault.lan",
-		CloudHost:        "cloud.lan",
-		PiholeHost:       "pihole.lan",
-		CAHost:           "ca.lan",
-		HomeHost:         "home.lan",
-		UseLE:            false,
 		VWSignupsAllowed: true,
 	}
 	used := map[int]bool{}
@@ -82,9 +69,6 @@ func (c *Config) Normalize() {
 	if c.UIPort == 0 {
 		c.UIPort = pickPort(8088, used)
 	}
-	if c.HomeHost == "" {
-		c.HomeHost = "home.lan"
-	}
 }
 
 // LoadConfig returns Defaults overlaid with the actual deployed .env (so it matches a
@@ -110,12 +94,6 @@ func overlayFromConf(c *Config, repo string) {
 	c.ServerIP = get("SERVER_IP", c.ServerIP)
 	c.TZ = get("TZ_VAL", c.TZ)
 	c.ACMEEmail = get("ACME_EMAIL", c.ACMEEmail)
-	c.VaultHost = get("VAULT_HOST", c.VaultHost)
-	c.CloudHost = get("CLOUD_HOST", c.CloudHost)
-	c.PiholeHost = get("PIHOLE_HOST", c.PiholeHost)
-	c.CAHost = get("CA_HOST", c.CAHost)
-	c.HomeHost = get("HOME_HOST", c.HomeHost)
-	c.UseLE = get("USE_LE", boolStr(c.UseLE, "yes", "no")) == "yes"
 	c.VWPort = atoiDef(get("VW_HTTP_PORT", ""), c.VWPort)
 	c.NCPort = atoiDef(get("NC_HTTP_PORT", ""), c.NCPort)
 	c.PiholeWebPort = atoiDef(get("PIHOLE_WEB_PORT", ""), c.PiholeWebPort)
@@ -128,20 +106,8 @@ func overlayFromConf(c *Config, repo string) {
 // live stack, and re-saving setup.conf reconciles any drift).
 func overlayFromEnv(c *Config, repo string) {
 	if kv, err := readKV(filepath.Join(repo, "caddy/.env")); err == nil {
-		if v := kv["VAULT_HOST"]; v != "" {
-			c.VaultHost = v
-		}
-		if v := kv["CLOUD_HOST"]; v != "" {
-			c.CloudHost = v
-		}
-		if v := kv["PIHOLE_HOST"]; v != "" {
-			c.PiholeHost = v
-		}
 		if v := kv["ACME_EMAIL"]; v != "" {
 			c.ACMEEmail = v
-		}
-		if _, ok := kv["TLS_DIRECTIVE"]; ok {
-			c.UseLE = strings.TrimSpace(kv["TLS_DIRECTIVE"]) == ""
 		}
 		if v := portFromUpstream(kv["VAULT_UPSTREAM"]); v > 0 {
 			c.VWPort = v
@@ -151,12 +117,6 @@ func overlayFromEnv(c *Config, repo string) {
 		}
 		if v := portFromUpstream(kv["PIHOLE_UPSTREAM"]); v > 0 {
 			c.PiholeWebPort = v
-		}
-		if h := firstHost(kv["CA_HOSTS"]); h != "" {
-			c.CAHost = h
-		}
-		if v := kv["HOME_HOST"]; v != "" {
-			c.HomeHost = v
 		}
 		if v := portFromUpstream(kv["HOME_UPSTREAM"]); v > 0 {
 			c.UIPort = v
@@ -196,31 +156,8 @@ func portFromUpstream(s string) int {
 	return 0
 }
 
-// firstHost parses "http://ca.lan http://192.168.0.150" -> "ca.lan".
-func firstHost(s string) string {
-	for _, f := range strings.Fields(s) {
-		f = strings.TrimPrefix(strings.TrimPrefix(f, "http://"), "https://")
-		if f != "" && !isIPish(f) {
-			return f
-		}
-	}
-	return ""
-}
-
-func isIPish(s string) bool {
-	return strings.Count(s, ".") == 3 && strings.IndexFunc(s, func(r rune) bool {
-		return (r < '0' || r > '9') && r != '.'
-	}) < 0
-}
-
 // Save writes setup.conf (0600). Not secrets — just settings.
 func (c Config) Save(repo string) error {
-	yn := func(b bool) string {
-		if b {
-			return "yes"
-		}
-		return "no"
-	}
 	tf := func(b bool) string {
 		if b {
 			return "true"
@@ -231,8 +168,6 @@ func (c Config) Save(repo string) error {
 	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). Edit + re-run freely.\n")
 	for _, kv := range [][2]string{
 		{"SERVER_IP", c.ServerIP}, {"TZ_VAL", c.TZ}, {"ACME_EMAIL", c.ACMEEmail},
-		{"VAULT_HOST", c.VaultHost}, {"CLOUD_HOST", c.CloudHost}, {"PIHOLE_HOST", c.PiholeHost},
-		{"CA_HOST", c.CAHost}, {"HOME_HOST", c.HomeHost}, {"USE_LE", yn(c.UseLE)},
 		{"VW_HTTP_PORT", strconv.Itoa(c.VWPort)}, {"NC_HTTP_PORT", strconv.Itoa(c.NCPort)},
 		{"PIHOLE_WEB_PORT", strconv.Itoa(c.PiholeWebPort)}, {"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
@@ -241,13 +176,6 @@ func (c Config) Save(repo string) error {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}
 	return writeFile0600(filepath.Join(repo, confFile), b.String())
-}
-
-func (c Config) tlsDirective() string {
-	if c.UseLE {
-		return ""
-	}
-	return "tls internal"
 }
 
 // ---- helpers ----
@@ -279,13 +207,6 @@ func unquote(s string) string {
 		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
 			return s[1 : len(s)-1]
 		}
-	}
-	return s
-}
-
-func orDefault(s, def string) string {
-	if strings.TrimSpace(s) == "" {
-		return def
 	}
 	return s
 }

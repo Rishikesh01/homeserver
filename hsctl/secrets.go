@@ -2,10 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 )
 
 const alphanum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -21,22 +18,6 @@ func genPassword(n int) string {
 	}
 	return string(b)
 }
-
-// bcryptHash returns a bcrypt hash of pw (via python3, which the host already has
-// for the stack). Keeping it out-of-process means hsctl has zero Go dependencies.
-func bcryptHash(pw string) (string, error) {
-	out, err := exec.Command("python3", "-c",
-		"import bcrypt,sys;print(bcrypt.hashpw(sys.argv[1].encode(),bcrypt.gensalt()).decode())",
-		pw).Output()
-	if err != nil {
-		return "", fmt.Errorf("bcrypt (needs python3 'bcrypt' module): %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// dollarEscape doubles "$" so docker-compose's env_file interpolation can't mangle
-// the bcrypt hash (a single "$" gets eaten; "$$" collapses back to one).
-func dollarEscape(s string) string { return strings.ReplaceAll(s, "$", "$$") }
 
 func writeFile0600(path, content string) error { return os.WriteFile(path, []byte(content), 0600) }
 func writeFile0644(path, content string) error { return os.WriteFile(path, []byte(content), 0644) }
