@@ -18,11 +18,16 @@ type uiServer struct {
 
 func cmdUI(args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
-	addr := fs.String("addr", ":8088", "listen address (bind to a LAN IP for safety, e.g. 192.168.0.150:8088)")
+	addr := fs.String("addr", "", "listen address (default :<UI port from setup.conf>)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir())}
+	if *addr == "" {
+		c := LoadConfig(s.repo)
+		c.Normalize()
+		*addr = fmt.Sprintf(":%d", c.UIPort)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/root.crt", s.handleCert)

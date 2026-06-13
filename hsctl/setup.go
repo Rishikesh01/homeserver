@@ -107,10 +107,12 @@ func promptConfig(c Config) Config {
 	c.CloudHost = ask("Nextcloud hostname", c.CloudHost)
 	c.PiholeHost = ask("Pi-hole hostname", c.PiholeHost)
 	c.CAHost = ask("Cert-download hostname", c.CAHost)
+	c.HomeHost = ask("Dashboard (web UI) hostname", c.HomeHost)
 	c.UseLE = askYN("Use Let's Encrypt instead of a local CA?", c.UseLE)
 	c.VWPort = atoiDef(ask("Vaultwarden host port", strconv.Itoa(c.VWPort)), c.VWPort)
 	c.NCPort = atoiDef(ask("Nextcloud host port", strconv.Itoa(c.NCPort)), c.NCPort)
 	c.PiholeWebPort = atoiDef(ask("Pi-hole web port", strconv.Itoa(c.PiholeWebPort)), c.PiholeWebPort)
+	c.UIPort = atoiDef(ask("Dashboard (web UI) port", strconv.Itoa(c.UIPort)), c.UIPort)
 	// derived defaults follow the IP just entered
 	dnsDef := c.PiholeDNSBind
 	if dnsDef == "" {

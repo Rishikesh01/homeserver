@@ -20,10 +20,12 @@ type Config struct {
 	CloudHost        string
 	PiholeHost       string
 	CAHost           string
+	HomeHost         string // friendly name for the hsctl web UI (Caddy -> UI)
 	UseLE            bool
 	VWPort           int
 	NCPort           int
 	PiholeWebPort    int
+	UIPort           int // hsctl web UI port (Caddy upstream + direct IP access)
 	PiholeDNSBind    string
 	WGSubnet         string
 	WGHost           string
@@ -48,6 +50,7 @@ func Defaults() Config {
 		CloudHost:        "cloud.lan",
 		PiholeHost:       "pihole.lan",
 		CAHost:           "ca.lan",
+		HomeHost:         "home.lan",
 		UseLE:            false,
 		VWSignupsAllowed: true,
 	}
@@ -55,6 +58,7 @@ func Defaults() Config {
 	c.VWPort = pickPort(8080, used)
 	c.NCPort = pickPort(8081, used)
 	c.PiholeWebPort = pickPort(8053, used)
+	c.UIPort = pickPort(8088, used)
 	return c
 }
 
@@ -82,6 +86,12 @@ func (c *Config) Normalize() {
 	}
 	if c.PiholeWebPort == 0 {
 		c.PiholeWebPort = pickPort(8053, used)
+	}
+	if c.UIPort == 0 {
+		c.UIPort = pickPort(8088, used)
+	}
+	if c.HomeHost == "" {
+		c.HomeHost = "home.lan"
 	}
 }
 
@@ -112,10 +122,12 @@ func overlayFromConf(c *Config, repo string) {
 	c.CloudHost = get("CLOUD_HOST", c.CloudHost)
 	c.PiholeHost = get("PIHOLE_HOST", c.PiholeHost)
 	c.CAHost = get("CA_HOST", c.CAHost)
+	c.HomeHost = get("HOME_HOST", c.HomeHost)
 	c.UseLE = get("USE_LE", boolStr(c.UseLE, "yes", "no")) == "yes"
 	c.VWPort = atoiDef(get("VW_HTTP_PORT", ""), c.VWPort)
 	c.NCPort = atoiDef(get("NC_HTTP_PORT", ""), c.NCPort)
 	c.PiholeWebPort = atoiDef(get("PIHOLE_WEB_PORT", ""), c.PiholeWebPort)
+	c.UIPort = atoiDef(get("UI_PORT", ""), c.UIPort)
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.WGSubnet = get("WG_SUBNET", c.WGSubnet)
 	c.WGHost = get("WG_HOST", c.WGHost)
@@ -152,6 +164,12 @@ func overlayFromEnv(c *Config, repo string) {
 		}
 		if h := firstHost(kv["CA_HOSTS"]); h != "" {
 			c.CAHost = h
+		}
+		if v := kv["HOME_HOST"]; v != "" {
+			c.HomeHost = v
+		}
+		if v := portFromUpstream(kv["HOME_UPSTREAM"]); v > 0 {
+			c.UIPort = v
 		}
 	}
 	if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
@@ -230,9 +248,10 @@ func (c Config) Save(repo string) error {
 	for _, kv := range [][2]string{
 		{"SERVER_IP", c.ServerIP}, {"TZ_VAL", c.TZ}, {"ACME_EMAIL", c.ACMEEmail},
 		{"VAULT_HOST", c.VaultHost}, {"CLOUD_HOST", c.CloudHost}, {"PIHOLE_HOST", c.PiholeHost},
-		{"CA_HOST", c.CAHost}, {"USE_LE", yn(c.UseLE)},
+		{"CA_HOST", c.CAHost}, {"HOME_HOST", c.HomeHost}, {"USE_LE", yn(c.UseLE)},
 		{"VW_HTTP_PORT", strconv.Itoa(c.VWPort)}, {"NC_HTTP_PORT", strconv.Itoa(c.NCPort)},
-		{"PIHOLE_WEB_PORT", strconv.Itoa(c.PiholeWebPort)}, {"PIHOLE_DNS_BIND", c.PiholeDNSBind},
+		{"PIHOLE_WEB_PORT", strconv.Itoa(c.PiholeWebPort)}, {"UI_PORT", strconv.Itoa(c.UIPort)},
+		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"WG_SUBNET", c.WGSubnet}, {"WG_HOST", c.WGHost},
 		{"VW_SIGNUPS_ALLOWED", tf(c.VWSignupsAllowed)},
 	} {

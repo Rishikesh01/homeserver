@@ -59,7 +59,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	listPath := filepath.Join(repo, "pihole/custom.list")
 	if !fileExists(listPath) || force {
 		var b strings.Builder
-		for _, h := range []string{c.VaultHost, c.CloudHost, c.PiholeHost, c.CAHost} {
+		for _, h := range []string{c.VaultHost, c.CloudHost, c.PiholeHost, c.CAHost, c.HomeHost} {
 			fmt.Fprintf(&b, "%s %s\n", c.ServerIP, h)
 		}
 		if err := writeFile0644(listPath, b.String()); err != nil {
@@ -69,11 +69,12 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 
 	// caddy
 	if _, err := writeEnv("caddy/.env", fmt.Sprintf(
-		"VAULT_HOST=%s\nCLOUD_HOST=%s\nPIHOLE_HOST=%s\nTLS_DIRECTIVE=%s\nACME_EMAIL=%s\n"+
+		"VAULT_HOST=%s\nCLOUD_HOST=%s\nPIHOLE_HOST=%s\nHOME_HOST=%s\nTLS_DIRECTIVE=%s\nACME_EMAIL=%s\n"+
 			"VAULT_UPSTREAM=host.docker.internal:%d\nCLOUD_UPSTREAM=host.docker.internal:%d\n"+
-			"PIHOLE_UPSTREAM=host.docker.internal:%d\nCA_HOSTS=http://%s http://%s\n",
-		c.VaultHost, c.CloudHost, c.PiholeHost, c.tlsDirective(), c.ACMEEmail,
-		c.VWPort, c.NCPort, c.PiholeWebPort, c.CAHost, c.ServerIP)); err != nil {
+			"PIHOLE_UPSTREAM=host.docker.internal:%d\nHOME_UPSTREAM=host.docker.internal:%d\n"+
+			"CA_HOSTS=http://%s http://%s\n",
+		c.VaultHost, c.CloudHost, c.PiholeHost, c.HomeHost, c.tlsDirective(), c.ACMEEmail,
+		c.VWPort, c.NCPort, c.PiholeWebPort, c.UIPort, c.CAHost, c.ServerIP)); err != nil {
 		return nil, err
 	}
 
@@ -94,13 +95,15 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 
 	// personalized handout
 	welcome := fmt.Sprintf(`Homeserver — quick reference
+  Dashboard / home portal:        https://%[8]s   /  http://%[1]s:%[9]d
   Install the certificate first:  http://%[1]s/        (download root.crt)
   Passwords (Vaultwarden):        http://%[1]s:%[2]d   /  https://%[3]s
   Files (Nextcloud):              http://%[1]s:%[4]d   /  https://%[5]s
   Pi-hole admin:                  http://%[1]s:%[6]d/admin  /  https://%[7]s
   VPN admin (add devices):        http://%[1]s:51821
 Step-by-step per device: see ONBOARDING.md
-`, c.ServerIP, c.VWPort, c.VaultHost, c.NCPort, c.CloudHost, c.PiholeWebPort, c.PiholeHost)
+`, c.ServerIP, c.VWPort, c.VaultHost, c.NCPort, c.CloudHost, c.PiholeWebPort, c.PiholeHost,
+		c.HomeHost, c.UIPort)
 	if err := writeFile0644(filepath.Join(repo, "WELCOME.txt"), welcome); err != nil {
 		return nil, err
 	}

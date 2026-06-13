@@ -15,11 +15,14 @@ services:
       VAULT_HOST: ${VAULT_HOST}
       CLOUD_HOST: ${CLOUD_HOST}
       PIHOLE_HOST: ${PIHOLE_HOST}
+      HOME_HOST: ${HOME_HOST:-home.lan}
       # "tls internal" = LAN CA (default). Set empty for automatic Let's Encrypt.
       TLS_DIRECTIVE: ${TLS_DIRECTIVE}
       VAULT_UPSTREAM: ${VAULT_UPSTREAM}
       CLOUD_UPSTREAM: ${CLOUD_UPSTREAM}
       PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM}
+      # The hsctl web UI on the host (bind it to :8088 so this gateway can reach it).
+      HOME_UPSTREAM: ${HOME_UPSTREAM:-host.docker.internal:8088}
       # Addresses (plain HTTP) that serve the local root CA for easy device import.
       CA_HOSTS: ${CA_HOSTS:-http://ca.lan}
     volumes:

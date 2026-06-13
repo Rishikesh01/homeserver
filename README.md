@@ -10,8 +10,10 @@ and `.env`, so you can start/stop them independently.
 | Pi-hole | Network-wide DNS ad-blocker | `pihole/` | http://HOST:8053/admin | https://pihole.lan |
 | Caddy | Reverse proxy / HTTPS front door | `caddy/` | — | ports 80 + 443 |
 | wg-easy | WireGuard VPN (remote access + DNS) | `wireguard/` | http://HOST:51821 | — |
+| hsctl UI | Web dashboard + family portal | `hsctl/` | http://HOST:8088 | https://home.lan |
 
-Start order: the three services first, then `caddy/`, then `wireguard/`.
+Start order: the three services first, then `caddy/`, then `wireguard/`. The whole stack
+is driven by **`hsctl`** (a Go tool with a web UI) — see [First-time setup](#first-time-setup).
 
 > **Full step-by-step setup is in [CONFIGURE.md](CONFIGURE.md)** — per-service `.env`, HTTPS/CA
 > trust, DNS strategy, and the VPN (DDNS + port-forward + client setup). This README is the
@@ -19,20 +21,29 @@ Start order: the three services first, then `caddy/`, then `wireguard/`.
 
 ## First-time setup
 
-**Fast path (reproducible):** `bootstrap.sh` interactively asks for everything you can
-configure — LAN IP, timezone, admin email, hostnames, ports, TLS mode — defaulting to
-autodetected/sensible values (it even bumps a port if one's already in use). It then
-writes every `.env` with fresh random secrets and saves your answers to `setup.conf`.
+Everything is driven by **`hsctl`** — a small Go tool (zero external deps) with a **web
+UI**, so non-technical users never need a terminal. Build it once, then run setup:
 
 ```bash
-./bootstrap.sh     # prompts (Enter = accept default); writes .env + setup.conf + WELCOME.txt
-./up.sh            # starts everything in order; ./down.sh stops it
-./get-ca.sh        # extract Caddy's root CA to install on your devices
+cd hsctl && ~/sdk/go/bin/go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
+hsctl setup        # asks: LAN IP, timezone, admin email, hostnames, ports, TLS mode
+hsctl up           # start the stack (services -> caddy -> wireguard)
+hsctl get-ca       # write caddy-root-ca.crt to install on devices
+hsctl ui           # serve the dashboard -> https://home.lan  (or http://HOST:8088)
 ```
 
-- Re-running is safe — existing `.env` files are never overwritten (`--force` regenerates).
-- Unattended install: pre-fill `setup.conf` (see `setup.conf.example`) then `./bootstrap.sh --yes`.
-- Onboarding a family member / new device → see **[ONBOARDING.md](ONBOARDING.md)**.
+`setup` autodetects sensible defaults (IP / timezone / free ports), reads any existing
+`.env` so it stays consistent with a running stack, generates fresh random secrets, and
+saves your answers to `setup.conf`. Re-running never overwrites an existing `.env`
+(`--force` regenerates); `--yes` runs unattended. Backups (encrypted, via restic):
+`hsctl backup`. Full reference: **[hsctl/README.md](hsctl/README.md)**.
+
+So `hsctl`/the UI can control Docker without sudo prompts, add yourself to the docker
+group once: `sudo usermod -aG docker $USER` (then log out/in). Onboarding a family member
+/ new device → **[ONBOARDING.md](ONBOARDING.md)**.
+
+> The shell scripts (`bootstrap.sh` / `up.sh` / `down.sh` / `get-ca.sh`) still work and do
+> the same generation, but `hsctl` supersedes them and adds the web UI + backups.
 
 **Manual path (per service):**
 

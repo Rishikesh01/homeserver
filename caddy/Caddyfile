@@ -33,6 +33,15 @@
 	reverse_proxy {$PIHOLE_UPSTREAM}
 }
 
+# --- Home dashboard (hsctl web UI) ---
+# Friendly HTTPS name for the control panel / family portal. The UI also stays
+# reachable directly at http://<server>:<UI port>. 502 here just means the UI
+# isn't running (start it with: hsctl ui).
+{$HOME_HOST} {
+	{$TLS_DIRECTIVE}
+	reverse_proxy {$HOME_UPSTREAM}
+}
+
 # --- Local CA download ---
 # Plain HTTP on purpose: a device that doesn't trust the CA yet can't reach it
 # over HTTPS (chicken-and-egg). This serves ONLY the public root certificate
