@@ -77,8 +77,7 @@ hsctl secrets show     # admin token + Vaultwarden/Pi-hole/dashboard passwords
 
 > **These secrets are plaintext on disk** (in each service's `.env` — the stack needs them
 > there). There's no extra copy to clean up, and **full-disk encryption is what protects
-> them at rest** — see [Security](#security). (`hsctl secrets shred` exists only to
-> securely remove a leftover `.secrets.txt` from older versions.)
+> them at rest** — see [Security](#security).
 
 After `hsctl up`, check everything is running with `hsctl status`.
 
@@ -122,10 +121,10 @@ This stack stores your passwords and files, so treat the server like a safe.
   shouldn't leak.
 - **Use strong, unique passwords and turn on 2FA.** Especially the Vaultwarden master
   password (nobody can reset it for you) and the Nextcloud/Pi-hole admin logins.
-- **Keep things updated.** Periodically `cd <service> && docker compose pull && docker
-  compose up -d` for each app, and keep the OS patched (`sudo apt update && sudo apt
-  upgrade`). The web-tool images are pinned to `:latest` — pin them to a tested tag once
-  you've confirmed they work.
+- **Keep things updated.** All images are pinned to specific versions (reproducible). To
+  update one, bump the tag in that service's `docker-compose.yml`, then `cd <service> &&
+  docker compose pull && docker compose up -d`. Keep the OS patched too (`sudo apt update
+  && sudo apt upgrade`).
 - **Encrypt Nextcloud (optional).** Server-side encryption is off by default; enable it in
   *Nextcloud → Admin → Settings → Security* if you want it on top of disk encryption.
 

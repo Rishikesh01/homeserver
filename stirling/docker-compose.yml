@@ -1,8 +1,7 @@
 services:
   stirling-pdf:
     # Self-hosted PDF toolkit: compress to size, merge/split, images<->PDF, OCR, etc.
-    # Pin to a tested tag after first pull (docker inspect ... | grep -i version).
-    image: ghcr.io/stirling-tools/stirling-pdf:latest
+    image: ghcr.io/stirling-tools/stirling-pdf:2.12.0
     container_name: stirling-pdf
     restart: unless-stopped
     ports:

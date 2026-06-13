@@ -1,8 +1,7 @@
 services:
   it-tools:
     # 100+ web utilities: converters, image<->base64, QR, hashes, formatters, etc.
-    # Pin to a dated tag after first pull (tags look like 2024.x.y-<sha>).
-    image: ghcr.io/corentinth/it-tools:latest
+    image: ghcr.io/corentinth/it-tools:2024.10.22-7ca5933
     container_name: it-tools
     restart: unless-stopped
     ports:
