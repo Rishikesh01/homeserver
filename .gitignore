@@ -1,0 +1,3 @@
+# Never commit real secrets — only the .env.example templates.
+.env
+**/.env

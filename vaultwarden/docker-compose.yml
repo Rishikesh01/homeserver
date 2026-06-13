@@ -1,0 +1,30 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.32.7
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      # Generate with: docker run --rm vaultwarden/server /vaultwarden hash
+      # (or set ADMIN_TOKEN to a long random string; leave unset to disable the admin panel)
+      ADMIN_TOKEN: ${VW_ADMIN_TOKEN}
+      # Public URL clients/mobile apps will use. Must be https in production.
+      DOMAIN: ${VW_DOMAIN}
+      # Disable open signups once you've created your account.
+      SIGNUPS_ALLOWED: ${VW_SIGNUPS_ALLOWED:-true}
+      # Send invitations only — recommended after initial setup.
+      INVITATIONS_ALLOWED: "true"
+      # Websocket notifications are served on the same port in v1.29+.
+      WEBSOCKET_ENABLED: "true"
+    volumes:
+      - vw-data:/data
+    ports:
+      # Put a reverse proxy (Caddy/Nginx/Traefik) in front for HTTPS.
+      - "${VW_HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "/vaultwarden", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  vw-data:

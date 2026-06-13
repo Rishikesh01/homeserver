@@ -1,0 +1,34 @@
+# Pi-hole v6 (single FTL webserver — no separate lighttpd).
+services:
+  pihole:
+    image: pihole/pihole:2025.04.0
+    container_name: pihole
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      # Web admin UI. Reach it at http://<host>:8053/admin
+      - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
+    environment:
+      TZ: ${TZ:-Europe/Brussels}
+      # Web/API password for the admin panel.
+      FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD}
+      # Upstream resolvers (semicolon separated). Cloudflare + Quad9 here.
+      FTLCONF_dns_upstreams: ${PIHOLE_UPSTREAMS:-1.1.1.1;9.9.9.9}
+      # Reply to DNS queries arriving on any interface.
+      FTLCONF_dns_listeningMode: all
+    volumes:
+      - pihole-etc:/etc/pihole
+    cap_add:
+      - SYS_NICE       # lets FTL tune its own priority; harmless if denied
+    dns:
+      - 127.0.0.1
+      - 1.1.1.1
+    healthcheck:
+      test: ["CMD", "dig", "+short", "+norecurse", "+retry=0", "@127.0.0.1", "pi.hole"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pihole-etc:
