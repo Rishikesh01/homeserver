@@ -1,6 +1,11 @@
 {
 	# Used only if you ever switch to a real public domain.
 	email {$ACME_EMAIL}
+	# Browsers don't send SNI for a bare IP, so without this the handshake fails with
+	# "no SNI". Make the server IP the default so the IP cert is served regardless.
+	default_sni {$SERVER_IP}
+	# Don't auto-redirect HTTP->HTTPS: we serve the CA download on plain :80.
+	auto_https disable_redirects
 }
 
 # --- Plain HTTP: serve the local root CA so devices can install it ---
