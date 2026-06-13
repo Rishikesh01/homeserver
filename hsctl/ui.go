@@ -12,7 +12,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
+
+// markdown renders with GFM enabled (tables, autolinks, strikethrough).
+var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 type uiServer struct {
 	repo string
@@ -145,7 +149,7 @@ func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 	}
 	src := strings.ReplaceAll(string(md), "SERVER_IP", c.ServerIP)
 	var buf bytes.Buffer
-	if err := goldmark.Convert([]byte(src), &buf); err != nil {
+	if err := markdown.Convert([]byte(src), &buf); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
