@@ -65,8 +65,21 @@ hsctl install
 **What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, and the host
 ports for each app — all pre-filled with sensible autodetected values, so you can usually
 just press Enter through it. It writes the configuration to `setup.conf` and generates each
-service's secrets. The **generated logins are printed at the end and saved to `.secrets.txt`**
-— copy them somewhere safe (ideally into Vaultwarden, once it's up).
+service's secrets.
+
+**Your generated logins** are printed at the end and saved to **`.secrets.txt`** (in the
+repo folder, `chmod 600`, git-ignored). Recommended flow:
+
+```bash
+hsctl secrets show     # the admin token + Vaultwarden/Pi-hole/dashboard passwords
+# ... save those into Vaultwarden once it's up ...
+hsctl secrets shred    # overwrite the file with random data, then delete it
+```
+
+`.secrets.txt` is just a convenience copy — the running stack reads each secret from the
+service's own `.env`, so shredding it doesn't break anything. (On a LUKS-encrypted disk
+the shred is belt-and-suspenders; without disk encryption, SSD/CoW filesystems may retain
+remnants regardless — disk encryption is the real protection.)
 
 After `hsctl up`, check everything is running with `hsctl status`.
 

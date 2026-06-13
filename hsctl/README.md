@@ -25,6 +25,8 @@ hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
 hsctl install           # run the dashboard as a systemd service (auto-start on boot)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
+hsctl secrets show      # print the generated logins (.secrets.txt)
+hsctl secrets shred     # overwrite .secrets.txt with random data + delete (after saving them)
 hsctl backup config --repo /mnt/usb/restic   # set a destination (USB/sftp:/b2:/s3:)
 sudo hsctl backup init  # create the encrypted restic repo (first time)
 sudo hsctl backup run   # snapshot: DB dump + data volumes + config
