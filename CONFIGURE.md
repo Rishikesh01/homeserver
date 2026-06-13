@@ -1,5 +1,11 @@
 # Configuration guide
 
+> ⚠️ **Partly outdated.** The stack moved to **`hsctl`** (a Go tool + web dashboard) and
+> to **HTTPS by IP:port** (no `.lan` names, no VPN). For the current workflow use
+> **[README.md](README.md)** and **[hsctl/README.md](hsctl/README.md)**. The sections
+> below that mention `*.lan` hostnames, `TLS_DIRECTIVE`, or the VPN are historical; the
+> certificate, Pi-hole port-53, backup, and Nextcloud notes are still accurate.
+
 Step-by-step setup for the whole stack. For the high-level overview see [README.md](README.md).
 
 Services and how they're reached:

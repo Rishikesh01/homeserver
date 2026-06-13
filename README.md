@@ -3,23 +3,25 @@
 Self-hosted stack. Each service lives in its own folder with its own `docker-compose.yml`
 and `.env`, so you can start/stop them independently.
 
-| Service | What | Folder | Direct URL | Via Caddy (HTTPS) |
-|---------|------|--------|-----------|-------------------|
-| Vaultwarden | FOSS password manager (Bitwarden-compatible) | `vaultwarden/` | http://HOST:8080 | https://vault.lan |
-| Nextcloud | Encrypted cloud file storage | `nextcloud/` | http://HOST:8081 | https://cloud.lan |
-| Pi-hole | Network-wide DNS ad-blocker | `pihole/` | http://HOST:8053/admin | https://pihole.lan |
-| Caddy | Reverse proxy / HTTPS front door | `caddy/` | — | ports 80 + 443 |
-| hsctl UI | Web dashboard + family portal | `hsctl/` | http://HOST:8088 | https://home.lan |
+Reached over **HTTPS at the server IP + a port** (no hostnames/TLD). `HOST` = the
+server's LAN IP. Caddy terminates TLS with its own CA, so install that CA once per device.
+
+| Service | What | Folder | URL |
+|---------|------|--------|-----|
+| **Dashboard** (hsctl UI) | Home page linking to everything | `hsctl/` | **https://HOST** |
+| Vaultwarden | Password manager (Bitwarden-compatible) | `vaultwarden/` | https://HOST:8443 |
+| Nextcloud | Cloud file storage | `nextcloud/` | https://HOST:8444 |
+| Pi-hole | Network ad-blocker | `pihole/` | https://HOST:8445/admin |
+| Caddy | HTTPS front door (one cert per app) | `caddy/` | serves the above + CA on http://HOST/ |
 
 Start order: the three services first, then `caddy/`. The whole stack is driven by
-**`hsctl`** (a Go tool with a web UI) — see [First-time setup](#first-time-setup).
+**`hsctl`** (a Go tool with a web UI) — see [First-time setup](#first-time-setup). The
+dashboard at **https://HOST** is the home page; it renders from `services.json`, so
+adding/removing an app updates it.
 
-> **Full step-by-step setup is in [CONFIGURE.md](CONFIGURE.md)** — per-service `.env`, HTTPS/CA
-> trust, and DNS strategy. This README is the overview.
-
-> **No VPN here.** This box isn't guaranteed to be up, so remote access via VPN was
-> removed. Use the services on the home network; `*.lan` names resolve LAN-wide once the
-> router hands out Pi-hole as DNS (see DNS strategy below).
+> **No VPN, no `.lan` names.** Remote VPN was removed (the box's uptime isn't guaranteed),
+> and apps are reached by IP:port over HTTPS rather than friendly names. Pi-hole is just a
+> network ad-blocker now.
 
 ## First-time setup
 
@@ -28,10 +30,10 @@ UI**, so non-technical users never need a terminal. Build it once, then run setu
 
 ```bash
 cd hsctl && ~/sdk/go/bin/go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
-hsctl setup        # asks: LAN IP, timezone, admin email, hostnames, ports, TLS mode
+hsctl setup        # asks: LAN IP, timezone, admin email, ports
 hsctl up           # start the stack (services -> caddy)
 hsctl get-ca       # write caddy-root-ca.crt to install on devices
-hsctl ui           # serve the dashboard -> https://home.lan  (or http://HOST:8088)
+hsctl ui           # serve the dashboard -> https://HOST  (or http://HOST:8088 direct)
 ```
 
 `setup` autodetects sensible defaults (IP / timezone / free ports), reads any existing
@@ -74,25 +76,20 @@ and make it reachable across the whole LAN:
    changes breaks everything pointing at it.
 4. **Hand out DNS** — see "DNS strategy" below.
 
-Caddy (`:80`/`:443`) and the service ports listen on the LAN. There's no host firewall
-here; if your homeserver runs `ufw`, allow the ports (use whatever ports bootstrap chose):
-`sudo ufw allow 80,443,53,8080,8081,8053/tcp && sudo ufw allow 53/udp`.
+Caddy (`:80`/`:443`) and the app HTTPS ports listen on the LAN. There's no host firewall
+here; if your homeserver runs `ufw`, allow:
+`sudo ufw allow 80,443,8443,8444,8445,53/tcp && sudo ufw allow 53/udp`.
 
-### DNS strategy — resolving `*.lan` LAN-wide
+### Pi-hole ad-blocking (optional)
 
-A device only resolves `vault.lan` if its DNS queries reach Pi-hole. By default devices
-ask the router, which doesn't know `.lan`. Two ways to fix that:
+Apps are reached by IP, so Pi-hole serves **no local names** — it's purely a network
+ad-blocker now. To ad-block every device automatically, point the router's DHCP **Primary
+DNS** at the server's IP (leave Secondary blank) and give the server a DHCP reservation.
 
-- **Recommended — one router setting (all devices, no per-device fiddling):** in the
-  router's DHCP settings set **Primary DNS = the server's IP** and leave **Secondary
-  blank**. Every device then resolves `*.lan` automatically and gets ad-blocking, now and
-  in future. Requires a **DHCP reservation** so the server's IP never changes.
-  - **Tradeoff (SPOF):** with Pi-hole as the only DNS, if the box is down the LAN loses
-    DNS until you clear that field. It's a ~30-second revert; for a home LAN it's the
-    normal, convenient choice. Don't set a public "secondary" DNS — OSes query both in
-    parallel, so blocking leaks and failover is unreliable.
-- **Alternative — per device:** set DNS to the server's IP only on the devices you choose.
-  No SPOF, but you repeat it per device.
+- **Tradeoff (SPOF):** Pi-hole becomes the LAN's only resolver — if the box is down the
+  LAN loses DNS until you clear that field (~30-second revert). Don't set a public
+  "secondary" (OSes query both in parallel, so blocking leaks).
+- Or set it per device, or skip it — the apps work either way (they're reached by IP).
 
 > **WiFi note:** if the server is on WiFi, some access points enable "client/AP isolation"
 > which blocks device-to-device traffic and will make the server unreachable from other
@@ -119,34 +116,19 @@ Then point your router's DNS (or individual devices) at this server's IP to use 
 
 ## HTTPS via Caddy (`caddy/`)
 
-Caddy terminates TLS and reverse-proxies to the three services on their published
-host ports. Hostnames, TLS mode, and upstreams are set in `caddy/.env`.
+Caddy terminates TLS and reverse-proxies each app at **`https://<server-ip>:<port>`** —
+`:8443` Vaultwarden, `:8444` Nextcloud, `:8445` Pi-hole, **`:443` (no port) the
+dashboard**. It uses its own local CA (`tls internal`) with the **server IP in the cert
+SAN**, and `default_sni` so browsers that don't send SNI for a bare IP still get the cert.
+`caddy/.env` holds `SERVER_IP`, the upstream ports, and the HTTPS ports.
 
-**Default = LAN mode (`TLS_DIRECTIVE=tls internal`).** Caddy runs its own local CA and
-issues certs for `vault.lan` / `cloud.lan` / `pihole.lan`. Works fully offline. Browsers
-will warn until you install Caddy's root CA on your devices — extract it with:
+**Install the CA once per device:** browse **`http://<server-ip>/`** → download `root.crt`
+→ trust it (or `hsctl get-ca` writes it to a file). The Bitwarden/Nextcloud apps require a
+trusted cert, so this step is mandatory for them.
 
-```bash
-docker exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root-ca.crt
-```
-
-Import `caddy-root-ca.crt` as a trusted root on each device. **The Bitwarden and Nextcloud
-mobile apps require a trusted cert** — either install this CA or switch to Let's Encrypt.
-
-**Real domain = Let's Encrypt.** Point real public DNS names at this host, open ports
-80+443, then in `caddy/.env` set the `*_HOST` vars to those names and `TLS_DIRECTIVE=`
-(empty). Caddy auto-issues trusted certs. Also update `VW_DOMAIN` and add the name to
-Nextcloud's trusted domains (see below).
-
-### Name resolution
-
-Devices reach `*.lan` because Pi-hole resolves them to the server. Records live in
-`pihole/custom.list` (bind-mounted into the container), one `IP hostname` per line.
-Edit that file, then `docker exec pihole pihole reloaddns`.
-
-Only devices that use Pi-hole as their DNS resolve `*.lan` (see "DNS strategy" above —
-with one server, that's opt-in per device, not router-wide). Devices not using Pi-hole
-can reach the services by IP, or get a matching `/etc/hosts` entry.
+The dashboard's tiles come from **`services.json`**; the HTTPS ports there must match the
+`*_HTTPS` vars in `caddy/.env` and the Caddy blocks. Want public, no-install HTTPS? That
+needs a real domain + Let's Encrypt — out of scope for this IP-based setup.
 
 ### Adding a hostname to Nextcloud's trusted domains
 

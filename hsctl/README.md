@@ -36,16 +36,17 @@ sudo hsctl backup run   # snapshot DB dump + volumes + config
 ## Web UI
 
 ```bash
-hsctl ui --addr 192.168.0.150:8088    # bind to your LAN IP — NOT 0.0.0.0 if exposed
+hsctl ui              # binds :<UI port>; reach it at https://<server-ip> via Caddy,
+                      # or http://<server-ip>:8088 directly
 ```
 
-- **`/`** — family portal: cards linking to Vaultwarden/Nextcloud/Pi-hole and a
-  one-click **certificate install**. No login.
+- **`/`** — the dashboard / home page: tiles for every app (from `services.json`, so it
+  updates when you add/remove one) + one-click **certificate install**. No login.
 - **`/admin`** — basic-auth (user `admin`, password in `.ui-password`): container
   status + Start/Stop/Restart, and **Backups** (set destination, run, view snapshots).
 
 Run it as a service + nightly backups (edit `systemd/*.service`: set `__DIR__` to this
-repo and `__ADDR__` to your LAN IP:port first):
+repo first):
 
 ```bash
 make install-services

@@ -8,7 +8,7 @@ services:
       - "${VAULT_HTTPS:-8443}:${VAULT_HTTPS:-8443}"              # Vaultwarden (https)
       - "${CLOUD_HTTPS:-8444}:${CLOUD_HTTPS:-8444}"              # Nextcloud (https)
       - "${PIHOLE_HTTPS:-8445}:${PIHOLE_HTTPS:-8445}"            # Pi-hole (https)
-      - "${HOME_HTTPS:-8446}:${HOME_HTTPS:-8446}"                # dashboard (https)
+      - "${HOME_HTTPS:-443}:${HOME_HTTPS:-443}"                  # dashboard (https, port 443 = no :port in URL)
     # Lets Caddy reach the services on the host's published ports.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -25,7 +25,7 @@ services:
       VAULT_HTTPS: ${VAULT_HTTPS:-8443}
       CLOUD_HTTPS: ${CLOUD_HTTPS:-8444}
       PIHOLE_HTTPS: ${PIHOLE_HTTPS:-8445}
-      HOME_HTTPS: ${HOME_HTTPS:-8446}
+      HOME_HTTPS: ${HOME_HTTPS:-443}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # issued certs + local CA root — back this up

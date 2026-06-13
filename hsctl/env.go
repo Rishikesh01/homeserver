@@ -69,7 +69,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		"SERVER_IP=%s\nACME_EMAIL=%s\n"+
 			"VAULT_UPSTREAM=host.docker.internal:%d\nCLOUD_UPSTREAM=host.docker.internal:%d\n"+
 			"PIHOLE_UPSTREAM=host.docker.internal:%d\nHOME_UPSTREAM=host.docker.internal:%d\n"+
-			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=8446\n",
+			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=443\n",
 		c.ServerIP, c.ACMEEmail, c.VWPort, c.NCPort, c.PiholeWebPort, c.UIPort)); err != nil {
 		return nil, err
 	}
