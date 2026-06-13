@@ -1,0 +1,5 @@
+[
+  { "key": "vault",  "name": "Passwords",  "icon": "🔑", "desc": "Vaultwarden — save & sync passwords (Bitwarden-compatible)", "https_port": 8443 },
+  { "key": "cloud",  "name": "Files",      "icon": "☁️", "desc": "Nextcloud — files, photos, calendar",                       "https_port": 8444 },
+  { "key": "pihole", "name": "Ad blocker", "icon": "🛡️", "desc": "Pi-hole — network-wide ad-blocking admin",                  "https_port": 8445, "path": "/admin" }
+]

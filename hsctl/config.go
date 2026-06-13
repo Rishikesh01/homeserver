@@ -170,6 +170,11 @@ func overlayFromEnv(c *Config, repo string) {
 			c.VWSignupsAllowed = kv["VW_SIGNUPS_ALLOWED"] == "true"
 		}
 	}
+	if kv, err := readKV(filepath.Join(repo, "nextcloud/.env")); err == nil {
+		if v := atoiDef(kv["NC_HTTP_PORT"], 0); v > 0 {
+			c.NCPort = v
+		}
+	}
 	if kv, err := readKV(filepath.Join(repo, "pihole/.env")); err == nil {
 		if v := kv["TZ"]; v != "" {
 			c.TZ = v

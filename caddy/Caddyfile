@@ -1,61 +1,57 @@
 {
-	# Used only when issuing real Let's Encrypt certs (public domains).
+	# Used only if you ever switch to a real public domain.
 	email {$ACME_EMAIL}
 }
 
-# --- Vaultwarden ---
-{$VAULT_HOST} {
-	{$TLS_DIRECTIVE}
+# --- Plain HTTP: serve the local root CA so devices can install it ---
+# A device that doesn't trust the CA yet can't use HTTPS, so this is on port 80.
+# Serves only the public root cert. Browse http://<server>/ to install it.
+:80 {
+	handle /root.crt {
+		root * /data/caddy/pki/authorities/local
+		file_server
+		header Content-Type "application/x-x509-ca-cert"
+	}
+	handle {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Home server</title><h1>Home server</h1><p>Install the <a href="/root.crt"><b>certificate</b></a> once on this device, then open the dashboard.</p>` 200
+	}
+}
+
+# --- Each app over HTTPS at the server IP + its own port ---
+# The site address is <ip>:<port> so "tls internal" mints a cert with the server IP
+# in the SAN (trusted once the CA above is installed). `bind 0.0.0.0` makes Caddy
+# actually listen on all of the container's interfaces (it has no <ip> of its own).
+
+{$SERVER_IP}:{$VAULT_HTTPS} {
+	bind 0.0.0.0
+	tls internal
 	reverse_proxy {$VAULT_UPSTREAM}
 }
 
-# --- Nextcloud ---
-{$CLOUD_HOST} {
-	{$TLS_DIRECTIVE}
+{$SERVER_IP}:{$CLOUD_HTTPS} {
+	bind 0.0.0.0
+	tls internal
 	reverse_proxy {$CLOUD_UPSTREAM}
-
-	# Service-discovery redirects Nextcloud expects at the domain root.
 	redir /.well-known/carddav /remote.php/dav 301
 	redir /.well-known/caldav /remote.php/dav 301
 	redir /.well-known/webfinger /index.php/.well-known/webfinger 301
 	redir /.well-known/nodeinfo /index.php/.well-known/nodeinfo 301
-
 	header {
 		Strict-Transport-Security "max-age=15552000; includeSubDomains"
 	}
 }
 
-# --- Pi-hole ---
-{$PIHOLE_HOST} {
-	{$TLS_DIRECTIVE}
-	# Send the bare hostname straight to the admin UI.
+{$SERVER_IP}:{$PIHOLE_HTTPS} {
+	bind 0.0.0.0
+	tls internal
 	redir / /admin/ 302
 	reverse_proxy {$PIHOLE_UPSTREAM}
 }
 
-# --- Home dashboard (hsctl web UI) ---
-# Friendly HTTPS name for the control panel / family portal. The UI also stays
-# reachable directly at http://<server>:<UI port>. 502 here just means the UI
-# isn't running (start it with: hsctl ui).
-{$HOME_HOST} {
-	{$TLS_DIRECTIVE}
+# The hsctl dashboard — the home page for all services.
+{$SERVER_IP}:{$HOME_HTTPS} {
+	bind 0.0.0.0
+	tls internal
 	reverse_proxy {$HOME_UPSTREAM}
-}
-
-# --- Local CA download ---
-# Plain HTTP on purpose: a device that doesn't trust the CA yet can't reach it
-# over HTTPS (chicken-and-egg). This serves ONLY the public root certificate
-# (never the private key), so exposing it on the LAN is safe. Reachable by the
-# server IP or http://ca.lan — browse it on a new device to install the cert.
-{$CA_HOSTS} {
-	handle /root.crt {
-		root * /data/caddy/pki/authorities/local
-		file_server
-		# MIME that makes browsers/phones offer to install it as a CA.
-		header Content-Type "application/x-x509-ca-cert"
-	}
-	handle {
-		header Content-Type "text/html; charset=utf-8"
-		respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Homeserver CA</title><h1>Homeserver certificate</h1><p>Install this once so <code>*.lan</code> and the Bitwarden/Nextcloud apps work without warnings.</p><p><a href="/root.crt"><b>Download root.crt</b></a></p><p>Then install it as a <b>trusted CA</b> — per-device steps are in ONBOARDING.md.</p>` 200
-	}
 }

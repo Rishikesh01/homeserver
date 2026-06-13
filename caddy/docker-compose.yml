@@ -4,27 +4,28 @@ services:
     container_name: caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"   # HTTP/3
+      - "80:80"                                                  # CA download (http)
+      - "${VAULT_HTTPS:-8443}:${VAULT_HTTPS:-8443}"              # Vaultwarden (https)
+      - "${CLOUD_HTTPS:-8444}:${CLOUD_HTTPS:-8444}"              # Nextcloud (https)
+      - "${PIHOLE_HTTPS:-8445}:${PIHOLE_HTTPS:-8445}"            # Pi-hole (https)
+      - "${HOME_HTTPS:-8446}:${HOME_HTTPS:-8446}"                # dashboard (https)
     # Lets Caddy reach the services on the host's published ports.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      ACME_EMAIL: ${ACME_EMAIL}
-      VAULT_HOST: ${VAULT_HOST}
-      CLOUD_HOST: ${CLOUD_HOST}
-      PIHOLE_HOST: ${PIHOLE_HOST}
-      HOME_HOST: ${HOME_HOST:-home.lan}
-      # "tls internal" = LAN CA (default). Set empty for automatic Let's Encrypt.
-      TLS_DIRECTIVE: ${TLS_DIRECTIVE}
+      ACME_EMAIL: ${ACME_EMAIL:-you@example.com}
+      # Server LAN IP — used as the cert SAN so https://<ip>:<port> is trusted.
+      SERVER_IP: ${SERVER_IP}
       VAULT_UPSTREAM: ${VAULT_UPSTREAM}
       CLOUD_UPSTREAM: ${CLOUD_UPSTREAM}
       PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM}
       # The hsctl web UI on the host (bind it to :8088 so this gateway can reach it).
       HOME_UPSTREAM: ${HOME_UPSTREAM:-host.docker.internal:8088}
-      # Addresses (plain HTTP) that serve the local root CA for easy device import.
-      CA_HOSTS: ${CA_HOSTS:-http://ca.lan}
+      # HTTPS ports each app is exposed on (must match services.json on the dashboard).
+      VAULT_HTTPS: ${VAULT_HTTPS:-8443}
+      CLOUD_HTTPS: ${CLOUD_HTTPS:-8444}
+      PIHOLE_HTTPS: ${PIHOLE_HTTPS:-8445}
+      HOME_HTTPS: ${HOME_HTTPS:-8446}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # issued certs + local CA root — back this up

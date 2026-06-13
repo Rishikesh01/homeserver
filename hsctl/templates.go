@@ -28,14 +28,10 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <a href="/root.crt">Install the certificate</a> so the apps below load without warnings.</div>
 
 <div class="grid">
-  <a class="card" href="https://{{.Cfg.VaultHost}}"><h3>🔑 Passwords</h3>
-    <p>Vaultwarden — save & sync passwords. (Bitwarden apps: server <code>https://{{.Cfg.VaultHost}}</code>)</p></a>
-  <a class="card" href="https://{{.Cfg.CloudHost}}"><h3>☁️ Files</h3>
-    <p>Nextcloud — files, photos, calendar.</p></a>
-  <a class="card" href="https://{{.Cfg.PiholeHost}}"><h3>🛡️ Ad blocker</h3>
-    <p>Pi-hole — network-wide ad blocking admin.</p></a>
-  <a class="card" href="/root.crt"><h3>📜 Certificate</h3>
-    <p>Download &amp; install the trust certificate (do this once per device).</p></a>
+  {{range .Services}}<a class="card" href="{{.URL}}"><h3>{{.Icon}} {{.Name}}</h3>
+    <p>{{.Desc}}</p></a>
+  {{end}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
+    <p>Install this once per device so the apps load without warnings.</p></a>
 </div>
 <p class="foot">Trouble? See ONBOARDING.md, or ask your admin. · <a href="/admin">Admin</a></p>
 </div></body></html>`

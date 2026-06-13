@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // Secret is a human login surfaced after generation (to save into Vaultwarden).
@@ -55,26 +54,23 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		secrets = append(secrets, Secret{"Pi-hole admin:", phPw})
 	}
 
-	// pihole/custom.list
+	// pihole/custom.list — no local hostnames (apps are reached by IP:port). Kept as
+	// an almost-empty file so the bind-mount has a file to mount.
 	listPath := filepath.Join(repo, "pihole/custom.list")
 	if !fileExists(listPath) || force {
-		var b strings.Builder
-		for _, h := range []string{c.VaultHost, c.CloudHost, c.PiholeHost, c.CAHost, c.HomeHost} {
-			fmt.Fprintf(&b, "%s %s\n", c.ServerIP, h)
-		}
-		if err := writeFile0644(listPath, b.String()); err != nil {
+		if err := writeFile0644(listPath,
+			"# Pi-hole local DNS records (none — apps are reached by IP:port).\n"); err != nil {
 			return nil, err
 		}
 	}
 
-	// caddy
+	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP).
 	if _, err := writeEnv("caddy/.env", fmt.Sprintf(
-		"VAULT_HOST=%s\nCLOUD_HOST=%s\nPIHOLE_HOST=%s\nHOME_HOST=%s\nTLS_DIRECTIVE=%s\nACME_EMAIL=%s\n"+
+		"SERVER_IP=%s\nACME_EMAIL=%s\n"+
 			"VAULT_UPSTREAM=host.docker.internal:%d\nCLOUD_UPSTREAM=host.docker.internal:%d\n"+
 			"PIHOLE_UPSTREAM=host.docker.internal:%d\nHOME_UPSTREAM=host.docker.internal:%d\n"+
-			"CA_HOSTS=http://%s http://%s\n",
-		c.VaultHost, c.CloudHost, c.PiholeHost, c.HomeHost, c.tlsDirective(), c.ACMEEmail,
-		c.VWPort, c.NCPort, c.PiholeWebPort, c.UIPort, c.CAHost, c.ServerIP)); err != nil {
+			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=8446\n",
+		c.ServerIP, c.ACMEEmail, c.VWPort, c.NCPort, c.PiholeWebPort, c.UIPort)); err != nil {
 		return nil, err
 	}
 

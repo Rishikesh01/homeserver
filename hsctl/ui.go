@@ -111,8 +111,11 @@ func (s *uiServer) status() ([]containerStatus, error) {
 	return res, nil
 }
 
+type serviceLink struct{ Name, Icon, Desc, URL string }
+
 type homeData struct {
-	Cfg Config
+	Cfg      Config
+	Services []serviceLink
 }
 
 func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +125,11 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	c := LoadConfig(s.repo)
 	c.Normalize()
-	render(w, homeTmpl, homeData{Cfg: c})
+	var links []serviceLink
+	for _, svc := range LoadServices(s.repo) {
+		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
+	}
+	render(w, homeTmpl, homeData{Cfg: c, Services: links})
 }
 
 type adminData struct {
