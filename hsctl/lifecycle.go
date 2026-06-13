@@ -6,15 +6,18 @@ import (
 	"path/filepath"
 )
 
-// services in start order. down reverses this.
-var services = []string{"vaultwarden", "nextcloud", "pihole", "caddy"}
+// services in start order. down reverses this. caddy is last so it can proxy the rest.
+var services = []string{"vaultwarden", "nextcloud", "pihole", "stirling", "it-tools", "imagetools", "caddy"}
+
+// coreServices need a generated .env (the tools run from compose defaults, no .env).
+var coreServices = []string{"vaultwarden", "nextcloud", "pihole"}
 
 // container names belonging to the stack (for status filtering).
-var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy"}
+var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "stirling-pdf", "it-tools", "imagetools"}
 
 func missingEnv() []string {
 	var miss []string
-	for _, s := range services {
+	for _, s := range coreServices {
 		if _, err := os.Stat(filepath.Join(repoDir(), s, ".env")); err != nil {
 			miss = append(miss, s)
 		}

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Image tool — resize, compress, convert</title>
+<style>
+  :root{--bg:#0f1115;--card:#1a1d24;--fg:#e7e9ee;--muted:#9aa3b2;--accent:#4f8cff;--ok:#3fb950;--line:#262b34}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:24px 16px}
+  h1{font-size:24px;margin:0 0 2px}.sub{color:var(--muted);margin:0 0 20px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+  input,select{width:100%;padding:9px;background:#0b0d11;color:var(--fg);border:1px solid var(--line);border-radius:8px;font-size:15px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:11px 18px;font-size:16px;cursor:pointer;width:100%;margin-top:14px}
+  .btn:disabled{opacity:.5;cursor:default}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted);cursor:pointer}
+  .drop:hover{border-color:var(--accent)}
+  .out img{max-width:100%;border:1px solid var(--line);border-radius:8px;background:#000}
+  .stat{display:inline-block;background:rgba(63,185,80,.15);color:var(--ok);padding:2px 10px;border-radius:99px;font-size:13px;margin-right:6px}
+  a.dl{display:inline-block;margin-top:12px;background:var(--ok);color:#06210e;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none}
+  .muted{color:var(--muted);font-size:13px}.hidden{display:none}
+</style>
+</head>
+<body><div class="wrap">
+  <h1>🖼️ Image tool</h1>
+  <p class="sub">Resize, compress to a target size, and convert — all in your browser. Nothing is uploaded.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">Click or drop an image here (JPG / PNG / WebP)</div>
+    <input id="file" type="file" accept="image/*" class="hidden">
+    <p class="muted hidden" id="srcinfo"></p>
+  </div>
+
+  <div class="card">
+    <label>Preset</label>
+    <select id="preset">
+      <option value="">Custom</option>
+      <option value="200x230">Passport photo (200×230)</option>
+      <option value="350x350">Photo (350×350)</option>
+      <option value="140x60">Signature (140×60)</option>
+      <option value="600x600">Max 600×600</option>
+    </select>
+    <div class="row">
+      <div><label>Max width (px, 0 = keep)</label><input id="w" type="number" min="0" value="0"></div>
+      <div><label>Max height (px, 0 = keep)</label><input id="h" type="number" min="0" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label>Format</label>
+        <select id="fmt"><option value="image/jpeg">JPEG</option><option value="image/png">PNG</option><option value="image/webp">WebP</option></select>
+      </div>
+      <div><label>Target max size (KB, 0 = best quality)</label><input id="kb" type="number" min="0" value="0"></div>
+    </div>
+    <button class="btn" id="go" disabled>Process</button>
+  </div>
+
+  <div class="card out hidden" id="outcard">
+    <p><span class="stat" id="odim"></span><span class="stat" id="osize"></span></p>
+    <img id="preview" alt="result">
+    <br><a class="dl" id="dl" download>Download</a>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+let img = null, srcName = "image";
+
+$("drop").onclick = () => $("file").click();
+$("drop").ondragover = e => { e.preventDefault(); };
+$("drop").ondrop = e => { e.preventDefault(); if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); };
+$("file").onchange = e => { if (e.target.files[0]) load(e.target.files[0]); };
+$("preset").onchange = e => {
+  const v = e.target.value;
+  if (v) { const [w,h] = v.split("x"); $("w").value = w; $("h").value = h; }
+};
+
+function load(f) {
+  srcName = f.name.replace(/\.[^.]+$/, "");
+  const url = URL.createObjectURL(f);
+  const im = new Image();
+  im.onload = () => {
+    img = im;
+    $("srcinfo").classList.remove("hidden");
+    $("srcinfo").textContent = `Loaded: ${im.naturalWidth}×${im.naturalHeight}, ${(f.size/1024).toFixed(0)} KB`;
+    $("drop").textContent = "✓ " + f.name + " — click to change";
+    $("go").disabled = false;
+  };
+  im.src = url;
+}
+
+// scale image into a canvas honoring max width/height (0 = no limit), preserving aspect ratio
+function scaledCanvas() {
+  let { naturalWidth: w, naturalHeight: h } = img;
+  const maxW = +$("w").value || Infinity, maxH = +$("h").value || Infinity;
+  const r = Math.min(maxW / w, maxH / h, 1);
+  const cw = Math.max(1, Math.round(w * r)), ch = Math.max(1, Math.round(h * r));
+  const c = document.createElement("canvas");
+  c.width = cw; c.height = ch;
+  const ctx = c.getContext("2d");
+  if ($("fmt").value === "image/jpeg") { ctx.fillStyle = "#fff"; ctx.fillRect(0,0,cw,ch); } // no black bg on JPEG
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, cw, ch);
+  return c;
+}
+
+function toBlob(canvas, type, q) {
+  return new Promise(res => canvas.toBlob(res, type, q));
+}
+
+async function compressToTarget(canvas, type, maxBytes) {
+  // PNG ignores quality; just return it.
+  if (type === "image/png") return toBlob(canvas, type);
+  let lo = 0.3, hi = 0.95, best = await toBlob(canvas, type, hi);
+  if (!maxBytes || best.size <= maxBytes) return best;
+  for (let i = 0; i < 8; i++) {
+    const mid = (lo + hi) / 2;
+    const b = await toBlob(canvas, type, mid);
+    if (b.size > maxBytes) { hi = mid; } else { lo = mid; best = b; }
+  }
+  return best;
+}
+
+$("go").onclick = async () => {
+  if (!img) return;
+  $("go").disabled = true; $("go").textContent = "Processing…";
+  const type = $("fmt").value, maxBytes = (+$("kb").value || 0) * 1024;
+  const canvas = scaledCanvas();
+  const blob = await compressToTarget(canvas, type, maxBytes);
+  const url = URL.createObjectURL(blob);
+  $("preview").src = url;
+  $("odim").textContent = `${canvas.width}×${canvas.height}`;
+  $("osize").textContent = `${(blob.size/1024).toFixed(1)} KB`;
+  const ext = type.split("/")[1].replace("jpeg","jpg");
+  const dl = $("dl"); dl.href = url; dl.download = `${srcName}.${ext}`;
+  $("outcard").classList.remove("hidden");
+  $("go").disabled = false; $("go").textContent = "Process";
+  if (maxBytes && blob.size > maxBytes)
+    $("osize").textContent += " (couldn't get smaller — try lower dimensions)";
+};
+</script>
+</div></body></html>

@@ -1,5 +1,8 @@
 [
   { "key": "vault",  "name": "Passwords",  "icon": "🔑", "desc": "Vaultwarden — save & sync passwords (Bitwarden-compatible)", "https_port": 8443 },
   { "key": "cloud",  "name": "Files",      "icon": "☁️", "desc": "Nextcloud — files, photos, calendar",                       "https_port": 8444 },
-  { "key": "pihole", "name": "Ad blocker", "icon": "🛡️", "desc": "Pi-hole — network-wide ad-blocking admin",                  "https_port": 8445, "path": "/admin" }
+  { "key": "pihole", "name": "Ad blocker", "icon": "🛡️", "desc": "Pi-hole — network-wide ad-blocking admin",                  "https_port": 8445, "path": "/admin" },
+  { "key": "pdf",    "name": "PDF tools",  "icon": "📄", "desc": "Stirling-PDF — compress, merge, split, images↔PDF, OCR",    "https_port": 8446 },
+  { "key": "tools",  "name": "Utilities",  "icon": "🧰", "desc": "IT-Tools — converters, QR codes, hashes, image↔base64",     "https_port": 8447 },
+  { "key": "image",  "name": "Image tool", "icon": "🖼️", "desc": "Resize, compress to a target KB, and convert — in-browser", "https_port": 8448 }
 ]

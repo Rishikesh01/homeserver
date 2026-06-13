@@ -60,3 +60,22 @@
 	tls internal
 	reverse_proxy {$HOME_UPSTREAM}
 }
+
+# --- Web tools ---
+{$SERVER_IP}:{$STIRLING_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	reverse_proxy {$STIRLING_UPSTREAM}
+}
+
+{$SERVER_IP}:{$ITTOOLS_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	reverse_proxy {$ITTOOLS_UPSTREAM}
+}
+
+{$SERVER_IP}:{$IMAGETOOLS_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	reverse_proxy {$IMAGETOOLS_UPSTREAM}
+}

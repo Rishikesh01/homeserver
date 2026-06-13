@@ -9,6 +9,9 @@ services:
       - "${CLOUD_HTTPS:-8444}:${CLOUD_HTTPS:-8444}"              # Nextcloud (https)
       - "${PIHOLE_HTTPS:-8445}:${PIHOLE_HTTPS:-8445}"            # Pi-hole (https)
       - "${HOME_HTTPS:-443}:${HOME_HTTPS:-443}"                  # dashboard (https, port 443 = no :port in URL)
+      - "${STIRLING_HTTPS:-8446}:${STIRLING_HTTPS:-8446}"        # Stirling-PDF (https)
+      - "${ITTOOLS_HTTPS:-8447}:${ITTOOLS_HTTPS:-8447}"          # IT-Tools (https)
+      - "${IMAGETOOLS_HTTPS:-8448}:${IMAGETOOLS_HTTPS:-8448}"    # Image tool (https)
     # Lets Caddy reach the services on the host's published ports.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -21,11 +24,17 @@ services:
       PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM}
       # The hsctl web UI on the host (bind it to :8088 so this gateway can reach it).
       HOME_UPSTREAM: ${HOME_UPSTREAM:-host.docker.internal:8088}
+      STIRLING_UPSTREAM: ${STIRLING_UPSTREAM:-host.docker.internal:8090}
+      ITTOOLS_UPSTREAM: ${ITTOOLS_UPSTREAM:-host.docker.internal:8091}
+      IMAGETOOLS_UPSTREAM: ${IMAGETOOLS_UPSTREAM:-host.docker.internal:8092}
       # HTTPS ports each app is exposed on (must match services.json on the dashboard).
       VAULT_HTTPS: ${VAULT_HTTPS:-8443}
       CLOUD_HTTPS: ${CLOUD_HTTPS:-8444}
       PIHOLE_HTTPS: ${PIHOLE_HTTPS:-8445}
       HOME_HTTPS: ${HOME_HTTPS:-443}
+      STIRLING_HTTPS: ${STIRLING_HTTPS:-8446}
+      ITTOOLS_HTTPS: ${ITTOOLS_HTTPS:-8447}
+      IMAGETOOLS_HTTPS: ${IMAGETOOLS_HTTPS:-8448}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # issued certs + local CA root — back this up

@@ -1,0 +1,11 @@
+services:
+  imagetools:
+    # Tiny static server for the client-side image tool (resize / compress-to-KB /
+    # convert). All processing happens in the browser — nothing is uploaded.
+    image: nginx:1.27-alpine
+    container_name: imagetools
+    restart: unless-stopped
+    ports:
+      - "${IMAGETOOLS_PORT:-8092}:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
