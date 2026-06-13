@@ -15,8 +15,9 @@ Because the names end in `.lan` (not a public domain), the server runs its own
 certificate authority. Each device must trust it once, or browsers warn and the
 **Bitwarden / Nextcloud apps will refuse to connect**.
 
-Get the file `caddy-root-ca.crt` from the admin (AirDrop / email / USB / a USB
-stick). Then:
+**Get the cert:** on the home WiFi, open **http://192.168.0.150/** in a browser
+(or **http://ca.lan/** if the device already uses Pi-hole DNS) and tap **Download
+root.crt**. That's the whole transfer step — no AirDrop/USB needed. Then install it:
 
 - **Android:** Settings → Security → *Encryption & credentials* → *Install a
   certificate* → **CA certificate** → pick the file → accept the warning.

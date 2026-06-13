@@ -18,6 +18,7 @@ TZ_VAL="${TZ:-Asia/Kolkata}"
 VAULT_HOST="${VAULT_HOST:-vault.lan}"
 CLOUD_HOST="${CLOUD_HOST:-cloud.lan}"
 PIHOLE_HOST="${PIHOLE_HOST:-pihole.lan}"
+CA_HOST="${CA_HOST:-ca.lan}"              # plain-HTTP name that serves the root CA
 ACME_EMAIL="${ACME_EMAIL:-you@example.com}"
 TLS_DIRECTIVE="${TLS_DIRECTIVE:-tls internal}"
 # Vaultwarden is on 8082 (k8s already holds 8080 on this box). Change if needed.
@@ -90,7 +91,8 @@ EOF
 if [ ! -f pihole/custom.list ] || [ "$FORCE" -eq 1 ]; then
   { printf '%s %s\n' "$SERVER_IP" "$VAULT_HOST"
     printf '%s %s\n' "$SERVER_IP" "$CLOUD_HOST"
-    printf '%s %s\n' "$SERVER_IP" "$PIHOLE_HOST"; } > pihole/custom.list
+    printf '%s %s\n' "$SERVER_IP" "$PIHOLE_HOST"
+    printf '%s %s\n' "$SERVER_IP" "$CA_HOST"; } > pihole/custom.list
   echo "write  pihole/custom.list"
 else echo "skip   pihole/custom.list (exists)"; fi
 
@@ -104,6 +106,7 @@ ACME_EMAIL=${ACME_EMAIL}
 VAULT_UPSTREAM=host.docker.internal:${VW_HTTP_PORT}
 CLOUD_UPSTREAM=host.docker.internal:${NC_HTTP_PORT}
 PIHOLE_UPSTREAM=host.docker.internal:${PIHOLE_WEB_PORT}
+CA_HOSTS=http://${CA_HOST} http://${SERVER_IP}
 EOF
 
 # ---- wireguard ----

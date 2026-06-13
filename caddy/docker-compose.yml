@@ -20,6 +20,8 @@ services:
       VAULT_UPSTREAM: ${VAULT_UPSTREAM}
       CLOUD_UPSTREAM: ${CLOUD_UPSTREAM}
       PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM}
+      # Addresses (plain HTTP) that serve the local root CA for easy device import.
+      CA_HOSTS: ${CA_HOSTS:-http://ca.lan}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # issued certs + local CA root — back this up

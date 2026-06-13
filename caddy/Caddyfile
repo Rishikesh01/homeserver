@@ -32,3 +32,21 @@
 	redir / /admin/ 302
 	reverse_proxy {$PIHOLE_UPSTREAM}
 }
+
+# --- Local CA download ---
+# Plain HTTP on purpose: a device that doesn't trust the CA yet can't reach it
+# over HTTPS (chicken-and-egg). This serves ONLY the public root certificate
+# (never the private key), so exposing it on the LAN is safe. Reachable by the
+# server IP or http://ca.lan — browse it on a new device to install the cert.
+{$CA_HOSTS} {
+	handle /root.crt {
+		root * /data/caddy/pki/authorities/local
+		file_server
+		# MIME that makes browsers/phones offer to install it as a CA.
+		header Content-Type "application/x-x509-ca-cert"
+	}
+	handle {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Homeserver CA</title><h1>Homeserver certificate</h1><p>Install this once so <code>*.lan</code> and the Bitwarden/Nextcloud apps work without warnings.</p><p><a href="/root.crt"><b>Download root.crt</b></a></p><p>Then install it as a <b>trusted CA</b> — per-device steps are in ONBOARDING.md.</p>` 200
+	}
+}
