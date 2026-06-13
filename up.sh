@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring the whole stack up in dependency order: services -> Caddy -> WireGuard.
+# Bring the whole stack up in dependency order: services -> Caddy.
 # Uses sudo automatically if your user can't reach the Docker daemon directly.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 DC="docker compose"
 docker info >/dev/null 2>&1 || DC="sudo docker compose"
 
-for s in vaultwarden nextcloud pihole caddy wireguard; do
+for s in vaultwarden nextcloud pihole caddy; do
   if [ ! -f "$s/.env" ]; then
     echo "!! $s/.env missing — run ./bootstrap.sh first"; exit 1
   fi

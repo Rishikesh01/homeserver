@@ -34,8 +34,6 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <p>Nextcloud — files, photos, calendar.</p></a>
   <a class="card" href="https://{{.Cfg.PiholeHost}}"><h3>🛡️ Ad blocker</h3>
     <p>Pi-hole — network-wide ad blocking admin.</p></a>
-  <a class="card" href="{{.VPNUI}}"><h3>🔒 VPN</h3>
-    <p>Add a device for secure access from outside home.</p></a>
   <a class="card" href="/root.crt"><h3>📜 Certificate</h3>
     <p>Download &amp; install the trust certificate (do this once per device).</p></a>
 </div>

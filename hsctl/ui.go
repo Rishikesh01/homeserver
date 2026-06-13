@@ -112,8 +112,7 @@ func (s *uiServer) status() ([]containerStatus, error) {
 }
 
 type homeData struct {
-	Cfg   Config
-	VPNUI string
+	Cfg Config
 }
 
 func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +122,7 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	c := LoadConfig(s.repo)
 	c.Normalize()
-	render(w, homeTmpl, homeData{Cfg: c, VPNUI: fmt.Sprintf("http://%s:51821", c.ServerIP)})
+	render(w, homeTmpl, homeData{Cfg: c})
 }
 
 type adminData struct {

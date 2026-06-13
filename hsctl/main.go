@@ -53,7 +53,7 @@ func usage() {
 usage: hsctl <command> [flags]
 
   setup      configure + generate .env files (interactive, or --yes for defaults)
-  up         start the stack in order (services -> caddy -> wireguard)
+  up         start the stack in order (services -> caddy)
   down       stop the stack (--volumes also deletes data)
   status     show container status
   get-ca     write caddy-root-ca.crt for installing on devices

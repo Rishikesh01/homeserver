@@ -29,8 +29,6 @@ func cmdSetup(args []string) error {
 	fs.IntVar(&c.NCPort, "nc-port", c.NCPort, "Nextcloud host port")
 	fs.IntVar(&c.PiholeWebPort, "pihole-port", c.PiholeWebPort, "Pi-hole web port")
 	fs.StringVar(&c.PiholeDNSBind, "pihole-dns-bind", c.PiholeDNSBind, "Pi-hole :53 bind IP")
-	fs.StringVar(&c.WGSubnet, "wg-subnet", c.WGSubnet, "VPN-routed LAN subnet")
-	fs.StringVar(&c.WGHost, "wg-host", c.WGHost, "VPN public address")
 	fs.BoolVar(&c.VWSignupsAllowed, "vw-signups", c.VWSignupsAllowed, "allow open Vaultwarden signups")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -121,8 +119,6 @@ func promptConfig(c Config) Config {
 		}
 	}
 	c.PiholeDNSBind = ask("Pi-hole DNS bind IP", dnsDef)
-	c.WGSubnet = ask("VPN-routed LAN subnet", orDefault(c.WGSubnet, subnetOf(c.ServerIP)))
-	c.WGHost = ask("VPN public address (DDNS hostname or IP)", orDefault(c.WGHost, c.ServerIP))
 	c.VWSignupsAllowed = askYN("Allow open Vaultwarden signups?", c.VWSignupsAllowed)
 	return c
 }

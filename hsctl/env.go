@@ -78,21 +78,6 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		return nil, err
 	}
 
-	// wireguard ($ doubled so compose interpolation keeps the bcrypt hash intact)
-	wgPw := genPassword(20)
-	hash, err := bcryptHash(wgPw)
-	if err != nil {
-		return nil, err
-	}
-	if wrote, err := writeEnv("wireguard/.env", fmt.Sprintf(
-		"WG_HOST=%s\nPASSWORD_HASH=%s\nWG_PORT=51820\nWG_DEFAULT_ADDRESS=10.8.0.x\n"+
-			"WG_DEFAULT_DNS=%s\nWG_ALLOWED_IPS=%s\nWG_PERSISTENT_KEEPALIVE=25\n",
-		c.WGHost, dollarEscape(hash), c.ServerIP, c.WGSubnet)); err != nil {
-		return nil, err
-	} else if wrote {
-		secrets = append(secrets, Secret{"wg-easy web UI:", wgPw})
-	}
-
 	// personalized handout
 	welcome := fmt.Sprintf(`Homeserver — quick reference
   Dashboard / home portal:        https://%[8]s   /  http://%[1]s:%[9]d
@@ -100,7 +85,6 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
   Passwords (Vaultwarden):        http://%[1]s:%[2]d   /  https://%[3]s
   Files (Nextcloud):              http://%[1]s:%[4]d   /  https://%[5]s
   Pi-hole admin:                  http://%[1]s:%[6]d/admin  /  https://%[7]s
-  VPN admin (add devices):        http://%[1]s:51821
 Step-by-step per device: see ONBOARDING.md
 `, c.ServerIP, c.VWPort, c.VaultHost, c.NCPort, c.CloudHost, c.PiholeWebPort, c.PiholeHost,
 		c.HomeHost, c.UIPort)

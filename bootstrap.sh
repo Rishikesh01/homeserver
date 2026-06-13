@@ -71,8 +71,6 @@ ask NC_HTTP_PORT    "Nextcloud host port"                             "$_nc"
 ask PIHOLE_WEB_PORT "Pi-hole web port"                                "$_ph"
 if busy 53; then _dnsdef="$SERVER_IP"; else _dnsdef="0.0.0.0"; fi
 ask PIHOLE_DNS_BIND "Pi-hole DNS bind (LAN IP if another resolver holds :53, else 0.0.0.0)" "$_dnsdef"
-ask WG_SUBNET       "VPN-routed LAN subnet"                           "${SERVER_IP%.*}.0/24"
-ask WG_HOST         "VPN public address (DDNS hostname; LAN IP is fine to start)" "$SERVER_IP"
 askyn _signups      "Allow open Vaultwarden signups?"                 "y"
 : "${VW_SIGNUPS_ALLOWED:=$([ "$_signups" = yes ] && echo true || echo false)}"
 TLS_DIRECTIVE=$([ "$USE_LE" = yes ] && echo "" || echo "tls internal")
@@ -80,7 +78,7 @@ TLS_DIRECTIVE=$([ "$USE_LE" = yes ] && echo "" || echo "tls internal")
 umask 077
 { echo "# Saved by bootstrap.sh — your configuration (NOT secrets). Edit + re-run freely."
   for v in SERVER_IP TZ_VAL ACME_EMAIL VAULT_HOST CLOUD_HOST PIHOLE_HOST CA_HOST USE_LE \
-           VW_HTTP_PORT NC_HTTP_PORT PIHOLE_WEB_PORT PIHOLE_DNS_BIND WG_SUBNET WG_HOST \
+           VW_HTTP_PORT NC_HTTP_PORT PIHOLE_WEB_PORT PIHOLE_DNS_BIND \
            VW_SIGNUPS_ALLOWED; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$CONF"
 echo "Saved $CONF"
 
@@ -143,19 +141,6 @@ PIHOLE_UPSTREAM=host.docker.internal:${PIHOLE_WEB_PORT}
 CA_HOSTS=http://${CA_HOST} http://${SERVER_IP}
 EOF
 
-# wireguard: Compose interpolates env_file, so the bcrypt "$" must be doubled to "$$".
-WGUI_PW=$(genpw 20); WGUI_HASH=$(bcrypt "$WGUI_PW"); WGUI_HASH_ESC=${WGUI_HASH//\$/\$\$}
-if [ ! -f wireguard/.env ] || [ "$FORCE" -eq 1 ]; then
-  { printf 'WG_HOST=%s\n' "$WG_HOST"
-    printf 'PASSWORD_HASH=%s\n' "$WGUI_HASH_ESC"
-    printf 'WG_PORT=51820\n'
-    printf 'WG_DEFAULT_ADDRESS=10.8.0.x\n'
-    printf 'WG_DEFAULT_DNS=%s\n' "$SERVER_IP"
-    printf 'WG_ALLOWED_IPS=%s\n' "$WG_SUBNET"
-    printf 'WG_PERSISTENT_KEEPALIVE=25\n'; } > wireguard/.env
-  echo "write  wireguard/.env"; note "wg-easy web UI:" "$WGUI_PW"
-else echo "skip   wireguard/.env (exists)"; fi
-
 # personalized quick-reference for handing to users (gitignored)
 cat > WELCOME.txt <<EOF
 Homeserver — quick reference
@@ -163,7 +148,6 @@ Homeserver — quick reference
   Passwords (Vaultwarden):        http://${SERVER_IP}:${VW_HTTP_PORT}   /  https://${VAULT_HOST}
   Files (Nextcloud):              http://${SERVER_IP}:${NC_HTTP_PORT}   /  https://${CLOUD_HOST}
   Pi-hole admin:                  http://${SERVER_IP}:${PIHOLE_WEB_PORT}/admin  /  https://${PIHOLE_HOST}
-  VPN admin (add devices):        http://${SERVER_IP}:51821
 Step-by-step per device: see ONBOARDING.md
 EOF
 echo "write  WELCOME.txt"

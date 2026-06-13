@@ -10,7 +10,6 @@ Services and how they're reached:
 | Nextcloud (files) | `nextcloud/` | `http://SERVER_IP:8081` | `https://cloud.lan` |
 | Pi-hole (DNS/ad-block) | `pihole/` | `http://SERVER_IP:8053/admin` | `https://pihole.lan` |
 | Caddy (HTTPS proxy) | `caddy/` | ports 80 / 443 | — |
-| wg-easy (VPN) | `wireguard/` | `http://SERVER_IP:51821` | — |
 
 Replace `SERVER_IP` with your homeserver's LAN IP everywhere below.
 
@@ -39,7 +38,7 @@ docker compose logs -f      # Ctrl-C once it's settled
 
 Generate strong secrets with `openssl rand -base64 32`.
 
-**Order:** `vaultwarden`, `nextcloud`, `pihole` first, then `caddy`, then `wireguard`.
+**Order:** `vaultwarden`, `nextcloud`, `pihole` first, then `caddy`.
 Caddy must come up after the services it proxies.
 
 Per-service notes:
@@ -110,22 +109,20 @@ docker compose -f nextcloud/docker-compose.yml exec -u www-data app \
 
 ---
 
-## 4. DNS strategy — why it's opt-in (single box, no SPOF)
+## 4. DNS strategy — resolving `*.lan` on the LAN
 
-With **one** always-on box, do **not** set Pi-hole as the router's DHCP DNS. If you did and
-the box went down (reboot, update, crash), the whole LAN would lose DNS and therefore the
-internet. So:
+A device resolves `vault.lan` only if its DNS queries reach Pi-hole. By default devices ask
+the router, which doesn't know `.lan`. Pick one:
 
-- **Leave the router's DHCP DNS at its default.** The LAN resolves the internet without ever
-  depending on the homeserver.
-- Resolve the `*.lan` names **only where you want them**, via one of:
-  - **The VPN (recommended)** — see §5. The tunnel pushes Pi-hole as DNS *while connected*,
-    so names + ad-blocking work, scoped to the tunnel. No permanent dependency.
-  - **Per-device DNS** — manually set a device's DNS to `SERVER_IP`. That device gets names
-    + ad-blocking; if the box is down, switch it back to automatic.
-  - **`/etc/hosts`** on a computer (won't work on phones).
-- **Don't** use "primary = Pi-hole, secondary = 1.1.1.1" in DHCP — clients query both in
-  parallel, so blocking leaks and failover is unreliable.
+- **Recommended — one router setting (every device, no per-device work):** in the router's
+  DHCP settings set **Primary DNS = `SERVER_IP`** and leave **Secondary blank**. Every device
+  then resolves `*.lan` and gets ad-blocking automatically. Requires a **DHCP reservation** so
+  `SERVER_IP` never changes.
+  - **Tradeoff (SPOF):** Pi-hole becomes the LAN's only resolver, so if the box is down the
+    LAN loses DNS until you clear that field (~30-second revert). Don't add a public
+    "secondary" — OSes query both in parallel, so blocking leaks and failover is unreliable.
+- **Alternative — per device:** set DNS to `SERVER_IP` only on chosen devices. No SPOF, but
+  repeat per device (`/etc/hosts` works on computers, not phones).
 
 The name→IP records live in `pihole/custom.list` (bind-mounted), one `IP hostname` per line:
 
@@ -137,70 +134,8 @@ SERVER_IP pihole.lan
 
 After editing: `docker exec pihole pihole reloaddns`.
 
----
-
-## 5. VPN (wg-easy) — remote access + name resolution
-
-The VPN is how you reach the services from outside home **and** how `*.lan` names resolve
-without touching the router. While connected, the tunnel hands the client Pi-hole as DNS and
-routes only the LAN subnet (split tunnel) — so internet stays direct and a box outage never
-breaks the client's general connectivity.
-
-### 5.1 Configure
-
-```bash
-cd wireguard
-cp .env.example .env
-```
-
-Edit `wireguard/.env`:
-- `WG_HOST` — your **public** address. Home IPs change, so use DDNS (see §5.2), e.g.
-  `yourname.tplinkdns.com`.
-- `PASSWORD_HASH` — generate it:
-  ```bash
-  docker run --rm ghcr.io/wg-easy/wg-easy:14 wgpw 'YourStrongPassword'
-  ```
-  Paste the hash **without** the surrounding quotes it prints.
-- `WG_DEFAULT_DNS=SERVER_IP` — pushes Pi-hole to clients.
-- `WG_ALLOWED_IPS=192.168.0.0/24` — set to your LAN subnet (split tunnel). Use `0.0.0.0/0,
-  ::/0` only if you want to route ALL client traffic through home (not recommended here).
-
-Start it:
-
-```bash
-docker compose up -d
-```
-
-### 5.2 Router: DDNS + one port-forward (TP-Link)
-
-TP-Link stock firmware can't do local DNS, but it does DDNS and port-forwarding, which is all
-the VPN needs:
-
-1. **DDNS** — TP-Link web UI → look for **DDNS** (often under *Network* or its own menu) →
-   enable **TP-Link DDNS** → register a free hostname (e.g. `yourname.tplinkdns.com`). Put
-   that in `WG_HOST`.
-2. **Port-forward** — *NAT Forwarding → Virtual Servers* (a.k.a. Port Forwarding) → add:
-   - External port: `51820`, Internal port: `51820`, Protocol: **UDP**,
-     Internal IP: `SERVER_IP`.
-   - **Only forward 51820/udp.** Never forward the web UI (51821) or the service ports.
-
-### 5.3 Add a device (client)
-
-1. Open the web UI at `http://SERVER_IP:51821`, log in with the password you set.
-2. Click **New Client**, name it (e.g. "phone").
-3. **Phone:** install the official **WireGuard** app → scan the QR code shown.
-   **Desktop:** download the `.conf`, import it into the WireGuard app.
-4. Toggle the tunnel on. Test: browse to `https://vault.lan` and open a site with ads.
-
-### 5.4 Make the fallback graceful
-
-- **Don't enable a VPN "kill switch" / "block connections without VPN."** That's the one
-  setting that would break a client's internet when the box is down. Leave it off and the
-  client simply falls back to its normal connection.
-- For the cleanest behavior (only `*.lan` uses Pi-hole even while the tunnel is up), edit the
-  client config's DNS line to add the search domain — change `DNS = SERVER_IP` to
-  `DNS = SERVER_IP, lan`. Supported by the official WireGuard clients and systemd-resolved.
-  Otherwise, if the box dies while you're connected, just toggle the tunnel off.
+> **No VPN.** Remote access via WireGuard was removed — this box isn't guaranteed to be up,
+> so a VPN into it isn't worth maintaining. Use the services on the home network.
 
 ---
 
@@ -220,9 +155,6 @@ dig +short @SERVER_IP vault.lan                            # -> SERVER_IP
 
 # via Caddy (skip -k once the CA is trusted)
 curl -sk --resolve vault.lan:443:SERVER_IP https://vault.lan/
-
-# VPN
-curl -s -o /dev/null -w "wg-easy UI %{http_code}\n" http://SERVER_IP:51821/
 ```
 
 ---
@@ -234,7 +166,6 @@ Back up these named volumes regularly:
 - `nextcloud_nc-data` — files
 - `nextcloud_db-data` — Nextcloud database
 - `caddy_caddy-data` — certs + local CA root
-- `wireguard_wg-data` — VPN keys + client configs
 
 Snapshot example:
 ```bash
@@ -251,7 +182,4 @@ docker run --rm -v vaultwarden_vw-data:/d -v "$PWD":/b alpine \
 | Pi-hole container won't start | Port 53 already held — see §2. |
 | Browser cert warning on `*.lan` | Caddy CA not installed on the device — §3. |
 | Nextcloud "Trusted domain error" | Add the hostname to trusted_domains — §3. |
-| `*.lan` doesn't resolve | Device isn't using Pi-hole. Connect the VPN, or set the device DNS to `SERVER_IP`. |
-| VPN connects but no internet | Likely full-tunnel + a routing issue, or a kill switch is on. Use split tunnel (`WG_ALLOWED_IPS`=LAN) and disable the kill switch — §5.4. |
-| VPN won't connect from outside | DDNS not updating, or 51820/udp not forwarded to `SERVER_IP` — §5.2. |
-| `PASSWORD_HASH` rejected | Don't wrap it in quotes in `.env`; `env_file` passes it literally. Regenerate with `wgpw`. |
+| `*.lan` doesn't resolve | Device isn't using Pi-hole — point the router's DHCP DNS at `SERVER_IP`, or set the device's DNS manually — §4. |

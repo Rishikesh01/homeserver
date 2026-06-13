@@ -9,15 +9,17 @@ and `.env`, so you can start/stop them independently.
 | Nextcloud | Encrypted cloud file storage | `nextcloud/` | http://HOST:8081 | https://cloud.lan |
 | Pi-hole | Network-wide DNS ad-blocker | `pihole/` | http://HOST:8053/admin | https://pihole.lan |
 | Caddy | Reverse proxy / HTTPS front door | `caddy/` | — | ports 80 + 443 |
-| wg-easy | WireGuard VPN (remote access + DNS) | `wireguard/` | http://HOST:51821 | — |
 | hsctl UI | Web dashboard + family portal | `hsctl/` | http://HOST:8088 | https://home.lan |
 
-Start order: the three services first, then `caddy/`, then `wireguard/`. The whole stack
-is driven by **`hsctl`** (a Go tool with a web UI) — see [First-time setup](#first-time-setup).
+Start order: the three services first, then `caddy/`. The whole stack is driven by
+**`hsctl`** (a Go tool with a web UI) — see [First-time setup](#first-time-setup).
 
 > **Full step-by-step setup is in [CONFIGURE.md](CONFIGURE.md)** — per-service `.env`, HTTPS/CA
-> trust, DNS strategy, and the VPN (DDNS + port-forward + client setup). This README is the
-> overview.
+> trust, and DNS strategy. This README is the overview.
+
+> **No VPN here.** This box isn't guaranteed to be up, so remote access via VPN was
+> removed. Use the services on the home network; `*.lan` names resolve LAN-wide once the
+> router hands out Pi-hole as DNS (see DNS strategy below).
 
 ## First-time setup
 
@@ -27,7 +29,7 @@ UI**, so non-technical users never need a terminal. Build it once, then run setu
 ```bash
 cd hsctl && ~/sdk/go/bin/go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
 hsctl setup        # asks: LAN IP, timezone, admin email, hostnames, ports, TLS mode
-hsctl up           # start the stack (services -> caddy -> wireguard)
+hsctl up           # start the stack (services -> caddy)
 hsctl get-ca       # write caddy-root-ca.crt to install on devices
 hsctl ui           # serve the dashboard -> https://home.lan  (or http://HOST:8088)
 ```
@@ -70,29 +72,27 @@ and make it reachable across the whole LAN:
    `sudo ss -tulpn | grep ':53 '`.
 3. **Give the server a static IP** (or a DHCP reservation). A DNS server whose address
    changes breaks everything pointing at it.
-4. **Hand out DNS** — see "DNS strategy" below. With a single server, **do not** set
-   Pi-hole as the router's DHCP DNS.
+4. **Hand out DNS** — see "DNS strategy" below.
 
 Caddy (`:80`/`:443`) and the service ports listen on the LAN. There's no host firewall
 here; if your homeserver runs `ufw`, allow the ports (use whatever ports bootstrap chose):
 `sudo ufw allow 80,443,53,8080,8081,8053/tcp && sudo ufw allow 53/udp`.
 
-### DNS strategy (single server = no SPOF)
+### DNS strategy — resolving `*.lan` LAN-wide
 
-With only one always-on box, **don't make Pi-hole the LAN's mandatory resolver.** If the
-router hands out Pi-hole as everyone's DNS and the box goes down (reboot, update, crash),
-the whole LAN loses internet. So:
+A device only resolves `vault.lan` if its DNS queries reach Pi-hole. By default devices
+ask the router, which doesn't know `.lan`. Two ways to fix that:
 
-- **Leave the router's DHCP DNS at its default** (router/ISP/public). The network resolves
-  DNS without ever depending on the homeserver — outages don't break internet.
-- **Opt in per device:** on the machines you want ad-blocked (PC, phone, a TV), manually
-  set their DNS to the homeserver's IP. Those devices also get the `*.lan` names. If the
-  box is down, switch them back to automatic.
-- **Avoid "primary = Pi-hole, secondary = 1.1.1.1" in DHCP.** OSes query both in
-  parallel/round-robin, so blocking leaks *and* failover is unreliable — worst of both.
-- **Want always-on, network-wide blocking?** That needs a second always-on device (a
-  cheap Pi is the usual answer) running a 2nd Pi-hole, with both handed out via DHCP and
-  lists kept in sync. Not possible to do safely with a single box.
+- **Recommended — one router setting (all devices, no per-device fiddling):** in the
+  router's DHCP settings set **Primary DNS = the server's IP** and leave **Secondary
+  blank**. Every device then resolves `*.lan` automatically and gets ad-blocking, now and
+  in future. Requires a **DHCP reservation** so the server's IP never changes.
+  - **Tradeoff (SPOF):** with Pi-hole as the only DNS, if the box is down the LAN loses
+    DNS until you clear that field. It's a ~30-second revert; for a home LAN it's the
+    normal, convenient choice. Don't set a public "secondary" DNS — OSes query both in
+    parallel, so blocking leaks and failover is unreliable.
+- **Alternative — per device:** set DNS to the server's IP only on the devices you choose.
+  No SPOF, but you repeat it per device.
 
 > **WiFi note:** if the server is on WiFi, some access points enable "client/AP isolation"
 > which blocks device-to-device traffic and will make the server unreachable from other
@@ -178,18 +178,15 @@ backends — the keys live on the server.
 
 ## Backups
 
-Back up these named Docker volumes regularly:
+Encrypted backups (restic) are built into `hsctl` — `hsctl backup config` then
+`hsctl backup run` (see [hsctl/README.md](hsctl/README.md)). It snapshots a Postgres dump
+plus these named Docker volumes:
 - `vaultwarden_vw-data` — all your passwords
 - `nextcloud_nc-data` — your files
 - `nextcloud_db-data` — Nextcloud database
 - `caddy_caddy-data` — issued certs + local CA root
-- `wireguard_wg-data` — VPN keys + client configs
-
-Example: `docker run --rm -v vaultwarden_vw-data:/d -v $PWD:/b alpine tar czf /b/vw-backup.tgz -C /d .`
 
 ## Run / stop everything
-
-From this directory (services first, Caddy + VPN last):
 
 ```bash
 ./up.sh                 # start all, in dependency order (auto-uses sudo if needed)
@@ -199,6 +196,6 @@ From this directory (services first, Caddy + VPN last):
 Or by hand:
 
 ```bash
-for s in vaultwarden nextcloud pihole caddy wireguard; do (cd $s && docker compose up -d); done
-for s in wireguard caddy pihole nextcloud vaultwarden; do (cd $s && docker compose down); done
+for s in vaultwarden nextcloud pihole caddy; do (cd $s && docker compose up -d); done
+for s in caddy pihole nextcloud vaultwarden; do (cd $s && docker compose down); done
 ```

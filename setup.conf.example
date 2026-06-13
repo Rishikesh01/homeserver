@@ -19,6 +19,4 @@ VW_HTTP_PORT=8080               # bootstrap bumps this if the port is already in
 NC_HTTP_PORT=8081
 PIHOLE_WEB_PORT=8053
 PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver holds :53
-WG_SUBNET=192.168.1.0/24        # your LAN subnet (split tunnel)
-WG_HOST=192.168.1.10            # public DDNS hostname for real remote access
 VW_SIGNUPS_ALLOWED=true         # false = invitation-only

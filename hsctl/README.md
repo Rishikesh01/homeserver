@@ -20,7 +20,7 @@ group once: `sudo usermod -aG docker $USER` then log out/in.
 
 ```bash
 hsctl setup             # interactive config -> writes every .env + setup.conf
-hsctl up                # start the stack (services -> caddy -> wireguard)
+hsctl up                # start the stack (services -> caddy)
 hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
@@ -39,7 +39,7 @@ sudo hsctl backup run   # snapshot DB dump + volumes + config
 hsctl ui --addr 192.168.0.150:8088    # bind to your LAN IP — NOT 0.0.0.0 if exposed
 ```
 
-- **`/`** — family portal: cards linking to Vaultwarden/Nextcloud/Pi-hole/VPN and a
+- **`/`** — family portal: cards linking to Vaultwarden/Nextcloud/Pi-hole and a
   one-click **certificate install**. No login.
 - **`/admin`** — basic-auth (user `admin`, password in `.ui-password`): container
   status + Start/Stop/Restart, and **Backups** (set destination, run, view snapshots).

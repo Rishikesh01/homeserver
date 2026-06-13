@@ -27,8 +27,6 @@ type Config struct {
 	PiholeWebPort    int
 	UIPort           int // hsctl web UI port (Caddy upstream + direct IP access)
 	PiholeDNSBind    string
-	WGSubnet         string
-	WGHost           string
 	VWSignupsAllowed bool
 }
 
@@ -65,12 +63,6 @@ func Defaults() Config {
 // Normalize fills any derived field left blank, from the (final) ServerIP. Call it
 // after applying setup.conf / .env / flag overrides.
 func (c *Config) Normalize() {
-	if c.WGSubnet == "" {
-		c.WGSubnet = subnetOf(c.ServerIP)
-	}
-	if c.WGHost == "" {
-		c.WGHost = c.ServerIP
-	}
 	if c.PiholeDNSBind == "" {
 		c.PiholeDNSBind = "0.0.0.0"
 		if portBusy(53) {
@@ -129,8 +121,6 @@ func overlayFromConf(c *Config, repo string) {
 	c.PiholeWebPort = atoiDef(get("PIHOLE_WEB_PORT", ""), c.PiholeWebPort)
 	c.UIPort = atoiDef(get("UI_PORT", ""), c.UIPort)
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
-	c.WGSubnet = get("WG_SUBNET", c.WGSubnet)
-	c.WGHost = get("WG_HOST", c.WGHost)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
 }
 
@@ -191,17 +181,6 @@ func overlayFromEnv(c *Config, repo string) {
 			c.PiholeDNSBind = v
 		}
 	}
-	if kv, err := readKV(filepath.Join(repo, "wireguard/.env")); err == nil {
-		if v := kv["WG_HOST"]; v != "" {
-			c.WGHost = v
-		}
-		if v := kv["WG_ALLOWED_IPS"]; v != "" {
-			c.WGSubnet = v
-		}
-		if v := kv["WG_DEFAULT_DNS"]; v != "" {
-			c.ServerIP = v
-		}
-	}
 }
 
 // portFromUpstream parses "host.docker.internal:8082" -> 8082.
@@ -252,7 +231,6 @@ func (c Config) Save(repo string) error {
 		{"VW_HTTP_PORT", strconv.Itoa(c.VWPort)}, {"NC_HTTP_PORT", strconv.Itoa(c.NCPort)},
 		{"PIHOLE_WEB_PORT", strconv.Itoa(c.PiholeWebPort)}, {"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
-		{"WG_SUBNET", c.WGSubnet}, {"WG_HOST", c.WGHost},
 		{"VW_SIGNUPS_ALLOWED", tf(c.VWSignupsAllowed)},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
@@ -340,14 +318,6 @@ func detectTZ() string {
 		}
 	}
 	return "Etc/UTC"
-}
-
-func subnetOf(ip string) string {
-	i := strings.LastIndex(ip, ".")
-	if i < 0 {
-		return "192.168.1.0/24"
-	}
-	return ip[:i] + ".0/24"
 }
 
 // portBusy reports whether a TCP port is currently listening (via `ss`).

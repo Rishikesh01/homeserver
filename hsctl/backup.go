@@ -19,7 +19,7 @@ import (
 var backupVolumes = []string{
 	"vaultwarden_vw-data",
 	"nextcloud_nc-data", "nextcloud_db-data", "nextcloud_nc-html",
-	"caddy_caddy-data", "wireguard_wg-data",
+	"caddy_caddy-data",
 }
 
 const (

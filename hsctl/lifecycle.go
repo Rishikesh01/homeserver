@@ -7,10 +7,10 @@ import (
 )
 
 // services in start order. down reverses this.
-var services = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "wireguard"}
+var services = []string{"vaultwarden", "nextcloud", "pihole", "caddy"}
 
 // container names belonging to the stack (for status filtering).
-var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "wg-easy"}
+var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy"}
 
 func missingEnv() []string {
 	var miss []string

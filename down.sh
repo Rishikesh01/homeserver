@@ -10,7 +10,7 @@ docker info >/dev/null 2>&1 || DC="sudo docker compose"
 EXTRA=""
 [ "${1:-}" = "--volumes" ] && EXTRA="-v" && echo "!! --volumes: data volumes will be DELETED"
 
-for s in wireguard caddy pihole nextcloud vaultwarden; do
+for s in caddy pihole nextcloud vaultwarden; do
   echo "== down: $s =="
   ( cd "$s" && $DC down $EXTRA )
 done
