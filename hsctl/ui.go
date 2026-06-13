@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"fmt"
 	"html/template"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yuin/goldmark"
 )
 
 type uiServer struct {
@@ -27,6 +29,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
+	mux.HandleFunc("/help", s.handleHelp)
 	mux.HandleFunc("/root.crt", s.handleCert)
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
@@ -127,6 +130,26 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
+}
+
+type helpData struct{ Body template.HTML }
+
+// handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide.
+func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
+	c := LoadConfig(s.repo)
+	c.Normalize()
+	md, err := os.ReadFile(filepath.Join(s.repo, "ONBOARDING.md"))
+	if err != nil {
+		http.Error(w, "setup guide not available", http.StatusNotFound)
+		return
+	}
+	src := strings.ReplaceAll(string(md), "SERVER_IP", c.ServerIP)
+	var buf bytes.Buffer
+	if err := goldmark.Convert([]byte(src), &buf); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, helpTmpl, helpData{Body: template.HTML(buf.String())})
 }
 
 type adminData struct {

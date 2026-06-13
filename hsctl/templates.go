@@ -16,6 +16,10 @@ table{width:100%;border-collapse:collapse;margin:8px 0 18px}td,th{text-align:lef
 .flash{background:rgba(79,140,255,.12);border:1px solid var(--accent);padding:10px;border-radius:10px;margin-bottom:18px}
 .note{background:rgba(255,196,0,.1);border:1px solid #6b5800;color:#ffd98a;padding:12px;border-radius:10px;margin:18px 0}
 a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}code{background:#000;padding:1px 6px;border-radius:5px}
+.md h1,.md h2,.md h3{margin:20px 0 8px}.md ul,.md ol{padding-left:22px}.md img{max-width:100%}
+.md pre{background:#0b0d11;border:1px solid var(--line,#262b34);border-radius:8px;padding:12px;overflow:auto}
+.md blockquote{border-left:3px solid var(--accent);margin:12px 0;padding:4px 12px;color:var(--muted);background:rgba(79,140,255,.06)}
+.md th,.md td{border:1px solid #262b34}
 `
 
 const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -32,8 +36,10 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <p>{{.Desc}}</p></a>
   {{end}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
     <p>Install this once per device so the apps load without warnings.</p></a>
+  <a class="card" href="/help"><h3>📖 Setup guide</h3>
+    <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
 </div>
-<p class="foot">Trouble? See ONBOARDING.md, or ask your admin. · <a href="/admin">Admin</a></p>
+<p class="foot">Trouble? Open the <a href="/help">Setup guide</a>, or ask your admin. · <a href="/admin">Admin</a></p>
 </div></body></html>`
 
 const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -93,4 +99,12 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 scheduled backups run from a root timer, and a UI/CLI run needs the tool to have that
 access. First time: set a destination above, then run <code>sudo hsctl backup init</code>.</div>
 <p class="foot"><a href="/admin">← Admin</a></p>
+</div></body></html>`
+
+const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<p><a href="/">← Dashboard</a></p>
+<div class="md">{{.Body}}</div>
+<p class="foot"><a href="/">← Back to dashboard</a></p>
 </div></body></html>`
