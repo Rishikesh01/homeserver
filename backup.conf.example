@@ -1,0 +1,15 @@
+# Example hsctl backup config. Normally written for you by:
+#   hsctl backup config --repo <dest> [--retention "..."]
+# Copy to backup.conf only to pre-seed it by hand. backup.conf is gitignored (it's
+# host-specific). The repo PASSWORD is separate, in .restic-password (auto-generated;
+# back it up elsewhere — without it the backups are unrecoverable).
+
+# restic repository = where backups are stored. Off the server is strongly recommended.
+#   /mnt/usb/restic               local path / external USB drive
+#   sftp:user@nas:/backups        another machine over SSH
+#   b2:your-bucket:homeserver     Backblaze B2
+#   s3:s3.region.amazonaws.com/your-bucket
+RESTIC_REPO=/mnt/usb/restic
+
+# restic retention policy, applied by `hsctl backup run` and `hsctl backup forget`.
+RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6

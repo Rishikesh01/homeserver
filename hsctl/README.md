@@ -1,7 +1,7 @@
 # hsctl — homeserver control tool
 
-A single Go binary (no external Go deps) that configures, runs, and backs up the
-stack, and serves a **web UI** so non-technical users never need the terminal.
+A single Go binary that configures, runs, and backs up the stack, and serves a **web
+UI** so non-technical users never need the terminal.
 
 ## Build & install
 
@@ -26,19 +26,35 @@ hsctl down              # stop (down --volumes also deletes data)
 hsctl install           # run the dashboard as a systemd service (auto-start on boot)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
-hsctl backup config --repo /mnt/usb/restic   # set a destination (USB/sftp:/b2:/s3:)
-sudo hsctl backup init  # create the encrypted restic repo (first time)
-sudo hsctl backup run   # snapshot: DB dump + data volumes + config
-hsctl backup list       # list snapshots
-sudo hsctl backup restore latest --target /tmp/restore   # extract a snapshot (then see README)
 ```
-
-Backups are encrypted by restic — keep `.restic-password` safe (lost = unrecoverable). The
-full restore (disaster-recovery) walkthrough is in the main [README](../README.md#backup--restore).
 
 `setup` autodetects the LAN IP/timezone, picks free host ports, reads any existing
 `.env` so it stays consistent with a running stack, and saves answers to `setup.conf`
 (re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
+
+## Backups & restore
+
+```bash
+hsctl backup config --repo <dest>     # set destination (also: --retention, --password)
+sudo hsctl backup init                # create the encrypted repo (first time)
+sudo hsctl backup run                 # snapshot: Postgres dump + data volumes + config
+hsctl backup list                     # list snapshots
+sudo hsctl backup restore [snap] --target <dir>   # default snapshot: latest
+sudo hsctl backup forget              # apply the retention policy + prune
+```
+
+Two config files (gitignored, in the repo root):
+
+- **`backup.conf`** — `RESTIC_REPO` (the destination) and `RETENTION` (restic forget
+  policy). Written by `backup config`; see [`backup.conf.example`](../backup.conf.example).
+  Destinations: local path / USB (`/mnt/usb/restic`), another host (`sftp:user@host:/path`),
+  Backblaze (`b2:bucket:path`), or S3 (`s3:…`).
+- **`.restic-password`** — the repo encryption password, auto-generated on first
+  `init`/`run`. **Back this up separately** — without it the backups are unrecoverable.
+
+`init`/`run`/`restore`/`forget` need **restic installed** and **root** (to read the Docker
+volume files). The full disaster-recovery walkthrough (putting the volumes + DB dump back)
+is in the main [README](../README.md#backup--restore).
 
 ## Shell completion
 
@@ -74,5 +90,5 @@ install` does the same for the dashboard process. For the nightly backup timer t
 
 ## Files it creates (all gitignored)
 
-`setup.conf` (your settings) · `WELCOME.txt` (handout) · `.secrets.txt` (logins) ·
-`.ui-password` · `backup.conf` · `.restic-password` (back this up separately!).
+`setup.conf` (your settings) · `WELCOME.txt` (handout) · `.ui-password` (dashboard admin) ·
+`backup.conf` (backup destination) · `.restic-password` (back this up separately!).
