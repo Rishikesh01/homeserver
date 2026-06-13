@@ -1,0 +1,34 @@
+{
+	# Used only when issuing real Let's Encrypt certs (public domains).
+	email {$ACME_EMAIL}
+}
+
+# --- Vaultwarden ---
+{$VAULT_HOST} {
+	{$TLS_DIRECTIVE}
+	reverse_proxy {$VAULT_UPSTREAM}
+}
+
+# --- Nextcloud ---
+{$CLOUD_HOST} {
+	{$TLS_DIRECTIVE}
+	reverse_proxy {$CLOUD_UPSTREAM}
+
+	# Service-discovery redirects Nextcloud expects at the domain root.
+	redir /.well-known/carddav /remote.php/dav 301
+	redir /.well-known/caldav /remote.php/dav 301
+	redir /.well-known/webfinger /index.php/.well-known/webfinger 301
+	redir /.well-known/nodeinfo /index.php/.well-known/nodeinfo 301
+
+	header {
+		Strict-Transport-Security "max-age=15552000; includeSubDomains"
+	}
+}
+
+# --- Pi-hole ---
+{$PIHOLE_HOST} {
+	{$TLS_DIRECTIVE}
+	# Send the bare hostname straight to the admin UI.
+	redir / /admin/ 302
+	reverse_proxy {$PIHOLE_UPSTREAM}
+}

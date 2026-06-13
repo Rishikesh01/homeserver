@@ -13,8 +13,6 @@ services:
       SIGNUPS_ALLOWED: ${VW_SIGNUPS_ALLOWED:-true}
       # Send invitations only — recommended after initial setup.
       INVITATIONS_ALLOWED: "true"
-      # Websocket notifications are served on the same port in v1.29+.
-      WEBSOCKET_ENABLED: "true"
     volumes:
       - vw-data:/data
     ports:

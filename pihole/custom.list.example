@@ -1,0 +1,7 @@
+# Pi-hole Local DNS records — hosts-file format: "<IP> <hostname>".
+# Copy to custom.list and set IP to your homeserver's LAN IP, then:
+#   docker exec pihole pihole reloaddns
+# Any device using Pi-hole as its DNS will resolve these names.
+192.168.1.10 vault.lan
+192.168.1.10 cloud.lan
+192.168.1.10 pihole.lan

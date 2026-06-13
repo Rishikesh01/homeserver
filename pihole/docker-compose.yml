@@ -5,8 +5,11 @@ services:
     container_name: pihole
     restart: unless-stopped
     ports:
-      - "53:53/tcp"
-      - "53:53/udp"
+      # Default 0.0.0.0 = listen on every interface (LAN-wide). If something else
+      # already holds :53 on this host (systemd-resolved, or libvirt/LXC dnsmasq),
+      # either free it or pin PIHOLE_DNS_BIND to this host's LAN IP in .env.
+      - "${PIHOLE_DNS_BIND:-0.0.0.0}:53:53/tcp"
+      - "${PIHOLE_DNS_BIND:-0.0.0.0}:53:53/udp"
       # Web admin UI. Reach it at http://<host>:8053/admin
       - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
     environment:
@@ -16,9 +19,12 @@ services:
       # Upstream resolvers (semicolon separated). Cloudflare + Quad9 here.
       FTLCONF_dns_upstreams: ${PIHOLE_UPSTREAMS:-1.1.1.1;9.9.9.9}
       # Reply to DNS queries arriving on any interface.
-      FTLCONF_dns_listeningMode: all
+      FTLCONF_dns_listeningMode: ALL
     volumes:
       - pihole-etc:/etc/pihole
+      # Local DNS A-records (*.lan -> your server). Edit custom.list, then:
+      #   docker exec pihole pihole reloaddns
+      - ./custom.list:/etc/pihole/hosts/custom.list:ro
     cap_add:
       - SYS_NICE       # lets FTL tune its own priority; harmless if denied
     dns:
