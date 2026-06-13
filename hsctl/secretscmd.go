@@ -54,8 +54,11 @@ func secretsShow(repo string) error {
 		fmt.Println("No logins found — has the stack been set up? Run: hsctl setup")
 		return nil
 	}
-	fmt.Println("\nThese live in the .env files (plaintext on disk) — protect them with full-disk")
-	fmt.Println("encryption, and save them into Vaultwarden.")
+	fmt.Println("\nNote: these are the secrets GENERATED AT SETUP (read from the .env files). If")
+	fmt.Println("you've since changed a password inside an app (e.g. your Nextcloud or Vaultwarden")
+	fmt.Println("login), the new one is NOT shown here — the .env value is the original.")
+	fmt.Println("These are plaintext on disk: protect them with full-disk encryption, and save")
+	fmt.Println("them into Vaultwarden.")
 	return nil
 }
 
