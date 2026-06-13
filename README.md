@@ -5,7 +5,7 @@ and `.env`, so you can start/stop them independently.
 
 | Service | What | Folder | Direct URL | Via Caddy (HTTPS) |
 |---------|------|--------|-----------|-------------------|
-| Vaultwarden | FOSS password manager (Bitwarden-compatible) | `vaultwarden/` | http://HOST:8080 | https://vault.lan |
+| Vaultwarden | FOSS password manager (Bitwarden-compatible) | `vaultwarden/` | http://HOST:8082 | https://vault.lan |
 | Nextcloud | Encrypted cloud file storage | `nextcloud/` | http://HOST:8081 | https://cloud.lan |
 | Pi-hole | Network-wide DNS ad-blocker | `pihole/` | http://HOST:8053/admin | https://pihole.lan |
 | Caddy | Reverse proxy / HTTPS front door | `caddy/` | — | ports 80 + 443 |
@@ -19,7 +19,20 @@ Start order: the three services first, then `caddy/`, then `wireguard/`.
 
 ## First-time setup
 
-For each service:
+**Fast path (reproducible):** generate every `.env` with fresh random secrets and
+bring the stack up:
+
+```bash
+./bootstrap.sh     # writes all .env + pihole/custom.list; prints logins to .secrets.txt
+./up.sh            # starts everything in order; ./down.sh stops it
+./get-ca.sh        # extract Caddy's root CA to install on your devices
+```
+
+`bootstrap.sh` never overwrites an existing `.env`, so re-running is safe. Deploying on
+a different machine? Override the host's IP: `SERVER_IP=192.168.1.50 ./bootstrap.sh`.
+Onboarding a family member / new device → see **[ONBOARDING.md](ONBOARDING.md)**.
+
+**Manual path (per service):**
 
 ```bash
 cd <service>
@@ -39,9 +52,10 @@ and make it reachable across the whole LAN:
 1. **Copy the folder** to the homeserver and do the per-service `.env` setup above.
 2. **Pi-hole local DNS** — `cp pihole/custom.list.example pihole/custom.list` and set the
    IP to the homeserver's LAN IP for all three names.
-3. **Free port 53 if needed** — Pi-hole binds `0.0.0.0:53` by default. If the host runs
-   `systemd-resolved` (most Ubuntu) it owns :53; free it (see below) or pin
-   `PIHOLE_DNS_BIND` to the host's LAN IP in `pihole/.env`.
+3. **Port 53** — this host runs `systemd-resolved`, which holds :53 on its loopback stub,
+   so Pi-hole is pinned to the LAN IP via `PIHOLE_DNS_BIND` (see below) instead of
+   `0.0.0.0`. On a host where :53 is free, you can set `PIHOLE_DNS_BIND=0.0.0.0` to serve
+   every interface.
 4. **Give the server a static IP** (or a DHCP reservation). A DNS server whose address
    changes breaks everything pointing at it.
 5. **Hand out DNS** — see "DNS strategy" below. With a single server, **do not** set
@@ -49,7 +63,7 @@ and make it reachable across the whole LAN:
 
 Everything is already LAN-listenable by design: Caddy (`:80`/`:443`) and every service
 port bind `0.0.0.0`. There's no host firewall here; if your homeserver runs `ufw`, allow
-the ports: `sudo ufw allow 80,443,53,8080,8081,8053/tcp && sudo ufw allow 53/udp`.
+the ports: `sudo ufw allow 80,443,53,8082,8081,8053/tcp && sudo ufw allow 53/udp`.
 
 ### DNS strategy (single server = no SPOF)
 
@@ -74,13 +88,13 @@ the whole LAN loses internet. So:
 
 ## ⚠️ Pi-hole + port 53
 
-On this host `systemd-resolved` is **inactive**; port 53 is held by **libvirt/LXC
-dnsmasq** on the virtual-bridge IPs (`192.168.122.1`, `10.0.3.1`). To avoid that
-clash, the Pi-hole compose file binds DNS to your LAN IP only via `PIHOLE_DNS_BIND`
-(default `192.168.0.201`) instead of `0.0.0.0`. If your LAN IP changes, update
-`PIHOLE_DNS_BIND` in `pihole/.env`.
+On this host `systemd-resolved` is **active** and holds port 53 on its loopback stub
+(`127.0.0.53` / `127.0.0.54`). Binding Pi-hole to `0.0.0.0:53` would clash with it, so
+`pihole/.env` pins `PIHOLE_DNS_BIND=192.168.0.150` (this server's LAN IP) — Pi-hole then
+serves DNS on the LAN while the stub keeps handling the host's own lookups. If the LAN IP
+changes, update `PIHOLE_DNS_BIND` in `pihole/.env`.
 
-If you ever move Pi-hole to a host where `systemd-resolved` *does* hold :53, free it:
+Alternatively, free :53 entirely (then you can bind `0.0.0.0`):
 
 ```bash
 sudo sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
@@ -165,7 +179,13 @@ Example: `docker run --rm -v vaultwarden_vw-data:/d -v $PWD:/b alpine tar czf /b
 From this directory (services first, Caddy + VPN last):
 
 ```bash
+./up.sh                 # start all, in dependency order (auto-uses sudo if needed)
+./down.sh               # stop all (reverse order); ./down.sh --volumes also wipes data
+```
+
+Or by hand:
+
+```bash
 for s in vaultwarden nextcloud pihole caddy wireguard; do (cd $s && docker compose up -d); done
-# stop:
 for s in wireguard caddy pihole nextcloud vaultwarden; do (cd $s && docker compose down); done
 ```

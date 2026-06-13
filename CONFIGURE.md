@@ -6,7 +6,7 @@ Services and how they're reached:
 
 | Service | Folder | Direct (LAN) | Friendly name (needs DNS) |
 |---------|--------|--------------|---------------------------|
-| Vaultwarden (passwords) | `vaultwarden/` | `http://SERVER_IP:8080` | `https://vault.lan` |
+| Vaultwarden (passwords) | `vaultwarden/` | `http://SERVER_IP:8082` | `https://vault.lan` |
 | Nextcloud (files) | `nextcloud/` | `http://SERVER_IP:8081` | `https://cloud.lan` |
 | Pi-hole (DNS/ad-block) | `pihole/` | `http://SERVER_IP:8053/admin` | `https://pihole.lan` |
 | Caddy (HTTPS proxy) | `caddy/` | ports 80 / 443 | — |
@@ -211,7 +211,7 @@ the VPN needs:
 docker ps --format 'table {{.Names}}\t{{.Status}}'
 
 # services direct
-curl -s -o /dev/null -w "vaultwarden %{http_code}\n" http://SERVER_IP:8080/
+curl -s -o /dev/null -w "vaultwarden %{http_code}\n" http://SERVER_IP:8082/
 curl -s http://SERVER_IP:8081/status.php; echo            # Nextcloud -> JSON
 curl -s -o /dev/null -w "pihole %{http_code}\n" http://SERVER_IP:8053/admin/
 

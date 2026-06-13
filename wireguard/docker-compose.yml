@@ -3,8 +3,9 @@ services:
     image: ghcr.io/wg-easy/wg-easy:14
     container_name: wg-easy
     restart: unless-stopped
-    # All config comes from .env. env_file passes values literally, which avoids
-    # the classic PASSWORD_HASH "$" interpolation trap.
+    # All config comes from .env. NOTE: this Compose version interpolates env_file
+    # values, so the "$" in the bcrypt PASSWORD_HASH must be doubled to "$$" in .env
+    # (otherwise the hash gets mangled and the web-UI login silently fails).
     env_file: .env
     ports:
       - "51820:51820/udp"          # WireGuard tunnel — forward this UDP port on the router

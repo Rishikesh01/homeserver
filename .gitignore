@@ -1,3 +1,13 @@
 # Never commit real secrets — only the .env.example templates.
 .env
 **/.env
+
+# Generated, environment-specific artifacts (comments MUST be on their own lines —
+# gitignore treats a trailing "# ..." as part of the pattern).
+
+# human logins printed by bootstrap.sh
+.secrets.txt
+# extracted per-host CA cert (regenerate with ./get-ca.sh)
+caddy-root-ca.crt
+# generated from custom.list.example by bootstrap.sh
+pihole/custom.list

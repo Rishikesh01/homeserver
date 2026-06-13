@@ -2,6 +2,6 @@
 # Copy to custom.list and set IP to your homeserver's LAN IP, then:
 #   docker exec pihole pihole reloaddns
 # Any device using Pi-hole as its DNS will resolve these names.
-192.168.1.10 vault.lan
-192.168.1.10 cloud.lan
-192.168.1.10 pihole.lan
+192.168.0.150 vault.lan
+192.168.0.150 cloud.lan
+192.168.0.150 pihole.lan
