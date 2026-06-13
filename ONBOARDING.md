@@ -34,6 +34,16 @@ connect**.
   → **Trusted Root Certification Authorities**.
 - **macOS:** open in Keychain Access → **System** → double-click the cert → *Trust*
   → **Always Trust**.
+- **Linux (system trust):**
+  ```bash
+  # Debian/Ubuntu:
+  sudo cp root.crt /usr/local/share/ca-certificates/homeserver-ca.crt && sudo update-ca-certificates
+  # Fedora/RHEL:
+  sudo cp root.crt /etc/pki/ca-trust/source/anchors/homeserver-ca.crt && sudo update-ca-trust
+  ```
+  **Firefox** (and Chrome on Linux) keep their own trust store, so also: *Settings →
+  Privacy & Security → Certificates → View Certificates → Authorities → Import* →
+  pick `root.crt` → tick *"Trust this CA to identify websites"*.
 
 ---
 
