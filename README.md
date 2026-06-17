@@ -138,9 +138,10 @@ it in the app, the `.env` value is stale (and for Nextcloud you can blank it).
 
 - **Vaultwarden** — your **master password** isn't in `.env` at all; you set it when you
   create your account and change it in the web vault (*Account settings → Master password*).
-  The only `.env` value is the `/admin` panel token (`VW_ADMIN_TOKEN`): change it by editing
-  `vaultwarden/.env` then `cd vaultwarden && docker compose up -d --force-recreate`. (You can
-  store it as an irreversible Argon2 hash with `docker run --rm vaultwarden/server /vaultwarden hash`.)
+  The only `.env` value is the `/admin` panel token (`VW_ADMIN_TOKEN`), which hsctl stores as
+  an irreversible **Argon2id hash** (never plaintext). Rotate it any time with
+  `hsctl secrets rotate-vw-admin` — it generates a new token, prints it once for you to save,
+  stores the hash, and recreates the container.
 - **Nextcloud** — `NC_ADMIN_PASSWORD` is used **only on first install** to create the admin
   user. Change the password in the web UI (*Personal → Security*) or:
   ```bash

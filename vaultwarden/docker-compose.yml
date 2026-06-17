@@ -4,8 +4,8 @@ services:
     container_name: vaultwarden
     restart: unless-stopped
     environment:
-      # Generate with: docker run --rm vaultwarden/server /vaultwarden hash
-      # (or set ADMIN_TOKEN to a long random string; leave unset to disable the admin panel)
+      # VW_ADMIN_TOKEN is an Argon2id HASH (set/rotate via: hsctl secrets rotate-vw-admin).
+      # In .env every '$' is doubled to '$$' so this interpolation yields the real hash.
       ADMIN_TOKEN: ${VW_ADMIN_TOKEN}
       # Public URL clients/mobile apps will use. Must be https in production.
       DOMAIN: ${VW_DOMAIN}

@@ -15,7 +15,33 @@ func secretsCmd() *cobra.Command {
 	s := &cobra.Command{Use: "secrets", Short: "Show the generated logins (from the .env files)"}
 	s.AddCommand(&cobra.Command{Use: "show", Short: "Print the logins (read from the .env files)",
 		Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return secretsShow(repoDir()) }})
+	s.AddCommand(&cobra.Command{Use: "rotate-vw-admin",
+		Short: "Generate a NEW Vaultwarden /admin token, store it Argon2-hashed, recreate the container",
+		Args:  cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return rotateVWAdmin(repoDir()) }})
 	return s
+}
+
+// rotateVWAdmin issues a fresh /admin token, stores only its Argon2id hash in
+// vaultwarden/.env (so the plaintext is never on disk), prints the plaintext once, and
+// recreates the container so it takes effect. Heeds Vaultwarden's "don't use a plaintext
+// ADMIN_TOKEN" warning.
+func rotateVWAdmin(repo string) error {
+	envPath := filepath.Join(repo, "vaultwarden", ".env")
+	if !fileExists(envPath) {
+		return fmt.Errorf("%s not found — run: hsctl setup", envPath)
+	}
+	token := genPassword(40)
+	if err := setEnvKey(envPath, "VW_ADMIN_TOKEN", escapeDollarsForCompose(argon2idPHC(token))); err != nil {
+		return err
+	}
+	fmt.Println("New Vaultwarden /admin token — SAVE THIS NOW, it is NOT recoverable:")
+	fmt.Println("\n    " + token + "\n")
+	fmt.Println("Stored as an Argon2id hash in vaultwarden/.env. Recreating the container...")
+	if err := dockerRun(filepath.Join(repo, "vaultwarden"), "compose", "up", "-d", "--force-recreate", "vaultwarden"); err != nil {
+		return fmt.Errorf("recreate vaultwarden: %w", err)
+	}
+	fmt.Println("done — log in at https://<server-ip>:8443/admin with the token above.")
+	return nil
 }
 
 // secretsShow reads each login from the live .env files (+ the dashboard password file).
@@ -28,10 +54,17 @@ func secretsShow(repo string) error {
 		{"Pi-hole admin", "pihole/.env", "PIHOLE_PASSWORD"},
 	} {
 		if kv, err := readKV(filepath.Join(repo, it.file)); err == nil {
-			if v := kv[it.key]; v != "" {
-				fmt.Printf("%-28s %s\n", it.label+":", v)
-				any = true
+			v := kv[it.key]
+			if v == "" {
+				continue
 			}
+			// The Vaultwarden token is stored Argon2-hashed — don't print the hash as if
+			// it were the login; it's not reversible.
+			if it.key == "VW_ADMIN_TOKEN" && strings.Contains(v, "argon2") {
+				v = "(Argon2-hashed; shown once at setup — reset with: hsctl secrets rotate-vw-admin)"
+			}
+			fmt.Printf("%-28s %s\n", it.label+":", v)
+			any = true
 		}
 	}
 	if b, err := os.ReadFile(filepath.Join(repo, ".ui-password")); err == nil {
