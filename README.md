@@ -183,13 +183,15 @@ it somewhere **off the box**:
 ### Set it up and run
 
 ```bash
-sudo apt install -y restic                       # one-time
+sudo apt install -y restic                       # one-time (tested with 0.16.x)
+sudo apt-mark hold restic                        # pin it — apt upgrade won't change it
+                                                 #   (undo later with: sudo apt-mark unhold restic)
 hsctl backup config --repo /mnt/usb/restic       # set the destination
 hsctl backup config --password 'StrongPassword'  # OPTIONAL: set your own repo password
                                                  #   (omit and one is auto-generated)
 sudo hsctl backup init                           # create the encrypted repo (first time only)
 sudo hsctl backup run                             # take a snapshot
-hsctl backup list                                 # see snapshots
+sudo hsctl backup list                            # see snapshots (repo is root-owned, so sudo)
 ```
 
 The repo password lives in **`.restic-password`** (set via `--password`, or auto-generated
@@ -200,6 +202,28 @@ on first init). Full details — including changing it later and restoring with 
 > Vaultwarden). It encrypts your backups — **without it, the backups are unrecoverable.**
 
 `backup run` needs `sudo` because it reads the Docker volume files (owned by root).
+
+### Check it actually works
+
+```bash
+sudo hsctl backup config --pin-restic   # once: record the known-good restic version
+sudo hsctl backup verify                 # aliases: selftest, test
+```
+
+A self-contained drill that **never touches your live stack or repo** — it spins up throwaway
+Docker volumes/containers and an isolated temp repo. It runs three checks:
+
+1. **restic round-trip** — token into a volume → backup → wipe → restore → read it back.
+2. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
+   backs the volume up, wipes it, restores, confirms the DB is **byte-identical**, and that a
+   fresh Vaultwarden **boots from the restored volume** and stays up.
+3. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
+   `pg_dump` the backup uses, pushes it through restic, then imports into a **brand-new**
+   Postgres and checks the row is back.
+
+It also enforces the **restic version pin**: `verify` fails if the installed restic differs
+from the one recorded by `--pin-restic`, so a system upgrade that swaps restic out is caught
+instead of silently changing your backup tool. Safe to run anytime.
 
 ### Schedule it nightly
 
@@ -216,19 +240,22 @@ sudo hsctl backup restore latest --target /tmp/restore
 # 2. Stop the stack
 hsctl down
 
-# 3. Put each volume's files back (the restored tree mirrors the original paths)
-for v in vaultwarden_vw-data nextcloud_nc-data nextcloud_db-data caddy_caddy-data; do
-  sudo cp -a /tmp/restore/var/lib/docker/volumes/$v/_data/. /var/lib/docker/volumes/$v/_data/
+# 3. Put each volume's files back (the restored tree mirrors the original paths).
+#    Loops over whatever volumes the snapshot holds, so it covers every service.
+for d in /tmp/restore/var/lib/docker/volumes/*/; do
+  v=$(basename "$d")
+  sudo cp -a "$d/_data/." "/var/lib/docker/volumes/$v/_data/"
 done
 
-# 4. Bring the DB back up and import the SQL dump
-( cd nextcloud && docker compose up -d db )
-docker exec -i nextcloud-db psql -U nextcloud -d nextcloud \
-  < /tmp/restore/$(pwd)/backups/staging/nextcloud-db.sql
-
-# 5. Start everything
+# 4. Start everything — step 3 already restored the Postgres DB volume, so it just comes up.
 hsctl up
 ```
+
+> The snapshot also holds a consistent SQL dump at `backups/staging/nextcloud-db.sql`. You
+> only need it as a **fallback**: if the restored DB volume won't start (e.g. it was captured
+> mid-write), wipe `nextcloud_db-data`, bring up a fresh `nextcloud-db`, and import the dump
+> with `docker exec -i nextcloud-db psql -U nextcloud -d nextcloud < …/nextcloud-db.sql`.
+> Don't do both — importing onto an already-restored DB volume just errors on existing tables.
 
 On a brand-new machine, restore the config files too (the restored `<repo>/*/.env` and
 `<repo>/setup.conf`) before `hsctl up`. The restic repo password must be the same one you
