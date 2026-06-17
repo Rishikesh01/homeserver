@@ -63,6 +63,42 @@ func dockerCmd(dir string, args ...string) *exec.Cmd {
 	return c
 }
 
+// firstLocalImage returns a repository:tag of some image already present on the box
+// (skipping dangling <none> ones), or "" if there are none. Used as an offline-safe
+// default fixture image for `backup verify`.
+func firstLocalImage(dir string) string {
+	out, err := dockerOut(dir, "image", "ls", "--format", "{{.Repository}}:{{.Tag}}")
+	if err != nil {
+		return ""
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, "<none>") {
+			return l
+		}
+	}
+	return ""
+}
+
+// containerImage returns the image a (running or stopped) container was created from,
+// e.g. "postgres:16-alpine" for nextcloud-db. "" if the container doesn't exist. Lets
+// the self-test use the EXACT images the live services run.
+func containerImage(dir, name string) string {
+	out, err := dockerOut(dir, "inspect", "-f", "{{.Config.Image}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// containerState returns a container's state ("running", "exited", …), or "" if missing.
+func containerState(dir, name string) string {
+	out, err := dockerOut(dir, "inspect", "-f", "{{.State.Status}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // dockerRun streams a docker command's output to the user.
 func dockerRun(dir string, args ...string) error {
 	c := dockerCmd(dir, args...)
