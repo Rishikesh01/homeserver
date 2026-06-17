@@ -52,8 +52,19 @@ func rotateVWAdmin(repo string) error {
 	if err := dockerRun(filepath.Join(repo, "vaultwarden"), "compose", "up", "-d", "--force-recreate", "vaultwarden"); err != nil {
 		return fmt.Errorf("recreate vaultwarden: %w", err)
 	}
-	fmt.Println("done — log in at https://<server-ip>:8443/admin with the token above.")
+	fmt.Println("done — log in at " + vwAdminURL(envPath) + " with the token above.")
 	return nil
+}
+
+// vwAdminURL builds the real /admin URL from VW_DOMAIN in vaultwarden/.env (e.g.
+// https://192.168.0.150:8443/admin), falling back to a placeholder if it can't be read.
+func vwAdminURL(envPath string) string {
+	if kv, err := readKV(envPath); err == nil {
+		if d := strings.TrimRight(kv["VW_DOMAIN"], "/"); d != "" {
+			return d + "/admin"
+		}
+	}
+	return "https://<server-ip>:8443/admin"
 }
 
 // secretsShow reads each login from the live .env files (+ the dashboard password file).
