@@ -488,7 +488,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 	}
 	fmt.Printf("  image=%s volume=%s\n", image, vol)
 
-	if _, err := dockerOut(repo, "run", "-d", "--name", c1, "-e", "ADMIN_TOKEN="+genPassword(20), "-v", vol+":/data", image); err != nil {
+	if _, err := dockerOut(repo, "run", "-d", "--name", c1, "-v", vol+":/data", image); err != nil {
 		return fmt.Errorf("start vaultwarden: %w", err)
 	}
 	if !keep {
@@ -535,7 +535,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 	}
 	fmt.Println("  Vaultwarden DB restored byte-for-byte")
 
-	if _, err := dockerOut(repo, "run", "-d", "--name", c2, "-e", "ADMIN_TOKEN="+genPassword(20), "-v", vol+":/data", image); err != nil {
+	if _, err := dockerOut(repo, "run", "-d", "--name", c2, "-v", vol+":/data", image); err != nil {
 		return fmt.Errorf("restart vaultwarden on restored data: %w", err)
 	}
 	if !keep {

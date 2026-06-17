@@ -23,13 +23,16 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	}
 
 	// vaultwarden
+	// Store the /admin token HASHED (Argon2id), never plaintext. The raw token is surfaced
+	// once below for the user to save; '$' is doubled so docker-compose passes it through.
 	vwToken := genPassword(40)
+	vwStored := escapeDollarsForCompose(argon2idPHC(vwToken))
 	if wrote, err := writeEnv("vaultwarden/.env", fmt.Sprintf(
 		"VW_DOMAIN=https://%s:8443\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\nVW_HTTP_PORT=%d\n",
-		c.ServerIP, vwToken, boolStr(c.VWSignupsAllowed, "true", "false"), c.VWPort)); err != nil {
+		c.ServerIP, vwStored, boolStr(c.VWSignupsAllowed, "true", "false"), c.VWPort)); err != nil {
 		return nil, err
 	} else if wrote {
-		secrets = append(secrets, Secret{"Vaultwarden /admin token:", vwToken})
+		secrets = append(secrets, Secret{"Vaultwarden /admin token (SAVE — not recoverable):", vwToken})
 	}
 
 	// nextcloud
