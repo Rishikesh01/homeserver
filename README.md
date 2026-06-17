@@ -71,8 +71,10 @@ service's secrets.
 anytime — `hsctl secrets show` reads them straight from the `.env` files:
 
 ```bash
-hsctl secrets show     # admin token + Vaultwarden/Pi-hole/dashboard passwords
+hsctl secrets show     # Nextcloud / Pi-hole / dashboard passwords
 # ... save those into Vaultwarden ...
+# (The Vaultwarden /admin token is stored Argon2-hashed, so it can't be shown here —
+#  rotate it with `hsctl secrets rotate-vw-admin` if you forget it.)
 ```
 
 > **These secrets are plaintext on disk** (in each service's `.env` — the stack needs them

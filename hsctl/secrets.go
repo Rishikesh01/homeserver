@@ -40,7 +40,7 @@ const (
 //	$argon2id$v=19$m=65540,t=3,p=4$<salt>$<hash>
 //
 // Vaultwarden's ADMIN_TOKEN should be set to this rather than the plaintext, so the raw
-// token is never stored on disk. Verified accepted by vaultwarden 1.32.x.
+// token is never stored on disk. Verified accepted by vaultwarden 1.32.x–1.36.x.
 func argon2idPHC(token string) string {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
