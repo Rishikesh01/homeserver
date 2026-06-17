@@ -14,10 +14,22 @@ import (
 func secretsCmd() *cobra.Command {
 	s := &cobra.Command{Use: "secrets", Short: "Show the generated logins (from the .env files)"}
 	s.AddCommand(&cobra.Command{Use: "show", Short: "Print the logins (read from the .env files)",
-		Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return secretsShow(repoDir()) }})
+		Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+			repo, err := requireRepoDir()
+			if err != nil {
+				return err
+			}
+			return secretsShow(repo)
+		}})
 	s.AddCommand(&cobra.Command{Use: "rotate-vw-admin",
 		Short: "Generate a NEW Vaultwarden /admin token, store it Argon2-hashed, recreate the container",
-		Args:  cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return rotateVWAdmin(repoDir()) }})
+		Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+			repo, err := requireRepoDir()
+			if err != nil {
+				return err
+			}
+			return rotateVWAdmin(repo)
+		}})
 	return s
 }
 

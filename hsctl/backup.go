@@ -79,16 +79,7 @@ type backupCfg struct {
 // `hsctl backup run` from the wrong directory would generate a NEW .restic-password
 // and a phantom repo under <cwd>/backups — making you think you're backed up when
 // the snapshots (and their key) are scattered somewhere unexpected.
-func backupRepoDir() (string, error) {
-	repo := repoDir()
-	if !isRepo(repo) {
-		return "", fmt.Errorf("not in the homeserver repo (resolved to %s)\n"+
-			"run backups from the repo directory, or set HOMESERVER_DIR:\n"+
-			"  cd /path/to/homeserver && sudo hsctl backup run\n"+
-			"  # or: sudo HOMESERVER_DIR=/path/to/homeserver hsctl backup run", repo)
-	}
-	return repo, nil
-}
+func backupRepoDir() (string, error) { return requireRepoDir() }
 
 func loadBackupCfg(repo string) backupCfg {
 	c := backupCfg{

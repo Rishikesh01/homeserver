@@ -1,11 +1,26 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// requireRepoDir resolves the homeserver repo and errors — instead of silently using the
+// cwd — when we're not actually in it, so repo-dependent commands (backup, secrets, …)
+// don't operate on the wrong directory. Honors $HOMESERVER_DIR; else run from the repo.
+func requireRepoDir() (string, error) {
+	repo := repoDir()
+	if !isRepo(repo) {
+		return "", fmt.Errorf("not in the homeserver repo (resolved to %s)\n"+
+			"run from the repo directory, or set HOMESERVER_DIR:\n"+
+			"  cd /path/to/homeserver && hsctl ...\n"+
+			"  # or: HOMESERVER_DIR=/path/to/homeserver hsctl ...", repo)
+	}
+	return repo, nil
+}
 
 // repoDir returns the homeserver repo root (the folder holding the service dirs).
 // It honors $HOMESERVER_DIR, else walks up from cwd looking for caddy/docker-compose.yml,
