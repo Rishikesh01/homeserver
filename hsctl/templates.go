@@ -46,6 +46,8 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <p>Install this once per device so the apps load without warnings.</p></a>
   <a class="card" href="/help"><h3>📖 Setup guide</h3>
     <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
+  <a class="card" href="/admin/backup"><h3>💾 Backup &amp; restore</h3>
+    <p>Back the server up, or restore it from a backup (admin login).</p></a>
 </div>
 <p class="foot">Trouble? Open the <a href="/help">Setup guide</a>, or ask your admin. · <a href="/admin">Admin</a></p>
 </div></body></html>`
@@ -131,7 +133,41 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <div class="note">Backing up reads Docker volume files, which need root — so the
 scheduled backups run from a root timer, and a UI/CLI run needs the tool to have that
 access. First time: set a destination above, then run <code>sudo hsctl backup init</code>.</div>
+
+<h3 style="margin-top:24px">Restore</h3>
+<p>Recover the whole server from a snapshot (stops the stack, puts every volume back, starts it again).</p>
+<p><a href="/admin/backup/restore">♻️ Restore from a backup →</a></p>
+
 <p class="foot"><a href="/admin">← Admin</a></p>
+</div></body></html>`
+
+const restoreTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Restore</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>♻️ Restore from backup</h1>
+<p class="sub">Disaster recovery — put a snapshot's data back into the stack.</p>
+{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+<div class="banner"><b>This is destructive.</b> It STOPS all services, WIPES every data volume,
+and replaces it with the snapshot's contents (Vaultwarden from its staged copy), then starts
+everything again. Anything not in the snapshot is lost. The apps are offline while it runs
+(can be several minutes for large data). <b>Tip:</b> run this from the server's direct address
+(<code>http://SERVER:PORT/admin</code>), not the https one — the restore restarts the web proxy,
+so over https this page may drop (the restore still completes).</div>
+
+<h3>Available snapshots</h3>
+<pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto">{{if .Snapshots}}{{.Snapshots}}{{else}}(no snapshots / restic not available){{end}}</pre>
+
+<form method="post" action="/admin/backup/restore"
+  onsubmit="return confirm('Really restore? All services will stop and their data will be overwritten from the backup.')">
+  <p>Snapshot to restore (blank = latest):<br>
+  <input name="snapshot" placeholder="latest" autocomplete="off"
+   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <p>Type <b>RESTORE</b> to confirm:<br>
+  <input name="confirm" autocomplete="off"
+   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <button class="btn red">♻️ Restore now</button>
+</form>
+<p class="foot"><a href="/admin/backup">← Cancel</a></p>
 </div></body></html>`
 
 const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">

@@ -364,6 +364,30 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// restoreSnapshotIntoVolumes extracts a snapshot to <repo>/restore and writes every volume
+// back in place (the full DR put-back). Shared by the CLI `restore --into-volumes` and the
+// web UI's Restore button. Destructive — see restoreIntoVolumes.
+func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
+	if err := requireRestic(); err != nil {
+		return err
+	}
+	if err := requireBackupMount(cfg); err != nil {
+		return err
+	}
+	if snap == "" {
+		snap = "latest"
+	}
+	ensureResticPassword(repo)
+	target := filepath.Join(repo, "restore")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		return err
+	}
+	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {
+		return err
+	}
+	return restoreIntoVolumes(repo, target)
+}
+
 // restoreIntoVolumes is the automated disaster-recovery put-back: given an already-extracted
 // snapshot under `target`, it writes every backed-up volume's data back into the live Docker
 // volumes and brings the stack up. DESTRUCTIVE — it stops the stack and wipes each target

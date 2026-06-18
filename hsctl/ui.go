@@ -54,6 +54,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
+	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
 	port := portOf(addr)
 	fmt.Printf("hsctl ui listening on %s\n", addr)
 	fmt.Printf("  dashboard : https://%s/   (via Caddy)   ·   http://%s%s/   (direct)\n", c.ServerIP, c.ServerIP, port)
@@ -374,6 +375,40 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		_ = cfg.save(s.repo)
 	}
 	http.Redirect(w, r, "/admin/backup?msg=Destination+saved", http.StatusSeeOther)
+}
+
+type restoreData struct {
+	Snapshots, Msg string
+	ResticOK       bool
+}
+
+// handleBackupRestore shows a confirmation page (GET) and runs the destructive DR put-back
+// (POST) — but only when the operator types RESTORE. It stops the stack, repopulates every
+// volume from the snapshot (Vaultwarden from its staged copy), and brings the stack back up.
+// The run is synchronous so the operator sees the real result; note it restarts Caddy, so
+// prefer the server's direct http address over the https one (see the page's warning).
+func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
+	cfg := loadBackupCfg(s.repo)
+	if r.Method == http.MethodPost {
+		if strings.TrimSpace(r.FormValue("confirm")) != "RESTORE" {
+			http.Redirect(w, r, "/admin/backup/restore?msg="+
+				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
+			return
+		}
+		msg := "Restore complete — all services were brought back up."
+		if err := restoreSnapshotIntoVolumes(s.repo, cfg, strings.TrimSpace(r.FormValue("snapshot"))); err != nil {
+			msg = "Restore FAILED: " + err.Error()
+		}
+		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+		return
+	}
+	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
+	if d.ResticOK {
+		if out, err := resticOutput(s.repo, cfg, "snapshots"); err == nil {
+			d.Snapshots = out
+		}
+	}
+	render(w, restoreTmpl, d)
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).
