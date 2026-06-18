@@ -81,3 +81,24 @@ connect**.
   entry in `services.json`. The dashboard updates on next load.
 - Nextcloud users: create them in *Admin → Users*. Vaultwarden allows self-signup; switch
   to invitation-only later via `VW_SIGNUPS_ALLOWED=false` + `hsctl up`.
+
+---
+
+## Backups & restore (server owner)
+
+Encrypted snapshots (restic) of your passwords (Vaultwarden), Nextcloud files + database,
+and the server config. Vaultwarden is paused for a few seconds during each backup so its
+database is captured cleanly — nothing else goes offline.
+
+- **Mount the backup disk first.** Backups go to an external HDD you mount by hand
+  (e.g. `sudo mount /dev/sdb1 /mnt/restic`). Backups *refuse to run* if it isn't mounted,
+  so they can never silently land on the system disk. Setup details: README → *Backup & restore*.
+- **Back up:** *Admin → 💾 Backup & restore → Back up now* (or `sudo hsctl backup run`).
+- **Restore (disaster recovery):** *Admin → 💾 Backup & restore → ♻️ Restore from a backup*.
+  It stops the stack, puts every volume back from a snapshot, and starts it all again; you
+  type `RESTORE` to confirm. Do this from the server's **direct** `http://SERVER_IP:<dashboard port>/admin`
+  address, not the https one — the restore restarts the proxy, so the https page may drop
+  mid-way (the restore still finishes). CLI equivalent: `sudo hsctl backup restore latest --into-volumes`.
+- **Check it works:** `sudo hsctl backup verify` — a safe self-test that never touches live data.
+- **Keep `.restic-password` somewhere safe** (it lives in the repo). Without it, the backups
+  are unrecoverable.
