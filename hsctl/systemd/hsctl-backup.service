@@ -2,6 +2,10 @@
 Description=hsctl homeserver backup (restic)
 After=docker.service
 Wants=docker.service
+# Don't even start the backup unless the external HDD is mounted (systemd pulls in the
+# .mount unit for this path and waits for it). Keep in sync with REQUIRE_MOUNT/RESTIC_REPO
+# in backup.conf. hsctl also enforces this in-process via the REQUIRE_MOUNT guard.
+RequiresMountsFor=/mnt/restic
 
 [Service]
 Type=oneshot

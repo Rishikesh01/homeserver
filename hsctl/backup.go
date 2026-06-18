@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -72,6 +73,7 @@ type backupCfg struct {
 	Repo          string // restic repository (e.g. /mnt/usb/restic, sftp:user@host:/path, b2:bucket:path)
 	Retention     string
 	ResticVersion string // pinned restic version; `backup verify` fails if the installed one differs
+	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
 }
 
 // backupRepoDir resolves the homeserver repo and refuses to proceed if we're not
@@ -80,6 +82,36 @@ type backupCfg struct {
 // and a phantom repo under <cwd>/backups — making you think you're backed up when
 // the snapshots (and their key) are scattered somewhere unexpected.
 func backupRepoDir() (string, error) { return requireRepoDir() }
+
+// requireBackupMount guards against the classic external-disk failure: when the backup
+// HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
+// restic would create/write a repo THERE — a "successful" backup that silently lives on the
+// system disk instead of the HDD (and splits your history). When REQUIRE_MOUNT is set in
+// backup.conf, we refuse any repo operation unless that path is a real mount, detected by
+// comparing its device id to /'s: a mounted HDD has a different st_dev, an unmounted
+// mountpoint shares root's. Unset = no check (e.g. the default repo that lives on root).
+func requireBackupMount(cfg backupCfg) error {
+	p := cfg.RequireMount
+	if p == "" {
+		return nil
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(p, &st); err != nil {
+		return fmt.Errorf("backup disk path %s is missing (is the HDD connected?): %w\n"+
+			"It should auto-mount at boot via /etc/fstab — check `findmnt %s`.", p, err, p)
+	}
+	var root syscall.Stat_t
+	if err := syscall.Stat("/", &root); err != nil {
+		return err
+	}
+	if st.Dev == root.Dev {
+		return fmt.Errorf("backup disk is NOT mounted at %s — that path is currently on the root\n"+
+			"filesystem, so a backup would write to your system disk instead of the HDD.\n"+
+			"Mount it first:  sudo mount %s\n"+
+			"(it should auto-mount at boot via /etc/fstab; verify with `findmnt %s`)", p, p, p)
+	}
+	return nil
+}
 
 func loadBackupCfg(repo string) backupCfg {
 	c := backupCfg{
@@ -94,6 +126,7 @@ func loadBackupCfg(repo string) backupCfg {
 			c.Retention = v
 		}
 		c.ResticVersion = kv["RESTIC_VERSION"] // empty = no version pinned yet
+		c.RequireMount = kv["REQUIRE_MOUNT"]   // empty = no mount guard (e.g. default repo on root disk)
 	}
 	return c
 }
@@ -106,6 +139,11 @@ func (c backupCfg) save(repo string) error {
 		s += "# Pinned restic version. `backup verify` FAILS if the installed restic differs, so a\n" +
 			"# system upgrade that swaps restic out is caught. Re-baseline: backup config --pin-restic\n" +
 			"RESTIC_VERSION=" + c.ResticVersion + "\n"
+	}
+	if c.RequireMount != "" {
+		s += "# Backup ops refuse to run unless this path is a real mount (different device than /),\n" +
+			"# so a backup never lands on the root disk when the external HDD isn't mounted.\n" +
+			"REQUIRE_MOUNT=" + c.RequireMount + "\n"
 	}
 	return writeFile0600(filepath.Join(repo, backupConfFile), s)
 }
@@ -120,6 +158,7 @@ func backupCmd() *cobra.Command {
 	cfgCmd.Flags().String("retention", "", "restic forget policy")
 	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
+	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
 
 	// withRestic wraps a run that needs restic + a loaded config.
 	withRestic := func(run func(repo string, cfg backupCfg) error) func(*cobra.Command, []string) error {
@@ -131,7 +170,11 @@ func backupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return run(repo, loadBackupCfg(repo))
+			cfg := loadBackupCfg(repo)
+			if err := requireBackupMount(cfg); err != nil {
+				return err
+			}
+			return run(repo, cfg)
 		}
 	}
 
@@ -184,6 +227,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	}
 	if f.Changed("retention") {
 		cfg.Retention, _ = f.GetString("retention")
+	}
+	if f.Changed("require-mount") {
+		cfg.RequireMount, _ = f.GetString("require-mount") // empty string clears the guard
 	}
 	if pw, _ := f.GetString("password"); pw != "" {
 		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
@@ -267,6 +313,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	cfg := loadBackupCfg(repo)
+	if err := requireBackupMount(cfg); err != nil {
+		return err
+	}
 	target, _ := cmd.Flags().GetString("target")
 	if target == "" {
 		target = filepath.Join(repo, "restore")
