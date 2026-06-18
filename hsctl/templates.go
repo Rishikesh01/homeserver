@@ -12,7 +12,7 @@ h1{font-size:26px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 24px}
 .tag.ok{background:rgba(63,185,80,.15);color:var(--ok)}.tag.bad{background:rgba(248,81,73,.15);color:var(--bad)}
 table{width:100%;border-collapse:collapse;margin:8px 0 18px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid #262b34}
 .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:15px;cursor:pointer;margin-right:8px}
-.btn.gray{background:#2a2f3a}.banner{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb4ae;padding:12px;border-radius:10px;margin-bottom:18px}
+.btn.gray{background:#2a2f3a}.btn.red{background:var(--bad)}.banner{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb4ae;padding:12px;border-radius:10px;margin-bottom:18px}
 .flash{background:rgba(79,140,255,.12);border:1px solid var(--accent);padding:10px;border-radius:10px;margin-bottom:18px}
 .note{background:rgba(255,196,0,.1);border:1px solid #6b5800;color:#ffd98a;padding:12px;border-radius:10px;margin:18px 0}
 a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}code{background:#000;padding:1px 6px;border-radius:5px}
@@ -73,6 +73,12 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <form method="post" action="/admin/action" style="display:inline"
   onsubmit="return confirm('Stop all services?')">
   <input type="hidden" name="do" value="down"><button class="btn gray">Stop all</button></form>
+
+<p style="margin-top:18px">
+<form method="post" action="/admin/action" style="display:inline"
+  onsubmit="return confirm('Shut down the whole server?\n\nIt will power off and someone will need to switch it back on by hand. The apps come back automatically once it boots.')">
+  <input type="hidden" name="do" value="shutdown"><button class="btn red">⏻ Shut down server</button></form>
+</p>
 
 <p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a></p>
 <p class="foot"><a href="/">← Home portal</a></p>

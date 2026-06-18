@@ -7,8 +7,10 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yuin/goldmark"
@@ -188,6 +190,8 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 		msg = s.runLifecycle("down")
 	case "restart":
 		msg = s.runLifecycle("down") + " " + s.runLifecycle("up")
+	case "shutdown":
+		msg = s.runShutdown()
 	default:
 		msg = "unknown action"
 	}
@@ -212,6 +216,33 @@ func (s *uiServer) runLifecycle(action string) string {
 		return fmt.Sprintf("%s: FAILED for %s", action, strings.Join(failed, ", "))
 	}
 	return action + ": ok"
+}
+
+// runShutdown powers the whole machine off. The poweroff is deferred to a goroutine so
+// this HTTP response (the confirmation flash) can flush first — once it fires, the box
+// goes down and the UI stops responding.
+//
+// We deliberately do NOT `compose down`/`stop` the stack first: systemd stops docker
+// cleanly on the way down (containers get SIGTERM with a grace period), and because every
+// service uses `restart: unless-stopped`, they all come back automatically on next boot.
+// Explicitly stopping them here would instead mark them "stopped" and they would stay down
+// after a power cycle — bad for a server the family just switches on and off.
+func (s *uiServer) runShutdown() string {
+	go func() {
+		time.Sleep(2 * time.Second)
+		_ = shutdownCmd().Run()
+	}()
+	return "Shutting down — the server is powering off now. This page will go offline. " +
+		"When you switch the machine back on, the apps start again automatically."
+}
+
+// shutdownCmd builds the poweroff command, using sudo when the UI isn't running as root
+// (under systemd it runs as root; a local dev run may not).
+func shutdownCmd() *exec.Cmd {
+	if os.Geteuid() == 0 {
+		return exec.Command("shutdown", "-h", "now")
+	}
+	return exec.Command("sudo", "shutdown", "-h", "now")
 }
 
 type backupData struct {
