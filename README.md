@@ -169,7 +169,11 @@ See your current generated logins anytime with `hsctl secrets show`.
 ## Backup & restore
 
 Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
-ciphertext) and cover a **Postgres dump + every data volume + your config**.
+ciphertext) and cover a **consistent Postgres dump + a consistent Vaultwarden DB snapshot +
+every data volume + your config**. Vaultwarden uses SQLite (WAL mode), so its DB can't be
+copied safely while live — `backup run` briefly stops Vaultwarden (a few seconds), copies a
+consistent snapshot into `backups/staging/vaultwarden/`, and restarts it. Nextcloud is never
+stopped (its DB is dumped online with `pg_dump`).
 
 ### Choose a destination — off the server
 
@@ -214,13 +218,16 @@ sudo hsctl backup verify                 # aliases: selftest, test
 ```
 
 A self-contained drill that **never touches your live stack or repo** — it spins up throwaway
-Docker volumes/containers and an isolated temp repo. It runs three checks:
+Docker volumes/containers and an isolated temp repo. It runs four checks:
 
 1. **restic round-trip** — token into a volume → backup → wipe → restore → read it back.
-2. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
-   backs the volume up, wipes it, restores, confirms the DB is **byte-identical**, and that a
-   fresh Vaultwarden **boots from the restored volume** and stays up.
-3. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
+2. **`restore --into-volumes` put-back** — seeds a throwaway volume with stale data, runs the
+   real put-back primitive, and confirms the stale data is **gone** and the snapshot's data is
+   in place (so the destructive one-command restore can't silently leave old data behind).
+3. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
+   backs up the consistent staged copy, wipes it, restores, confirms the DB is **byte-identical**,
+   and that a fresh Vaultwarden **boots from the restored data** and stays up.
+4. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
    `pg_dump` the backup uses, pushes it through restic, then imports into a **brand-new**
    Postgres and checks the row is back.
 
@@ -236,6 +243,21 @@ make -C hsctl install-services    # installs a systemd timer (edit systemd/*.ser
 
 ### Restore (disaster recovery)
 
+**One command** restores the whole stack: it stops everything, repopulates every volume
+from the snapshot — including Vaultwarden, whose data comes from its consistent staged copy
+(not a volume dir) — and brings the stack back up.
+
+```bash
+sudo hsctl backup restore latest --into-volumes   # add --yes to skip the confirm prompt
+```
+
+It's destructive (it **wipes** each volume before restoring), so it confirms first, and it
+refuses to run unless the backup disk is mounted (the `REQUIRE_MOUNT` guard). When it
+finishes, check `hsctl status` and log into each app to confirm your data is back.
+
+<details>
+<summary>Manual restore — if you'd rather inspect the files first or restore selectively</summary>
+
 ```bash
 # 1. Extract a snapshot to a folder (latest, or a specific id from `backup list`)
 sudo hsctl backup restore latest --target /tmp/restore
@@ -244,15 +266,20 @@ sudo hsctl backup restore latest --target /tmp/restore
 hsctl down
 
 # 3. Put each volume's files back (the restored tree mirrors the original paths).
-#    Loops over whatever volumes the snapshot holds, so it covers every service.
 for d in /tmp/restore/var/lib/docker/volumes/*/; do
   v=$(basename "$d")
   sudo cp -a "$d/_data/." "/var/lib/docker/volumes/$v/_data/"
 done
 
-# 4. Start everything — step 3 already restored the Postgres DB volume, so it just comes up.
+# 3b. IMPORTANT: Vaultwarden is NOT in the loop above — its data is the consistent copy
+#     under staging, not a volume dir. Restore it explicitly, or you lose your passwords:
+sudo cp -a "/tmp/restore/<repo>/backups/staging/vaultwarden/." \
+           /var/lib/docker/volumes/vaultwarden_vw-data/_data/   # <repo> = abs path, e.g. /home/you/homeserver
+
+# 4. Start everything
 hsctl up
 ```
+</details>
 
 > The snapshot also holds a consistent SQL dump at `backups/staging/nextcloud-db.sql`. You
 > only need it as a **fallback**: if the restored DB volume won't start (e.g. it was captured
@@ -289,7 +316,7 @@ isolation" on the router or other devices can't reach it.
 hsctl up | down | status        # start / stop / show the stack
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
-hsctl backup run | list | restore
+hsctl backup run | list | restore         # restore latest --into-volumes = one-command DR
 ```
 
 The app containers restart automatically on reboot (`restart: unless-stopped`); `hsctl

@@ -37,9 +37,10 @@ hsctl secrets show      # print the generated logins (read from the .env files)
 ```bash
 hsctl backup config --repo <dest>     # set destination (also: --retention, --password)
 sudo hsctl backup init                # create the encrypted repo (first time)
-sudo hsctl backup run                 # snapshot: Postgres dump + data volumes + config
+sudo hsctl backup run                 # snapshot: Postgres dump + Vaultwarden DB + data volumes + config
 hsctl backup list                     # list snapshots
-sudo hsctl backup restore [snap] --target <dir>   # default snapshot: latest
+sudo hsctl backup restore [snap] --target <dir>   # extract a snapshot (default: latest)
+sudo hsctl backup restore latest --into-volumes   # one-command DR: stop -> restore all volumes -> up
 sudo hsctl backup forget              # apply the retention policy + prune
 ```
 
