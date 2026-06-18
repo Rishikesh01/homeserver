@@ -77,8 +77,11 @@ hsctl ui              # binds :<UI port>; reach it at https://<server-ip> via Ca
 
 - **`/`** — the dashboard / home page: tiles for every app (from `services.json`, so it
   updates when you add/remove one) + one-click **certificate install**. No login.
-- **`/admin`** — basic-auth (user `admin`, password in `.ui-password`): container
-  status + Start/Stop/Restart, and **Backups** (set destination, run, view snapshots).
+- **`/admin`** — sign in at `/login` (user `admin`, password in `.ui-password`; a form,
+  not Basic Auth, so Bitwarden/Vaultwarden can autofill it — login sets a session cookie):
+  container status + Start/Stop/Restart, **Shut down server** (graceful power-off; the
+  apps auto-start again on next boot), and **Backups** (set destination, run, view
+  snapshots).
 
 **Make it permanent (auto-start on boot):**
 

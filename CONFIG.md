@@ -70,9 +70,10 @@ change them post-install.
 
 ## Dashboard admin password — `.ui-password`
 
-Auto-generated (random) on the first `hsctl ui`. To set your own: `export
-HSCTL_UI_PASSWORD='…'` before running, or write the file: `printf '%s' 'yourpass' >
-.ui-password && chmod 600 .ui-password`. View it with `hsctl secrets show`.
+Auto-generated (random) on the first `hsctl ui`. Used to sign in at `/admin` (the `/login`
+form, with user `admin`). To set your own: `export HSCTL_UI_PASSWORD='…'` before running,
+or write the file: `printf '%s' 'yourpass' > .ui-password && chmod 600 .ui-password`. View
+it with `hsctl secrets show`.
 
 ---
 
