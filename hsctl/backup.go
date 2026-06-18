@@ -204,6 +204,8 @@ func backupCmd() *cobra.Command {
 	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
 		Args: cobra.MaximumNArgs(1), RunE: runBackupRestore}
 	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
+	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
+	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
 
 	verifyCmd := &cobra.Command{Use: "verify", Aliases: []string{"selftest", "test"},
 		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data)",
@@ -332,7 +334,21 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, target)
-	fmt.Println("To put it back into the stack (disaster recovery):")
+
+	if into, _ := cmd.Flags().GetBool("into-volumes"); into {
+		yes, _ := cmd.Flags().GetBool("yes")
+		if !yes {
+			fmt.Println("\n--into-volumes will STOP the stack, WIPE each data volume, and overwrite it")
+			fmt.Println("with the snapshot's contents (Vaultwarden from its staged copy), then start the stack.")
+			if !askYN("Proceed with this destructive restore?", false) {
+				fmt.Println("aborted — the snapshot is still extracted at", target)
+				return nil
+			}
+		}
+		return restoreIntoVolumes(repo, target)
+	}
+
+	fmt.Println("To put it back into the stack (disaster recovery), or just run `hsctl backup restore --into-volumes`:")
 	fmt.Println("  1. hsctl down")
 	fmt.Printf("  2. copy each volume's files back, e.g.  cp -a %s/var/lib/docker/volumes/<name>/_data/. \\\n", target)
 	fmt.Println("       /var/lib/docker/volumes/<name>/_data/   (this restores the Postgres DB volume too)")
@@ -345,6 +361,129 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	fmt.Println("  present above instead — restore it like the others.)")
 	fmt.Println("  Nextcloud: a consistent SQL dump is also in backups/staging/nextcloud-db.sql — only")
 	fmt.Println("  needed as a fallback (import into a fresh nextcloud-db) if the restored DB volume won't start.")
+	return nil
+}
+
+// restoreIntoVolumes is the automated disaster-recovery put-back: given an already-extracted
+// snapshot under `target`, it writes every backed-up volume's data back into the live Docker
+// volumes and brings the stack up. DESTRUCTIVE — it stops the stack and wipes each target
+// volume before copying. This is the one-command form of the manual steps `restore` prints,
+// including the Vaultwarden special case (its data is in staging/, not a volume dir).
+func restoreIntoVolumes(repo, target string) error {
+	fmt.Println("\n== stopping the stack ==")
+	if err := cmdDown(false); err != nil {
+		return fmt.Errorf("stack down: %w", err)
+	}
+
+	// Every volume captured in the snapshot is under <target>/var/lib/docker/volumes/<name>/_data.
+	// (Vaultwarden's live volume is deliberately not here — restored from staging below.)
+	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
+	entries, err := os.ReadDir(volsRoot)
+	if err != nil {
+		return fmt.Errorf("no volume data found in snapshot at %s: %w", volsRoot, err)
+	}
+	restored := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		src := filepath.Join(volsRoot, e.Name(), "_data")
+		if !fileExists(src) {
+			fmt.Fprintf(os.Stderr, "skip %s (no _data in snapshot)\n", e.Name())
+			continue
+		}
+		if err := restoreOneVolume(repo, e.Name(), src); err != nil {
+			return fmt.Errorf("restore volume %s: %w", e.Name(), err)
+		}
+		restored++
+	}
+
+	// Vaultwarden: restore from the consistent staged copy (the snapshot stores the repo's
+	// absolute path, so it lands under <target>/<repo>/backups/staging/vaultwarden).
+	vwSrc := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
+	if fileExists(vwSrc) {
+		if err := restoreOneVolume(repo, "vaultwarden_vw-data", vwSrc); err != nil {
+			return fmt.Errorf("restore vaultwarden: %w", err)
+		}
+		restored++
+	} else {
+		fmt.Fprintf(os.Stderr, "note: no staged Vaultwarden copy at %s (if its live volume was in the\n"+
+			"snapshot it was restored above; otherwise Vaultwarden has no data to restore)\n", vwSrc)
+	}
+
+	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", restored)
+	return cmdUp()
+}
+
+// verifyRestoreIntoVolume proves the destructive put-back primitive that `restore --into-volumes`
+// relies on (restoreOneVolume): it must REPLACE a live volume's contents with the snapshot's —
+// old data gone, restored data present. Uses a throwaway volume; never touches the real stack.
+func verifyRestoreIntoVolume(repo string, keep bool) error {
+	work, err := os.MkdirTemp("", "hsctl-verify-into-")
+	if err != nil {
+		return err
+	}
+	if !keep {
+		defer os.RemoveAll(work)
+	}
+	id := strings.ToLower(genPassword(8))
+	vol := "hsctl-verify-into-" + id
+	if _, err := dockerOut(repo, "volume", "create", vol); err != nil {
+		return fmt.Errorf("create test volume: %w", err)
+	}
+	if !keep {
+		defer func() { _, _ = dockerOut(repo, "volume", "rm", "-f", vol) }()
+	}
+	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
+	if err != nil || mp == "" {
+		return fmt.Errorf("inspect test volume: %w", err)
+	}
+	// Seed the live volume with STALE data that must be gone after the restore.
+	if err := os.WriteFile(filepath.Join(mp, "stale.txt"), []byte(genPassword(16)), 0644); err != nil {
+		return fmt.Errorf("seed stale file: %w", err)
+	}
+	// A fake "snapshot" source holding the data we expect to land in the volume.
+	src := filepath.Join(work, "src")
+	if err := os.MkdirAll(src, 0700); err != nil {
+		return err
+	}
+	token := genPassword(24)
+	if err := os.WriteFile(filepath.Join(src, "restored.txt"), []byte(token), 0644); err != nil {
+		return err
+	}
+	if err := restoreOneVolume(repo, vol, src); err != nil {
+		return fmt.Errorf("restoreOneVolume: %w", err)
+	}
+	got, err := os.ReadFile(filepath.Join(mp, "restored.txt"))
+	if err != nil {
+		return fmt.Errorf("restored file missing: %w", err)
+	}
+	if strings.TrimSpace(string(got)) != token {
+		return fmt.Errorf("restored token %q != %q", strings.TrimSpace(string(got)), token)
+	}
+	if fileExists(filepath.Join(mp, "stale.txt")) {
+		return fmt.Errorf("stale file survived — volume was not wiped before the restore")
+	}
+	fmt.Println("  seeded stale data -> restoreOneVolume -> stale gone, restored data present")
+	return nil
+}
+
+// restoreOneVolume ensures the named volume exists, wipes it, and copies src/. into it.
+func restoreOneVolume(repo, name, src string) error {
+	if _, err := dockerOut(repo, "volume", "create", name); err != nil { // no-op if it already exists
+		return fmt.Errorf("create volume: %w", err)
+	}
+	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", name)
+	if err != nil || mp == "" {
+		return fmt.Errorf("inspect volume: %w", err)
+	}
+	if err := wipeDirContents(mp); err != nil {
+		return fmt.Errorf("wipe live volume: %w", err)
+	}
+	if err := copyContents(src, mp); err != nil {
+		return fmt.Errorf("copy restored data: %w", err)
+	}
+	fmt.Printf("  restored %s\n", name)
 	return nil
 }
 
@@ -406,6 +545,7 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 		run  func() error
 	}{
 		{"restic volume round-trip", func() error { return verifyVolumeRoundTrip(repo, image, keep) }},
+		{"restore --into-volumes put-back (throwaway volume)", func() error { return verifyRestoreIntoVolume(repo, keep) }},
 		{"Vaultwarden — passwords (boots from a restored volume)", func() error { return verifyVaultwarden(repo, keep) }},
 		{"Nextcloud — database (pg_dump -> restic -> import)", func() error { return verifyNextcloudDB(repo, keep) }},
 	}
