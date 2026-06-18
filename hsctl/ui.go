@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,14 +22,22 @@ import (
 // markdown renders with GFM enabled (tables, autolinks, strikethrough).
 var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
+const (
+	sessionCookie = "hsctl_session"
+	sessionTTL    = 7 * 24 * time.Hour
+)
+
 type uiServer struct {
 	repo string
 	pass string
+
+	mu       sync.Mutex
+	sessions map[string]time.Time // token -> expiry
 }
 
 func runUI(cmd *cobra.Command, _ []string) error {
 	addr, _ := cmd.Flags().GetString("addr")
-	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir())}
+	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
 	c := LoadConfig(s.repo)
 	c.Normalize()
 	if addr == "" {
@@ -37,6 +47,8 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/help", s.handleHelp)
 	mux.HandleFunc("/root.crt", s.handleCert)
+	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
@@ -74,17 +86,91 @@ func uiPassword(repo string) string {
 	return p
 }
 
+// requireAuth gates admin handlers behind a login-form session cookie. We use a cookie
+// (not HTTP Basic Auth) because browser password managers like Bitwarden/Vaultwarden can't
+// autofill the native Basic-Auth dialog — but they happily fill a normal login form.
 func (s *uiServer) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u, p, ok := r.BasicAuth()
-		if !ok || subtle.ConstantTimeCompare([]byte(u), []byte("admin")) != 1 ||
-			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="hsctl admin"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if !s.validSession(r) {
+			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
 		h(w, r)
 	}
+}
+
+// validSession reports whether the request carries a live (unexpired) session cookie.
+func (s *uiServer) validSession(r *http.Request) bool {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.sessions[c.Value]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(s.sessions, c.Value)
+		return false
+	}
+	return true
+}
+
+type loginData struct{ Err, Next string }
+
+// handleLogin shows the sign-in form (GET) and checks credentials (POST). On success it
+// mints a session token, stores it server-side, and sets it as an HttpOnly cookie.
+func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		u := r.FormValue("username")
+		p := r.FormValue("password")
+		ok := subtle.ConstantTimeCompare([]byte(u), []byte("admin")) == 1 &&
+			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			render(w, loginTmpl, loginData{Err: "Wrong username or password.", Next: safeNext(r.FormValue("next"))})
+			return
+		}
+		tok := genPassword(32)
+		s.mu.Lock()
+		s.sessions[tok] = time.Now().Add(sessionTTL)
+		s.mu.Unlock()
+		http.SetCookie(w, &http.Cookie{
+			Name: sessionCookie, Value: tok, Path: "/",
+			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isHTTPS(r),
+			MaxAge: int(sessionTTL / time.Second),
+		})
+		http.Redirect(w, r, safeNext(r.FormValue("next")), http.StatusSeeOther)
+		return
+	}
+	render(w, loginTmpl, loginData{Next: safeNext(r.URL.Query().Get("next"))})
+}
+
+func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		s.mu.Lock()
+		delete(s.sessions, c.Value)
+		s.mu.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// safeNext keeps post-login redirects on this site (a local path), defaulting to /admin.
+func safeNext(next string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+		return next
+	}
+	return "/admin"
+}
+
+// isHTTPS reports whether the browser reached us over TLS, so we only flag the cookie
+// Secure then. Caddy terminates TLS and proxies in plain HTTP, so trust its forwarded
+// header; direct http://host:port access (no TLS) keeps the cookie usable.
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 type containerStatus struct {

@@ -81,6 +81,25 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 </p>
 
 <p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a></p>
+<p class="foot"><a href="/">← Home portal</a> · <a href="/logout">Log out</a></p>
+</div></body></html>`
+
+const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin login</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>🔒 Admin login</h1>
+<p class="sub">Sign in to manage the home server.</p>
+{{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
+<form method="post" action="/login" style="max-width:360px">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <p><label>Username<br>
+  <input name="username" autocomplete="username" value="admin"
+   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <p><label>Password<br>
+  <input type="password" name="password" autocomplete="current-password" autofocus
+   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <button class="btn">Sign in</button>
+</form>
 <p class="foot"><a href="/">← Home portal</a></p>
 </div></body></html>`
 
