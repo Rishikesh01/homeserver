@@ -615,7 +615,9 @@ func verifyRestoreIntoVolume(repo string, keep bool) error {
 	return nil
 }
 
-// restoreOneVolume ensures the named volume exists, wipes it, and copies src/. into it.
+// restoreOneVolume ensures the named volume exists and replaces its contents with src/. via
+// swapDirContents — stage-then-swap, so a failed/interrupted restore rolls back instead of
+// leaving the only live copy half-wiped.
 func restoreOneVolume(repo, name, src string) error {
 	if _, err := dockerOut(repo, "volume", "create", name); err != nil { // no-op if it already exists
 		return fmt.Errorf("create volume: %w", err)
@@ -624,11 +626,8 @@ func restoreOneVolume(repo, name, src string) error {
 	if err != nil || mp == "" {
 		return fmt.Errorf("inspect volume: %w", err)
 	}
-	if err := wipeDirContents(mp); err != nil {
-		return fmt.Errorf("wipe live volume: %w", err)
-	}
-	if err := copyContents(src, mp); err != nil {
-		return fmt.Errorf("copy restored data: %w", err)
+	if err := swapDirContents(mp, src); err != nil {
+		return fmt.Errorf("restore %s: %w", name, err)
 	}
 	fmt.Printf("  restored %s\n", name)
 	return nil
@@ -1149,6 +1148,93 @@ func copyContents(src, dst string) error {
 	c := exec.Command("cp", "-a", src+"/.", dst+"/")
 	c.Stderr = os.Stderr
 	return c.Run()
+}
+
+// swapDirContents replaces dst's CONTENTS with src's, non-destructively: it stages dst's
+// current entries into a sibling "<dst>.prev" and only commits once the new copy fully
+// succeeds, rolling back on any failure — so a failed/interrupted restore never leaves the
+// only copy half-wiped (the "never wipe the only live copy in place" invariant). It moves the
+// child entries rather than renaming dst itself, so dst's OWN directory node (mode + owner)
+// is preserved — which matters for services like Postgres that refuse to start unless their
+// data dir has the exact expected mode/owner. Caller must run as root with nothing mounted on
+// dst (the stack is down during restore).
+func swapDirContents(dst, src string) error {
+	if need, err := dirSize(src); err == nil && need > 0 {
+		if free, err := fsAvail(dst); err == nil && free < need {
+			return fmt.Errorf("not enough free space to restore into %s: ~%d bytes needed, %d free", dst, need, free)
+		}
+	}
+	prev := dst + ".prev"
+	if err := os.RemoveAll(prev); err != nil { // clear any stale rollback dir from a prior crash
+		return fmt.Errorf("clear stale %s: %w", prev, err)
+	}
+	if err := os.Mkdir(prev, 0700); err != nil {
+		return fmt.Errorf("create rollback dir: %w", err)
+	}
+	defer os.RemoveAll(prev) // staging dir is gone whatever the outcome
+	moved, err := moveChildren(dst, prev)
+	if err != nil {
+		restoreChildren(prev, dst, moved) // undo a partial move
+		return fmt.Errorf("stage current data aside: %w", err)
+	}
+	if err := copyContents(src, dst); err != nil {
+		_ = wipeDirContents(dst)          // drop the partial copy
+		restoreChildren(prev, dst, moved) // put the originals back
+		return fmt.Errorf("copy failed, rolled back to previous contents: %w", err)
+	}
+	return nil
+}
+
+// moveChildren moves every entry directly under from into to, returning the names moved (so a
+// caller can undo). Same-filesystem renames, so each move is atomic.
+func moveChildren(from, to string) ([]string, error) {
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		return nil, err
+	}
+	var moved []string
+	for _, e := range entries {
+		if err := os.Rename(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
+			return moved, err
+		}
+		moved = append(moved, e.Name())
+	}
+	return moved, nil
+}
+
+// restoreChildren best-effort moves the named entries from `from` back into `to` (rollback).
+func restoreChildren(from, to string, names []string) {
+	for _, n := range names {
+		_ = os.Rename(filepath.Join(from, n), filepath.Join(to, n))
+	}
+}
+
+// dirSize sums the sizes of regular files under path (for the free-space preflight).
+func dirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+// fsAvail returns the bytes available to a non-root user on the filesystem holding path.
+func fsAvail(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
 }
 
 // copyFile copies a single file src -> dst, preserving ownership/permissions.

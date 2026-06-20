@@ -111,3 +111,73 @@ func TestAssertCaptureConsistent(t *testing.T) {
 		}
 	}
 }
+
+func TestSwapDirContentsSuccess(t *testing.T) {
+	dst := t.TempDir()
+	src := t.TempDir()
+	// The snapshot (src) carries the original volume's strict data-dir mode (e.g. Postgres
+	// 0700); the restored volume must end up with THAT mode, not dst's prior mode. `cp -a`
+	// propagates src's dir mode onto dst, which is exactly what we want.
+	if err := os.Chmod(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "stale.txt"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "new.txt"), []byte("fresh"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := swapDirContents(dst, src); err != nil {
+		t.Fatalf("swapDirContents: %v", err)
+	}
+	// New data present, stale gone, nested dir copied.
+	if b, err := os.ReadFile(filepath.Join(dst, "sub", "new.txt")); err != nil || string(b) != "fresh" {
+		t.Errorf("restored file missing/wrong: %q err=%v", b, err)
+	}
+	if fileExists(filepath.Join(dst, "stale.txt")) {
+		t.Error("stale file survived the swap")
+	}
+	// No leftover rollback dir, and dst inherited the snapshot's strict mode.
+	if fileExists(dst + ".prev") {
+		t.Error(".prev rollback dir leaked on success")
+	}
+	if fi, err := os.Stat(dst); err != nil || fi.Mode().Perm() != 0700 {
+		t.Errorf("dst dir mode = %v err=%v (want 0700, the snapshot's mode)", fi.Mode().Perm(), err)
+	}
+}
+
+func TestSwapDirContentsRollback(t *testing.T) {
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "stale.txt"), []byte("precious"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A src that doesn't exist makes `cp -a` fail — the swap must roll back to the originals.
+	src := filepath.Join(t.TempDir(), "does-not-exist")
+
+	if err := swapDirContents(dst, src); err == nil {
+		t.Fatal("expected an error when src is missing")
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "stale.txt")); err != nil || string(b) != "precious" {
+		t.Errorf("original data not restored after rollback: %q err=%v", b, err)
+	}
+	if fileExists(dst + ".prev") {
+		t.Error(".prev rollback dir leaked after rollback")
+	}
+}
+
+func TestDirSize(t *testing.T) {
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "a"), make([]byte, 1000), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "b"), make([]byte, 500), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := dirSize(d); err != nil || n != 1500 {
+		t.Errorf("dirSize = %d err=%v, want 1500", n, err)
+	}
+}
