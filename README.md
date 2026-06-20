@@ -171,10 +171,12 @@ See your current generated logins anytime with `hsctl secrets show`.
 Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
 ciphertext) and cover a **consistent Postgres dump + a consistent Vaultwarden DB snapshot +
 every data volume + your config**. Vaultwarden uses SQLite (WAL mode), so its DB can't be
-copied safely while live — `backup run` briefly stops Vaultwarden (~1s) to copy **just its
-`db.sqlite3`** into `backups/staging/vaultwarden/`, then restarts it; its attachments and keys
-are backed up **live** with the volume. So the stop stays ~1s no matter how large attachments
-grow. Nextcloud is never stopped (its DB is dumped online with `pg_dump`).
+copied safely while live — `backup run` briefly stops Vaultwarden (~1s) to copy its **SQLite
+fileset (`db.sqlite3` + `-wal` + `-shm`)** into `backups/staging/vaultwarden/`, then restarts it;
+its attachments and keys are backed up **live** with the volume. So the stop stays ~1s no matter
+how large attachments grow. (The `-wal` is essential — `docker stop` may not checkpoint it, and
+dropping it would lose recent writes.) Nextcloud is never stopped (its DB is dumped online with
+`pg_dump`).
 
 ### Choose a destination — off the server
 
@@ -219,17 +221,20 @@ sudo hsctl backup verify                 # aliases: selftest, test
 ```
 
 A self-contained drill that **never touches your live stack or repo** — it spins up throwaway
-Docker volumes/containers and an isolated temp repo. It runs four checks:
+Docker volumes/containers and an isolated temp repo. It runs five checks:
 
 1. **restic round-trip** — token into a volume → backup → wipe → restore → read it back.
 2. **`restore --into-volumes` put-back** — seeds a throwaway volume with stale data, runs the
    real put-back primitive, and confirms the stale data is **gone** and the snapshot's data is
    in place (so the destructive one-command restore can't silently leave old data behind).
 3. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
-   seeds a fake attachment, then runs the real path: stages **only** the DB, backs the volume up
-   **live excluding the DB**, restores + overlays the staged DB, confirms the DB is **byte-identical**,
+   seeds a fake attachment, then runs the real path: stages the DB **fileset**, backs the volume up
+   **live excluding the DB**, restores + overlays the fileset, confirms the DB is **byte-identical**,
    the **attachment survived** the live-volume path, and a fresh Vaultwarden **boots** and stays up.
-4. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
+4. **Vaultwarden WAL** — builds a SQLite DB with a row left **uncheckpointed in `-wal`** and proves
+   the main file alone loses it but the `db.sqlite3` + `-wal` + `-shm` fileset preserves it
+   (regression test for a real data-loss bug).
+5. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
    `pg_dump` the backup uses, pushes it through restic, then imports into a **brand-new**
    Postgres and checks the row is back.
 
@@ -276,8 +281,8 @@ done
 # 3b. IMPORTANT: step 3 restored Vaultwarden's volume (attachments/keys) but NOT its db.sqlite3
 #     (it's excluded from the volume backup). Overlay the consistent DB from staging, or you
 #     lose your passwords:
-sudo cp -a "/tmp/restore/<repo>/backups/staging/vaultwarden/db.sqlite3" \
-           /var/lib/docker/volumes/vaultwarden_vw-data/_data/db.sqlite3   # <repo> = abs path, e.g. /home/you/homeserver
+sudo cp -a /tmp/restore/<repo>/backups/staging/vaultwarden/db.sqlite3* \
+           /var/lib/docker/volumes/vaultwarden_vw-data/_data/   # <repo> = abs path, e.g. /home/you/homeserver
 
 # 4. Start everything
 hsctl up

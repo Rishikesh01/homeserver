@@ -356,10 +356,10 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	fmt.Println("       /var/lib/docker/volumes/<name>/_data/   (this restores the Postgres DB volume too)")
 	fmt.Println("  3. hsctl up")
 	fmt.Println("  Vaultwarden: step 2 restores its volume (attachments/keys) but NOT its DB — the")
-	fmt.Println("  consistent db.sqlite3 (copied during a brief stop) is in backups/staging/vaultwarden/.")
-	fmt.Println("  Overlay it onto the restored volume before step 3:")
-	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/db.sqlite3 \\")
-	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/db.sqlite3")
+	fmt.Println("  consistent SQLite fileset (copied during a brief stop) is in backups/staging/vaultwarden/.")
+	fmt.Println("  Overlay it (db.sqlite3 + any -wal/-shm) onto the restored volume before step 3:")
+	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/db.sqlite3* \\")
+	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/")
 	fmt.Println("  (If staging was skipped at backup time, the volume already includes its DB — nothing to overlay.)")
 	fmt.Println("  Nextcloud: a consistent SQL dump is also in backups/staging/nextcloud-db.sql — only")
 	fmt.Println("  needed as a fallback (import into a fresh nextcloud-db) if the restored DB volume won't start.")
@@ -435,15 +435,22 @@ func restoreIntoVolumes(repo, target string) error {
 	vwStaging := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
 	switch vwInLoop := fileExists(filepath.Join(volsRoot, "vaultwarden_vw-data", "_data")); {
 	case vwInLoop:
-		if vwDB := filepath.Join(vwStaging, "db.sqlite3"); fileExists(vwDB) {
+		if fileExists(filepath.Join(vwStaging, "db.sqlite3")) {
 			mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", "vaultwarden_vw-data")
 			if err != nil || mp == "" {
 				return fmt.Errorf("vaultwarden_vw-data volume missing — cannot overlay its DB: %w", err)
 			}
-			if err := copyFile(vwDB, filepath.Join(mp, "db.sqlite3")); err != nil {
-				return fmt.Errorf("overlay vaultwarden db.sqlite3: %w", err)
+			// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
+			for _, suf := range dbFilesetSuffixes {
+				f := filepath.Join(vwStaging, "db.sqlite3"+suf)
+				if !fileExists(f) {
+					continue
+				}
+				if err := copyFile(f, filepath.Join(mp, "db.sqlite3"+suf)); err != nil {
+					return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
+				}
 			}
-			fmt.Println("  restored vaultwarden db.sqlite3 (consistent staged copy)")
+			fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
 		}
 	case fileExists(vwStaging):
 		// Older snapshot: staging holds the entire volume.
@@ -589,6 +596,7 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 		{"restic volume round-trip", func() error { return verifyVolumeRoundTrip(repo, image, keep) }},
 		{"restore --into-volumes put-back (throwaway volume)", func() error { return verifyRestoreIntoVolume(repo, keep) }},
 		{"Vaultwarden — passwords (boots from a restored volume)", func() error { return verifyVaultwarden(repo, keep) }},
+		{"Vaultwarden — WAL not dropped (db+wal+shm fileset)", func() error { return verifyVaultwardenWAL(repo, keep) }},
 		{"Nextcloud — database (pg_dump -> restic -> import)", func() error { return verifyNextcloudDB(repo, keep) }},
 	}
 	failed := 0
@@ -757,14 +765,20 @@ func verifyVaultwarden(repo string, keep bool) error {
 		return err
 	}
 
-	// Mirror production (stageVaultwardenDB + restoreIntoVolumes): stage ONLY db.sqlite3, back up
-	// the volume LIVE excluding the DB plus the staged DB, then restore = volume files + DB overlay.
+	// Mirror production (stageVaultwardenDB + restoreIntoVolumes): stage the DB FILESET, back up
+	// the volume LIVE excluding the DB fileset plus the staged fileset, then restore = volume
+	// files + fileset overlay.
 	stageVault := filepath.Join(work, "staging", "vaultwarden")
 	if err := os.MkdirAll(stageVault, 0700); err != nil {
 		return err
 	}
-	if err := copyFile(dbPath, filepath.Join(stageVault, "db.sqlite3")); err != nil {
-		return fmt.Errorf("stage db: %w", err)
+	for _, suf := range dbFilesetSuffixes {
+		f := dbPath + suf
+		if fileExists(f) {
+			if err := copyFile(f, filepath.Join(stageVault, "db.sqlite3"+suf)); err != nil {
+				return fmt.Errorf("stage db fileset: %w", err)
+			}
+		}
 	}
 	if err := restic("init"); err != nil {
 		return err
@@ -779,12 +793,17 @@ func verifyVaultwarden(repo string, keep bool) error {
 	if err := restic("restore", "latest", "--target", restoreDir); err != nil {
 		return err
 	}
-	// Reconstruct: volume files (attachments/keys, no DB) then overlay the staged DB.
+	// Reconstruct: volume files (attachments/keys, no DB) then overlay the staged fileset.
 	if err := copyContents(filepath.Join(restoreDir, mp), mp); err != nil {
 		return fmt.Errorf("restore volume files: %w", err)
 	}
-	if err := copyFile(filepath.Join(restoreDir, stageVault, "db.sqlite3"), dbPath); err != nil {
-		return fmt.Errorf("overlay staged db: %w", err)
+	for _, suf := range dbFilesetSuffixes {
+		f := filepath.Join(restoreDir, stageVault, "db.sqlite3"+suf)
+		if fileExists(f) {
+			if err := copyFile(f, dbPath+suf); err != nil {
+				return fmt.Errorf("overlay staged db fileset: %w", err)
+			}
+		}
 	}
 	h2, err := sha256File(dbPath)
 	if err != nil {
@@ -814,6 +833,56 @@ func verifyVaultwarden(repo string, keep bool) error {
 		return fmt.Errorf("vaultwarden exited after booting from restored data (state=%s)", st)
 	}
 	fmt.Println("  fresh Vaultwarden booted from the restored volume and stayed up")
+	return nil
+}
+
+// verifyVaultwardenWAL is the regression test for the data-loss bug where copying only
+// db.sqlite3 (not the -wal) dropped writes still sitting in the WAL. It builds a WAL-mode DB
+// with a row that stays UNCHECKPOINTED in db.sqlite3-wal (copying the files via `.shell` while
+// the connection is still open, before any close-checkpoint), then proves: the main file ALONE
+// loses the row, but the full fileset (db + -wal + -shm) preserves it. Needs sqlite3; skips if absent.
+func verifyVaultwardenWAL(repo string, keep bool) error {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		fmt.Println("  SKIP: sqlite3 not installed (can't build a WAL fixture)")
+		return nil
+	}
+	work, err := os.MkdirTemp("", "hsctl-verify-wal-")
+	if err != nil {
+		return err
+	}
+	if !keep {
+		defer os.RemoveAll(work)
+	}
+	src, full, mainOnly := filepath.Join(work, "src"), filepath.Join(work, "full"), filepath.Join(work, "main")
+	for _, d := range []string{src, full, mainOnly} {
+		if err := os.MkdirAll(d, 0700); err != nil {
+			return err
+		}
+	}
+	db := filepath.Join(src, "db.sqlite3")
+	// `.shell` runs mid-session (connection still open), so the row is still in -wal — exactly the
+	// state docker stop can leave. We snapshot both a main-only copy and the full fileset there.
+	script := fmt.Sprintf("PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n"+
+		"CREATE TABLE m(v);\nINSERT INTO m VALUES('WAL-MARKER');\n"+
+		".shell cp %s %s\n.shell cp %s %s %s %s/\n",
+		db, filepath.Join(mainOnly, "db.sqlite3"),
+		db, db+"-wal", db+"-shm", full)
+	build := exec.Command("sqlite3", db)
+	build.Stdin, build.Stderr = strings.NewReader(script), os.Stderr
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("build WAL fixture (does sqlite3 allow .shell?): %w", err)
+	}
+	q := func(dir string) string {
+		out, _ := exec.Command("sqlite3", filepath.Join(dir, "db.sqlite3"), "select v from m").Output()
+		return strings.TrimSpace(string(out))
+	}
+	if q(mainOnly) == "WAL-MARKER" {
+		return fmt.Errorf("fixture invalid: row was already checkpointed into the main file (not a WAL test)")
+	}
+	if got := q(full); got != "WAL-MARKER" {
+		return fmt.Errorf("WAL row LOST by the fileset copy (got %q) — db.sqlite3-wal not preserved", got)
+	}
+	fmt.Println("  uncheckpointed WAL row: lost by main-only copy, PRESERVED by the db+wal+shm fileset")
 	return nil
 }
 
@@ -991,18 +1060,26 @@ func copyFile(src, dst string) error {
 	return c.Run()
 }
 
-// stageVaultwardenDB copies ONLY Vaultwarden's SQLite DB into staging/vaultwarden/ and returns
-// the live DB path to EXCLUDE from the volume backup. Vaultwarden's SQLite (WAL mode) is the
-// one thing unsafe to copy live (db.sqlite3 + -wal + -shm read at different instants can be
-// torn). Everything else in the volume — attachments, rsa_key.pem, config.json — is static and
-// safe to copy live with the rest of the stack. So we stop the container only long enough to
-// copy the (small) DB — a clean shutdown checkpoints the WAL into db.sqlite3 — then restart.
+// dbFilesetSuffixes are the SQLite WAL-mode fileset parts. db.sqlite3-wal can hold committed
+// writes NOT yet checkpointed into the main file, and db.sqlite3-shm is its index — so all three
+// must be copied/restored together or recent writes are lost (this exact bug shipped once).
+var dbFilesetSuffixes = []string{"", "-wal", "-shm"}
+
+// stageVaultwardenDB copies Vaultwarden's SQLite fileset (db.sqlite3 + -wal + -shm) into
+// staging/vaultwarden/ and returns the live DB-glob to EXCLUDE from the volume backup. Only the
+// DB fileset is unsafe to copy live (the three files read at different instants can be torn);
+// everything else — attachments, rsa_key.pem, config.json — is static and backed up live with
+// the volume. So we stop the container only long enough to copy the (small) fileset, then restart.
 // The stop stays ~1s regardless of how large attachments grow, which is the whole point.
+//
+// We copy ALL of -wal/-shm too (not just db.sqlite3): docker stop does NOT reliably checkpoint
+// the WAL, so recent writes can still be sitting in db.sqlite3-wal. Copying the fileset and
+// restoring it lets SQLite replay the WAL on open — no committed write is left behind.
 //
 // Best-effort, like dumpNextcloudDB: if Vaultwarden isn't running (the at-rest volume is then
 // already consistent) or any step fails, we stage nothing and return "" — backupRun then backs
 // up the whole live volume (DB included). Mirror any change here in verifyVaultwarden's self-test
-// and in restoreIntoVolumes (which overlays the staged DB onto the restored volume).
+// and in restoreIntoVolumes (which overlays the staged fileset onto the restored volume).
 func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	const svc = "vaultwarden"
 	if containerState(repo, svc) != "running" {
@@ -1033,18 +1110,25 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 			fmt.Fprintln(os.Stderr, "vaultwarden: WARNING — failed to restart after backup, start it manually:", err)
 		}
 	}()
-	src := filepath.Join(mp, "db.sqlite3")
-	if !fileExists(src) {
+	if !fileExists(filepath.Join(mp, "db.sqlite3")) {
 		fmt.Fprintln(os.Stderr, "vaultwarden: db.sqlite3 not found, backing up live volume as-is")
 		return ""
 	}
-	if err := copyFile(src, filepath.Join(dest, "db.sqlite3")); err != nil {
-		fmt.Fprintln(os.Stderr, "vaultwarden: DB copy to staging failed, backing up live volume as-is:", err)
-		return ""
+	// Copy the whole fileset (main + -wal + -shm). -wal/-shm may be absent (already checkpointed);
+	// copy whatever exists. Missing -wal would silently drop uncheckpointed writes.
+	for _, suf := range dbFilesetSuffixes {
+		f := filepath.Join(mp, "db.sqlite3"+suf)
+		if !fileExists(f) {
+			continue
+		}
+		if err := copyFile(f, filepath.Join(dest, "db.sqlite3"+suf)); err != nil {
+			fmt.Fprintln(os.Stderr, "vaultwarden: DB fileset copy to staging failed, backing up live volume as-is:", err)
+			return ""
+		}
 	}
-	fmt.Println("vaultwarden: staged a consistent db.sqlite3 (container stopped ~1s); attachments backed up live")
-	// Exclude the live DB files (db.sqlite3 + -wal/-shm) from the volume backup — the consistent
-	// copy is in staging. restic matches this glob against each file's absolute path.
+	fmt.Println("vaultwarden: staged the SQLite fileset (db.sqlite3 + WAL; container stopped ~1s); attachments backed up live")
+	// Exclude the live DB fileset from the volume backup — the consistent copy is in staging.
+	// restic matches this glob against each file's absolute path.
 	return filepath.Join(mp, "db.sqlite3*")
 }
 
