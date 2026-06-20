@@ -48,6 +48,8 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
   <a class="card" href="/admin/backup"><h3>💾 Backup &amp; restore</h3>
     <p>Back the server up, or restore it from a backup (admin login).</p></a>
+  <a class="card" href="/admin/migrate"><h3>☁️ Cloud migration</h3>
+    <p>See whether the apps are running at home or in the cloud (admin login).</p></a>
 </div>
 <p class="foot">Trouble? Open the <a href="/help">Setup guide</a>, or ask your admin. · <a href="/admin">Admin</a></p>
 </div></body></html>`
@@ -82,7 +84,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <input type="hidden" name="do" value="shutdown"><button class="btn red">⏻ Shut down server</button></form>
 </p>
 
-<p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a></p>
+<p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a> · <a href="/admin/migrate">☁️ Cloud migration →</a></p>
 <p class="foot"><a href="/">← Home portal</a> · <a href="/logout">Log out</a></p>
 </div></body></html>`
 
@@ -139,6 +141,56 @@ access. First time: set a destination above, then run <code>sudo hsctl backup in
 <p><a href="/admin/backup/restore">♻️ Restore from a backup →</a></p>
 
 <p class="foot"><a href="/admin">← Admin</a></p>
+</div></body></html>`
+
+const migrateTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Cloud migration</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>☁️ Cloud migration</h1>
+<p class="sub">On demand, move the apps to a cloud server while you travel — then bring them home.</p>
+{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+
+{{if eq .Authority "cloud"}}
+<div class="banner"><b>The apps are running in the CLOUD right now.</b> Home is sealed so the two
+copies can't diverge. When you're back home, bring them back from the server's command line:
+<code>hsctl migrate back</code>.</div>
+{{else if eq .Authority "unknown"}}
+<div class="banner"><b>Migration state is unknown.</b> Home is blocked until this is resolved.
+If home is truly the right copy, use “Declare home live” below.</div>
+{{else}}
+<div class="note"><b>The apps are running at HOME.</b> To move them to the cloud for a trip, run
+<code>hsctl migrate to-cloud</code> on the server. (It's command-line only: a migration takes the
+web proxy offline mid-move, so it can't be driven from this page.)</div>
+{{end}}
+
+<h3>Status</h3>
+<table>
+<tr><th>Live copy</th><td>{{if eq .Authority "cloud"}}<span class="tag bad">cloud</span>{{else if eq .Authority "unknown"}}<span class="tag bad">unknown</span>{{else}}<span class="tag ok">home</span>{{end}}</td></tr>
+{{if .Provider}}<tr><th>Provider</th><td>{{.Provider}}</td></tr>{{end}}
+{{if .HasVM}}<tr><th>Cloud VM</th><td>{{.CloudVMID}} · {{.CloudAddr}}</td></tr>{{end}}
+{{if .Snapshot}}<tr><th>Snapshot</th><td>{{.Snapshot}}</td></tr>{{end}}
+{{if .Since}}<tr><th>Since</th><td>{{.Since}}</td></tr>{{end}}
+{{if .LastError}}<tr><th>Last note</th><td>{{.LastError}}</td></tr>{{end}}
+</table>
+
+{{if ne .Authority "home"}}
+<h3 style="margin-top:24px">Declare home live (escape hatch)</h3>
+<p>Use only if the cloud server is gone and can't be brought back. This makes HOME authoritative
+<b>without</b> recovering anything created on the cloud since the last backup.</p>
+<form method="post" action="/admin/migrate/action" style="display:inline"
+  onsubmit="return confirm('Declare HOME the live copy?\n\nAny data created on the cloud since the last backup will NOT be recovered. Only do this if the cloud is gone.')">
+  <input type="hidden" name="do" value="force-home"><button class="btn red">Declare home live</button></form>
+{{end}}
+
+{{if .HasVM}}
+<h3 style="margin-top:24px">Destroy the cloud VM</h3>
+<p>Tear down the cloud server to stop it costing money. Allowed only once home is the live copy.</p>
+<form method="post" action="/admin/migrate/action" style="display:inline"
+  onsubmit="return confirm('Destroy the cloud VM? This stops billing for it.')">
+  <input type="hidden" name="do" value="destroy"><button class="btn gray">Destroy cloud VM</button></form>
+{{end}}
+
+<p class="foot" style="margin-top:24px"><a href="/admin">← Admin</a></p>
 </div></body></html>`
 
 const restoreTmpl = `<!doctype html><html><head><meta charset="utf-8">

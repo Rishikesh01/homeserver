@@ -83,6 +83,20 @@ type backupCfg struct {
 // the snapshots (and their key) are scattered somewhere unexpected.
 func backupRepoDir() (string, error) { return requireRepoDir() }
 
+// isRemoteRepo reports whether the restic repo is a network/object backend rather than a
+// local path: sftp:, rest:, s3:, b2:, gs:, azure:, swift:, rclone:. For these there is no
+// local mountpoint to guard (so REQUIRE_MOUNT doesn't apply) and the repo key must never be
+// auto-generated (a new key cannot open the existing remote repo). The cloud side of a
+// migration always uses sftp: back to the home HDD over Tailscale.
+func isRemoteRepo(repo string) bool {
+	for _, p := range []string{"sftp:", "rest:", "s3:", "b2:", "gs:", "azure:", "swift:", "rclone:"} {
+		if strings.HasPrefix(repo, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // requireBackupMount guards against the classic external-disk failure: when the backup
 // HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
 // restic would create/write a repo THERE — a "successful" backup that silently lives on the
@@ -90,7 +104,11 @@ func backupRepoDir() (string, error) { return requireRepoDir() }
 // backup.conf, we refuse any repo operation unless that path is a real mount, detected by
 // comparing its device id to /'s: a mounted HDD has a different st_dev, an unmounted
 // mountpoint shares root's. Unset = no check (e.g. the default repo that lives on root).
+// A remote/object repo (sftp:/s3:/…) has no local mount, so the guard is skipped entirely.
 func requireBackupMount(cfg backupCfg) error {
+	if isRemoteRepo(cfg.Repo) {
+		return nil // network/object backend: nothing local to mount
+	}
 	p := cfg.RequireMount
 	if p == "" {
 		return nil
@@ -254,8 +272,30 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func backupRun(repo string, cfg backupCfg) error {
-	ensureResticPassword(repo)
+// backupRunOpts tunes a capture. The zero value is the normal nightly/manual backup.
+type backupRunOpts struct {
+	// strict aborts the capture if it would be inconsistent (Vaultwarden running but its DB
+	// wasn't staged, or the Nextcloud pg_dump is missing/empty) and verifies the resulting
+	// snapshot (restic check + the staged DB artifacts are present) before returning. Used by
+	// the migration capture, where a torn snapshot could become the only copy of the data.
+	strict bool
+	// noPrune skips the retention forget+prune. Used by the move-back capture from the cloud:
+	// the one repo that is the only path home must never be pruned in that step.
+	noPrune bool
+}
+
+func backupRun(repo string, cfg backupCfg) error { return backupRunWith(repo, cfg, backupRunOpts{}) }
+
+func backupRunWith(repo string, cfg backupCfg, opts backupRunOpts) error {
+	// Only the authoritative side may back up: a sealed home must not write to (and prune) the
+	// shared repo while the cloud is live. On the cloud VM (role=cloud) authority=cloud, so its
+	// capture is allowed; on a never-migrated box authority=home, so the nightly run is allowed.
+	if err := guardAuthoritative(repo); err != nil {
+		return err
+	}
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
 			"pin may have been overridden by a system upgrade. Run `hsctl backup verify` to re-test.\n",
@@ -269,7 +309,14 @@ func backupRun(repo string, cfg backupCfg) error {
 	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments,
 	// keys and config are static files backed up live with the volume below — so the stop stays
 	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
+	vwRunning := containerState(repo, "vaultwarden") == "running" // read BEFORE staging stops it
 	vwExclude := stageVaultwardenDB(repo, staging)
+	ncDBRunning := containerState(repo, "nextcloud-db") == "running"
+	if opts.strict {
+		if err := assertCaptureConsistent(staging, vwRunning, vwExclude, ncDBRunning); err != nil {
+			return err
+		}
+	}
 
 	vols := backupVolumesFor(repo)
 	fmt.Printf("volumes to back up (%d): %s\n", len(vols), strings.Join(vols, " "))
@@ -299,8 +346,61 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
 		return err
 	}
-	if cfg.Retention != "" {
+	if opts.strict {
+		if err := verifySnapshotComplete(repo, cfg, vwRunning, ncDBRunning); err != nil {
+			return err
+		}
+	}
+	if !opts.noPrune && cfg.Retention != "" {
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+	}
+	return nil
+}
+
+// assertCaptureConsistent (strict mode) refuses a capture that would be inconsistent. It is
+// pure (takes the container states the caller already read, does no docker) so it can be
+// unit-tested:
+//   - Vaultwarden running but vwExclude=="" means staging failed, so the live volume backup
+//     would capture a TORN SQLite DB — refuse.
+//   - Vaultwarden running: the consistent db.sqlite3 must actually be in staging.
+//   - Nextcloud DB running: the pg_dump must be present and non-trivial (a failed dump leaves
+//     an empty/near-empty file).
+func assertCaptureConsistent(staging string, vwRunning bool, vwExclude string, ncDBRunning bool) error {
+	if vwRunning {
+		if vwExclude == "" {
+			return fmt.Errorf("strict: Vaultwarden is running but its DB was not staged — refusing to " +
+				"capture a torn live database (see the staging warnings above)")
+		}
+		if !fileExists(filepath.Join(staging, "vaultwarden", "db.sqlite3")) {
+			return fmt.Errorf("strict: staged Vaultwarden db.sqlite3 is missing from %s", staging)
+		}
+	}
+	if ncDBRunning {
+		fi, err := os.Stat(filepath.Join(staging, "nextcloud-db.sql"))
+		if err != nil || fi.Size() < 64 {
+			return fmt.Errorf("strict: Nextcloud DB is running but its pg_dump is missing or empty — " +
+				"refusing to capture Nextcloud without a consistent DB dump")
+		}
+	}
+	return nil
+}
+
+// verifySnapshotComplete (strict mode) proves the snapshot just written is usable BEFORE the
+// caller relies on it: a structural restic check, plus the staged DB artifacts we restore from
+// must actually be present in the latest snapshot.
+func verifySnapshotComplete(repo string, cfg backupCfg, vwRunning, ncDBRunning bool) error {
+	if err := resticRun(repo, cfg, "check"); err != nil {
+		return fmt.Errorf("strict: restic check failed after backup: %w", err)
+	}
+	out, err := resticOutput(repo, cfg, "ls", "latest")
+	if err != nil {
+		return fmt.Errorf("strict: restic ls latest failed: %w\n%s", err, out)
+	}
+	if vwRunning && !strings.Contains(out, "/staging/vaultwarden/db.sqlite3") {
+		return fmt.Errorf("strict: the new snapshot is missing the staged Vaultwarden DB")
+	}
+	if ncDBRunning && !strings.Contains(out, "nextcloud-db.sql") {
+		return fmt.Errorf("strict: the new snapshot is missing the Nextcloud DB dump")
 	}
 	return nil
 }
@@ -328,7 +428,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		snap = args[0]
 	}
-	ensureResticPassword(repo)
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
 	}
@@ -379,7 +481,9 @@ func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
 	if snap == "" {
 		snap = "latest"
 	}
-	ensureResticPassword(repo)
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	target := filepath.Join(repo, "restore")
 	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
@@ -517,7 +621,9 @@ func verifyRestoreIntoVolume(repo string, keep bool) error {
 	return nil
 }
 
-// restoreOneVolume ensures the named volume exists, wipes it, and copies src/. into it.
+// restoreOneVolume ensures the named volume exists and replaces its contents with src/. via
+// swapDirContents — stage-then-swap, so a failed/interrupted restore rolls back instead of
+// leaving the only live copy half-wiped.
 func restoreOneVolume(repo, name, src string) error {
 	if _, err := dockerOut(repo, "volume", "create", name); err != nil { // no-op if it already exists
 		return fmt.Errorf("create volume: %w", err)
@@ -526,11 +632,8 @@ func restoreOneVolume(repo, name, src string) error {
 	if err != nil || mp == "" {
 		return fmt.Errorf("inspect volume: %w", err)
 	}
-	if err := wipeDirContents(mp); err != nil {
-		return fmt.Errorf("wipe live volume: %w", err)
-	}
-	if err := copyContents(src, mp); err != nil {
-		return fmt.Errorf("copy restored data: %w", err)
+	if err := swapDirContents(mp, src); err != nil {
+		return fmt.Errorf("restore %s: %w", name, err)
 	}
 	fmt.Printf("  restored %s\n", name)
 	return nil
@@ -1053,6 +1156,93 @@ func copyContents(src, dst string) error {
 	return c.Run()
 }
 
+// swapDirContents replaces dst's CONTENTS with src's, non-destructively: it stages dst's
+// current entries into a sibling "<dst>.prev" and only commits once the new copy fully
+// succeeds, rolling back on any failure — so a failed/interrupted restore never leaves the
+// only copy half-wiped (the "never wipe the only live copy in place" invariant). It moves the
+// child entries rather than renaming dst itself, so dst's OWN directory node (mode + owner)
+// is preserved — which matters for services like Postgres that refuse to start unless their
+// data dir has the exact expected mode/owner. Caller must run as root with nothing mounted on
+// dst (the stack is down during restore).
+func swapDirContents(dst, src string) error {
+	if need, err := dirSize(src); err == nil && need > 0 {
+		if free, err := fsAvail(dst); err == nil && free < need {
+			return fmt.Errorf("not enough free space to restore into %s: ~%d bytes needed, %d free", dst, need, free)
+		}
+	}
+	prev := dst + ".prev"
+	if err := os.RemoveAll(prev); err != nil { // clear any stale rollback dir from a prior crash
+		return fmt.Errorf("clear stale %s: %w", prev, err)
+	}
+	if err := os.Mkdir(prev, 0700); err != nil {
+		return fmt.Errorf("create rollback dir: %w", err)
+	}
+	defer os.RemoveAll(prev) // staging dir is gone whatever the outcome
+	moved, err := moveChildren(dst, prev)
+	if err != nil {
+		restoreChildren(prev, dst, moved) // undo a partial move
+		return fmt.Errorf("stage current data aside: %w", err)
+	}
+	if err := copyContents(src, dst); err != nil {
+		_ = wipeDirContents(dst)          // drop the partial copy
+		restoreChildren(prev, dst, moved) // put the originals back
+		return fmt.Errorf("copy failed, rolled back to previous contents: %w", err)
+	}
+	return nil
+}
+
+// moveChildren moves every entry directly under from into to, returning the names moved (so a
+// caller can undo). Same-filesystem renames, so each move is atomic.
+func moveChildren(from, to string) ([]string, error) {
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		return nil, err
+	}
+	var moved []string
+	for _, e := range entries {
+		if err := os.Rename(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
+			return moved, err
+		}
+		moved = append(moved, e.Name())
+	}
+	return moved, nil
+}
+
+// restoreChildren best-effort moves the named entries from `from` back into `to` (rollback).
+func restoreChildren(from, to string, names []string) {
+	for _, n := range names {
+		_ = os.Rename(filepath.Join(from, n), filepath.Join(to, n))
+	}
+}
+
+// dirSize sums the sizes of regular files under path (for the free-space preflight).
+func dirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+// fsAvail returns the bytes available to a non-root user on the filesystem holding path.
+func fsAvail(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
 // copyFile copies a single file src -> dst, preserving ownership/permissions.
 func copyFile(src, dst string) error {
 	c := exec.Command("cp", "-a", src, dst)
@@ -1202,4 +1392,23 @@ func ensureResticPassword(repo string) {
 	pw := genPassword(32)
 	_ = writeFile0600(path, pw+"\n")
 	fmt.Printf("generated restic repo password -> %s  (BACK THIS UP; without it backups are unrecoverable)\n", path)
+}
+
+// ensureResticPasswordStrict is the safe variant for the run/restore paths: it NEVER mints a
+// key. A missing .restic-password on these paths would otherwise cause a NEW key to be
+// generated that cannot open the EXISTING repo — silently splitting history on a local repo,
+// and catastrophic on a remote/cloud repo (the only copy of the data lives there, encrypted
+// under the real key). Minting is reserved for `backup init` (ensureResticPassword). So here
+// we require the key to already exist, and fail closed with guidance if it doesn't.
+func ensureResticPasswordStrict(repo string, cfg backupCfg) error {
+	if fileExists(filepath.Join(repo, resticPassFile)) {
+		return nil
+	}
+	if isRemoteRepo(cfg.Repo) {
+		return fmt.Errorf("%s is missing and the repo (%s) is remote — refusing to auto-generate a key, "+
+			"because a new key CANNOT open the existing repo. Restore your original %s first.",
+			resticPassFile, cfg.Repo, resticPassFile)
+	}
+	return fmt.Errorf("%s is missing — run `hsctl backup init` first (or restore the key). Refusing to "+
+		"auto-generate it on a run/restore, since a fresh key cannot open an existing repo.", resticPassFile)
 }

@@ -65,6 +65,6 @@ func rootCmd() *cobra.Command {
 	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: runUI}
 	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, status, getca, install, ui, backupCmd(), secretsCmd(), migrateCmd())
 	return root
 }
