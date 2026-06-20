@@ -178,6 +178,35 @@ func (c Config) Save(repo string) error {
 	return writeFile0600(filepath.Join(repo, confFile), b.String())
 }
 
+// setEnvKV sets KEY=val in the .env file at repo/rel, replacing exactly the single line that
+// begins with "KEY=" and leaving every other line byte-for-byte intact — in particular the
+// Argon2 VW_ADMIN_TOKEN, whose doubled "$$" must not be disturbed. The key is appended if
+// absent. The file is rewritten 0600 (the mode all .env files use). Used by the migration
+// hostname fixup to repoint VW_DOMAIN between the home and cloud URLs.
+func setEnvKV(repo, rel, key, val string) error {
+	path := filepath.Join(repo, rel)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	prefix := key + "="
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, prefix) {
+			lines[i] = prefix + val
+			return writeFile0600(path, strings.Join(lines, "\n"))
+		}
+	}
+	// Not present: append, keeping a single trailing newline.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines[n-1] = prefix + val
+		lines = append(lines, "")
+	} else {
+		lines = append(lines, prefix+val)
+	}
+	return writeFile0600(path, strings.Join(lines, "\n"))
+}
+
 // ---- helpers ----
 
 func readKV(path string) (map[string]string, error) {
