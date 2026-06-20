@@ -55,6 +55,8 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
+	mux.HandleFunc("/admin/migrate", s.requireAuth(s.handleMigrate))
+	mux.HandleFunc("/admin/migrate/action", s.requireAuth(s.handleMigrateAction))
 	port := portOf(addr)
 	fmt.Printf("hsctl ui listening on %s\n", addr)
 	fmt.Printf("  dashboard : https://%s/   (via Caddy)   ·   http://%s%s/   (direct)\n", c.ServerIP, c.ServerIP, port)
@@ -409,6 +411,68 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	render(w, restoreTmpl, d)
+}
+
+type migrateData struct {
+	Authority, Provider, CloudVMID, CloudAddr, Snapshot, Since, LastError, Msg string
+	HasVM                                                                      bool
+}
+
+// handleMigrate shows whether the stack is live at home or in the cloud, plus the safe admin
+// controls. Starting/ending a migration (to-cloud / back) is CLI-only for now: it seals the
+// Caddy proxy mid-move, which would drop this very connection — so it must be driven from the
+// server's command line, not a web request. The quick, safe controls (force-home, destroy) live
+// here.
+func (s *uiServer) handleMigrate(w http.ResponseWriter, r *http.Request) {
+	st := loadState(s.repo)
+	render(w, migrateTmpl, migrateData{
+		Authority: string(st.Authority), Provider: st.Provider, CloudVMID: st.CloudServerID,
+		CloudAddr: st.CloudTailnetAddr, Snapshot: st.SnapshotID, Since: st.AuthorityAt,
+		LastError: st.LastError, HasVM: st.CloudServerID != "", Msg: r.URL.Query().Get("msg"),
+	})
+}
+
+func (s *uiServer) handleMigrateAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/migrate", http.StatusSeeOther)
+		return
+	}
+	var msg string
+	switch r.FormValue("do") {
+	case "force-home":
+		if err := saveState(s.repo, migrationState{Authority: authHome, LastError: "forced home via admin UI"}); err != nil {
+			msg = "force-home failed: " + err.Error()
+		} else {
+			msg = "Home is now authoritative. If a cloud VM is still running, destroy it below."
+		}
+	case "destroy":
+		msg = s.destroyCloudVM()
+	default:
+		msg = "unknown action"
+	}
+	http.Redirect(w, r, "/admin/migrate?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+}
+
+// destroyCloudVM tears down the recorded VM (cost guard / cleanup), refusing while the cloud is
+// still the authoritative copy.
+func (s *uiServer) destroyCloudVM() string {
+	st := loadState(s.repo)
+	if st.CloudServerID == "" {
+		return "No cloud VM is recorded."
+	}
+	if st.Authority == authCloud {
+		return "Refusing: the cloud is still the live copy. Bring it home first (from the command line), or use force-home if it's truly gone."
+	}
+	p, err := newProvider(st.Provider, loadCloudCfg(s.repo), s.repo)
+	if err != nil {
+		return "destroy failed: " + err.Error()
+	}
+	if err := p.DestroyVM(st.CloudServerID); err != nil {
+		return "destroy failed: " + err.Error()
+	}
+	st.CloudServerID, st.CloudTailnetAddr, st.Provider, st.VMTag, st.Phase = "", "", "", "", ""
+	_ = saveState(s.repo, st)
+	return "Cloud VM destroyed."
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).
