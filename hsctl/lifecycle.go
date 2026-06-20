@@ -25,7 +25,17 @@ func missingEnv() []string {
 	return miss
 }
 
+// cmdUp brings the stack up, but only if THIS host is the authoritative side — so home can't
+// be started while the cloud is the live copy (split-brain). The migration move-back path,
+// which legitimately brings home up after re-capturing the cloud, calls cmdUpUnguarded.
 func cmdUp() error {
+	if err := guardAuthoritative(repoDir()); err != nil {
+		return err
+	}
+	return cmdUpUnguarded()
+}
+
+func cmdUpUnguarded() error {
 	if m := missingEnv(); len(m) > 0 {
 		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
 	}

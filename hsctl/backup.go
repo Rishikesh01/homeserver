@@ -287,6 +287,12 @@ type backupRunOpts struct {
 func backupRun(repo string, cfg backupCfg) error { return backupRunWith(repo, cfg, backupRunOpts{}) }
 
 func backupRunWith(repo string, cfg backupCfg, opts backupRunOpts) error {
+	// Only the authoritative side may back up: a sealed home must not write to (and prune) the
+	// shared repo while the cloud is live. On the cloud VM (role=cloud) authority=cloud, so its
+	// capture is allowed; on a never-migrated box authority=home, so the nightly run is allowed.
+	if err := guardAuthoritative(repo); err != nil {
+		return err
+	}
 	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
 		return err
 	}
