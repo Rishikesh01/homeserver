@@ -171,9 +171,10 @@ See your current generated logins anytime with `hsctl secrets show`.
 Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
 ciphertext) and cover a **consistent Postgres dump + a consistent Vaultwarden DB snapshot +
 every data volume + your config**. Vaultwarden uses SQLite (WAL mode), so its DB can't be
-copied safely while live — `backup run` briefly stops Vaultwarden (a few seconds), copies a
-consistent snapshot into `backups/staging/vaultwarden/`, and restarts it. Nextcloud is never
-stopped (its DB is dumped online with `pg_dump`).
+copied safely while live — `backup run` briefly stops Vaultwarden (~1s) to copy **just its
+`db.sqlite3`** into `backups/staging/vaultwarden/`, then restarts it; its attachments and keys
+are backed up **live** with the volume. So the stop stays ~1s no matter how large attachments
+grow. Nextcloud is never stopped (its DB is dumped online with `pg_dump`).
 
 ### Choose a destination — off the server
 
@@ -225,8 +226,9 @@ Docker volumes/containers and an isolated temp repo. It runs four checks:
    real put-back primitive, and confirms the stale data is **gone** and the snapshot's data is
    in place (so the destructive one-command restore can't silently leave old data behind).
 3. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
-   backs up the consistent staged copy, wipes it, restores, confirms the DB is **byte-identical**,
-   and that a fresh Vaultwarden **boots from the restored data** and stays up.
+   seeds a fake attachment, then runs the real path: stages **only** the DB, backs the volume up
+   **live excluding the DB**, restores + overlays the staged DB, confirms the DB is **byte-identical**,
+   the **attachment survived** the live-volume path, and a fresh Vaultwarden **boots** and stays up.
 4. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
    `pg_dump` the backup uses, pushes it through restic, then imports into a **brand-new**
    Postgres and checks the row is back.
@@ -271,10 +273,11 @@ for d in /tmp/restore/var/lib/docker/volumes/*/; do
   sudo cp -a "$d/_data/." "/var/lib/docker/volumes/$v/_data/"
 done
 
-# 3b. IMPORTANT: Vaultwarden is NOT in the loop above — its data is the consistent copy
-#     under staging, not a volume dir. Restore it explicitly, or you lose your passwords:
-sudo cp -a "/tmp/restore/<repo>/backups/staging/vaultwarden/." \
-           /var/lib/docker/volumes/vaultwarden_vw-data/_data/   # <repo> = abs path, e.g. /home/you/homeserver
+# 3b. IMPORTANT: step 3 restored Vaultwarden's volume (attachments/keys) but NOT its db.sqlite3
+#     (it's excluded from the volume backup). Overlay the consistent DB from staging, or you
+#     lose your passwords:
+sudo cp -a "/tmp/restore/<repo>/backups/staging/vaultwarden/db.sqlite3" \
+           /var/lib/docker/volumes/vaultwarden_vw-data/_data/db.sqlite3   # <repo> = abs path, e.g. /home/you/homeserver
 
 # 4. Start everything
 hsctl up

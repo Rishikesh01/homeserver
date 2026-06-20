@@ -265,19 +265,16 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := os.MkdirAll(staging, 0700); err != nil {
 		return err
 	}
-	dumpNextcloudDB(repo, staging)              // best-effort; warns inside
-	stagedVW := stageVaultwarden(repo, staging) // best-effort consistent SQLite copy; warns inside
+	dumpNextcloudDB(repo, staging) // best-effort; warns inside
+	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments,
+	// keys and config are static files backed up live with the volume below — so the stop stays
+	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
+	vwExclude := stageVaultwardenDB(repo, staging)
 
 	vols := backupVolumesFor(repo)
 	fmt.Printf("volumes to back up (%d): %s\n", len(vols), strings.Join(vols, " "))
 	var paths []string
 	for _, v := range vols {
-		if v == stagedVW {
-			// We took a consistent copy into staging while Vaultwarden was briefly stopped;
-			// the live volume is now running again and would be a torn SQLite copy. Skip it.
-			fmt.Printf("  using consistent staged copy for %s (skipping the live volume)\n", v)
-			continue
-		}
 		if mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", v); err == nil && mp != "" {
 			paths = append(paths, mp)
 		} else {
@@ -294,7 +291,12 @@ func backupRun(repo string, cfg backupCfg) error {
 		paths = append(paths, p)
 	}
 
-	if err := resticRun(repo, cfg, append([]string{"backup", "--tag", "homeserver"}, paths...)...); err != nil {
+	args := []string{"backup", "--tag", "homeserver"}
+	if vwExclude != "" {
+		// Exclude the live (torn) DB from the volume backup; the consistent copy is in staging.
+		args = append(args, "--exclude", vwExclude)
+	}
+	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
 		return err
 	}
 	if cfg.Retention != "" {
@@ -353,12 +355,12 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  2. copy each volume's files back, e.g.  cp -a %s/var/lib/docker/volumes/<name>/_data/. \\\n", target)
 	fmt.Println("       /var/lib/docker/volumes/<name>/_data/   (this restores the Postgres DB volume too)")
 	fmt.Println("  3. hsctl up")
-	fmt.Println("  Vaultwarden: its data is NOT in a volume dir above — a consistent copy (taken while")
-	fmt.Println("  the container was briefly stopped) is in backups/staging/vaultwarden/. Restore it with:")
-	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/. \\")
-	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/")
-	fmt.Println("  (If staging that copy had failed during backup, the live vaultwarden_vw-data volume is")
-	fmt.Println("  present above instead — restore it like the others.)")
+	fmt.Println("  Vaultwarden: step 2 restores its volume (attachments/keys) but NOT its DB — the")
+	fmt.Println("  consistent db.sqlite3 (copied during a brief stop) is in backups/staging/vaultwarden/.")
+	fmt.Println("  Overlay it onto the restored volume before step 3:")
+	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/db.sqlite3 \\")
+	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/db.sqlite3")
+	fmt.Println("  (If staging was skipped at backup time, the volume already includes its DB — nothing to overlay.)")
 	fmt.Println("  Nextcloud: a consistent SQL dump is also in backups/staging/nextcloud-db.sql — only")
 	fmt.Println("  needed as a fallback (import into a fresh nextcloud-db) if the restored DB volume won't start.")
 	return nil
@@ -400,7 +402,8 @@ func restoreIntoVolumes(repo, target string) error {
 	}
 
 	// Every volume captured in the snapshot is under <target>/var/lib/docker/volumes/<name>/_data.
-	// (Vaultwarden's live volume is deliberately not here — restored from staging below.)
+	// This now INCLUDES vaultwarden_vw-data (its attachments/keys/config) — but NOT its db.sqlite3,
+	// which was excluded from the volume backup and lives in staging (overlaid below).
 	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
 	entries, err := os.ReadDir(volsRoot)
 	if err != nil {
@@ -422,17 +425,32 @@ func restoreIntoVolumes(repo, target string) error {
 		restored++
 	}
 
-	// Vaultwarden: restore from the consistent staged copy (the snapshot stores the repo's
-	// absolute path, so it lands under <target>/<repo>/backups/staging/vaultwarden).
-	vwSrc := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
-	if fileExists(vwSrc) {
-		if err := restoreOneVolume(repo, "vaultwarden_vw-data", vwSrc); err != nil {
-			return fmt.Errorf("restore vaultwarden: %w", err)
+	// Vaultwarden — handle both snapshot layouts (the snapshot stores the repo's absolute path,
+	// so staging lands under <target>/<repo>/backups/staging/vaultwarden):
+	//   - NEW: the volume (attachments/keys, no DB) was restored by the loop above; overlay the
+	//     consistent db.sqlite3 from staging onto it.
+	//   - OLD: the whole volume lives in staging (and isn't in the volume loop) — restore it whole.
+	// If staging is absent entirely, Vaultwarden was down at backup time and its DB was in the
+	// volume backup above, so there's nothing to do.
+	vwStaging := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
+	switch vwInLoop := fileExists(filepath.Join(volsRoot, "vaultwarden_vw-data", "_data")); {
+	case vwInLoop:
+		if vwDB := filepath.Join(vwStaging, "db.sqlite3"); fileExists(vwDB) {
+			mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", "vaultwarden_vw-data")
+			if err != nil || mp == "" {
+				return fmt.Errorf("vaultwarden_vw-data volume missing — cannot overlay its DB: %w", err)
+			}
+			if err := copyFile(vwDB, filepath.Join(mp, "db.sqlite3")); err != nil {
+				return fmt.Errorf("overlay vaultwarden db.sqlite3: %w", err)
+			}
+			fmt.Println("  restored vaultwarden db.sqlite3 (consistent staged copy)")
+		}
+	case fileExists(vwStaging):
+		// Older snapshot: staging holds the entire volume.
+		if err := restoreOneVolume(repo, "vaultwarden_vw-data", vwStaging); err != nil {
+			return fmt.Errorf("restore vaultwarden (legacy staging layout): %w", err)
 		}
 		restored++
-	} else {
-		fmt.Fprintf(os.Stderr, "note: no staged Vaultwarden copy at %s (if its live volume was in the\n"+
-			"snapshot it was restored above; otherwise Vaultwarden has no data to restore)\n", vwSrc)
 	}
 
 	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", restored)
@@ -673,12 +691,12 @@ func verifyVolumeRoundTrip(repo, image string, keep bool) error {
 	return nil
 }
 
-// verifyVaultwarden boots a throwaway Vaultwarden (the real image) against a fresh volume so
-// it writes its actual SQLite DB, then exercises the SAME path `backup run` uses: stop the
-// container for a consistent DB, copy the volume into a staging dir, back THAT up, wipe the
-// volume, restore, check the DB is byte-identical, and prove a fresh Vaultwarden BOOTS from
-// the restored data and stays up. Testing the staging copy (not the live mountpoint) is
-// deliberate — it's what production backs up, so the test can't pass on a path prod never runs.
+// verifyVaultwarden boots a throwaway Vaultwarden (the real image) against a fresh volume so it
+// writes its actual SQLite DB, seeds a fake attachment, then exercises the SAME path `backup run`
+// now uses: stop for a consistent DB, stage ONLY db.sqlite3, back up the volume LIVE excluding the
+// DB, restore, overlay the staged DB, and prove the DB is byte-identical, the attachment survived
+// (via the live-volume path), and a fresh Vaultwarden BOOTS from the reconstructed data and stays
+// up. Mirrors stageVaultwardenDB + restoreIntoVolumes so the test can't pass on a path prod never runs.
 func verifyVaultwarden(repo string, keep bool) error {
 	image := containerImage(repo, "vaultwarden")
 	if image == "" {
@@ -722,6 +740,15 @@ func verifyVaultwarden(repo string, keep bool) error {
 	if !dockerWait(60*time.Second, func() bool { return fileExists(dbPath) }) {
 		return fmt.Errorf("vaultwarden did not create db.sqlite3 within 60s")
 	}
+	// Seed a fake attachment — it must survive via the LIVE volume backup (attachments aren't staged).
+	attToken := genPassword(24)
+	attFile := filepath.Join(mp, "attachments", "proof.bin")
+	if err := os.MkdirAll(filepath.Dir(attFile), 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(attFile, []byte(attToken), 0644); err != nil {
+		return fmt.Errorf("seed attachment: %w", err)
+	}
 	if _, err := dockerOut(repo, "stop", c1); err != nil { // clean shutdown -> consistent sqlite
 		return fmt.Errorf("stop vaultwarden: %w", err)
 	}
@@ -730,20 +757,19 @@ func verifyVaultwarden(repo string, keep bool) error {
 		return err
 	}
 
-	// Mirror production (stageVaultwarden): copy the cleanly-stopped volume into a staging dir
-	// and back THAT up, rather than the live mountpoint — so this self-test runs the exact path
-	// `backup run` uses. Keep in sync with stageVaultwarden.
-	stage := filepath.Join(work, "staging", "vaultwarden")
-	if err := os.MkdirAll(stage, 0700); err != nil {
+	// Mirror production (stageVaultwardenDB + restoreIntoVolumes): stage ONLY db.sqlite3, back up
+	// the volume LIVE excluding the DB plus the staged DB, then restore = volume files + DB overlay.
+	stageVault := filepath.Join(work, "staging", "vaultwarden")
+	if err := os.MkdirAll(stageVault, 0700); err != nil {
 		return err
 	}
-	if err := copyContents(mp, stage); err != nil {
-		return fmt.Errorf("stage consistent copy: %w", err)
+	if err := copyFile(dbPath, filepath.Join(stageVault, "db.sqlite3")); err != nil {
+		return fmt.Errorf("stage db: %w", err)
 	}
 	if err := restic("init"); err != nil {
 		return err
 	}
-	if err := restic("backup", stage); err != nil {
+	if err := restic("backup", "--exclude", filepath.Join(mp, "db.sqlite3*"), mp, stageVault); err != nil {
 		return err
 	}
 	if err := wipeDirContents(mp); err != nil {
@@ -753,8 +779,12 @@ func verifyVaultwarden(repo string, keep bool) error {
 	if err := restic("restore", "latest", "--target", restoreDir); err != nil {
 		return err
 	}
-	if err := copyContents(filepath.Join(restoreDir, stage), mp); err != nil {
-		return fmt.Errorf("copy restored files back: %w", err)
+	// Reconstruct: volume files (attachments/keys, no DB) then overlay the staged DB.
+	if err := copyContents(filepath.Join(restoreDir, mp), mp); err != nil {
+		return fmt.Errorf("restore volume files: %w", err)
+	}
+	if err := copyFile(filepath.Join(restoreDir, stageVault, "db.sqlite3"), dbPath); err != nil {
+		return fmt.Errorf("overlay staged db: %w", err)
 	}
 	h2, err := sha256File(dbPath)
 	if err != nil {
@@ -763,7 +793,10 @@ func verifyVaultwarden(repo string, keep bool) error {
 	if h1 != h2 {
 		return fmt.Errorf("restored Vaultwarden DB differs from original (sha256 %s != %s)", h2, h1)
 	}
-	fmt.Println("  Vaultwarden DB restored byte-for-byte")
+	if got, err := os.ReadFile(attFile); err != nil || strings.TrimSpace(string(got)) != attToken {
+		return fmt.Errorf("attachment did not survive the live-volume backup path")
+	}
+	fmt.Println("  Vaultwarden DB restored byte-for-byte; attachment survived the live-volume path")
 
 	if _, err := dockerOut(repo, "run", "-d", "--name", c2, "-v", vol+":/data", image); err != nil {
 		return fmt.Errorf("restart vaultwarden on restored data: %w", err)
@@ -951,30 +984,38 @@ func copyContents(src, dst string) error {
 	return c.Run()
 }
 
-// stageVaultwarden makes a CONSISTENT copy of Vaultwarden's data into staging/vaultwarden and
-// returns the volume name it staged, so backupRun can SKIP the live volume. Vaultwarden uses
-// SQLite in WAL mode, so a raw copy of the live volume (db.sqlite3 + -wal + -shm read at
-// different instants) can be torn/inconsistent. We briefly stop the container — a clean
-// shutdown checkpoints the WAL into db.sqlite3, leaving the whole volume consistent — copy it,
-// then restart. Downtime is a few seconds, independent of how long the rest of the backup
-// (dominated by Nextcloud) takes.
+// copyFile copies a single file src -> dst, preserving ownership/permissions.
+func copyFile(src, dst string) error {
+	c := exec.Command("cp", "-a", src, dst)
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// stageVaultwardenDB copies ONLY Vaultwarden's SQLite DB into staging/vaultwarden/ and returns
+// the live DB path to EXCLUDE from the volume backup. Vaultwarden's SQLite (WAL mode) is the
+// one thing unsafe to copy live (db.sqlite3 + -wal + -shm read at different instants can be
+// torn). Everything else in the volume — attachments, rsa_key.pem, config.json — is static and
+// safe to copy live with the rest of the stack. So we stop the container only long enough to
+// copy the (small) DB — a clean shutdown checkpoints the WAL into db.sqlite3 — then restart.
+// The stop stays ~1s regardless of how large attachments grow, which is the whole point.
 //
 // Best-effort, like dumpNextcloudDB: if Vaultwarden isn't running (the at-rest volume is then
-// already consistent) or any step fails, we stage nothing and return "" so the normal volume
-// backup still captures it. Mirror any change here in verifyVaultwarden's self-test.
-func stageVaultwarden(repo, staging string) (stagedVol string) {
+// already consistent) or any step fails, we stage nothing and return "" — backupRun then backs
+// up the whole live volume (DB included). Mirror any change here in verifyVaultwarden's self-test
+// and in restoreIntoVolumes (which overlays the staged DB onto the restored volume).
+func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	const svc = "vaultwarden"
 	if containerState(repo, svc) != "running" {
-		return "" // stack down: the volume isn't being written, so the live backup is consistent
+		return "" // stack down: the volume (incl. DB) isn't being written, so the live backup is consistent
 	}
 	vol := svc + "_vw-data" // <compose-project>_<volume>, project = service dir name
 	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
 	if err != nil || mp == "" {
-		fmt.Fprintf(os.Stderr, "vaultwarden: data volume %s not found, backing up live volume instead: %v\n", vol, err)
+		fmt.Fprintf(os.Stderr, "vaultwarden: data volume %s not found, backing up live volume as-is: %v\n", vol, err)
 		return ""
 	}
 	dest := filepath.Join(staging, "vaultwarden")
-	if err := os.RemoveAll(dest); err != nil { // clear a prior run's copy so deleted files don't linger
+	if err := os.RemoveAll(dest); err != nil { // clear a prior run's copy so a deleted DB doesn't linger
 		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
 		return ""
 	}
@@ -983,7 +1024,7 @@ func stageVaultwarden(repo, staging string) (stagedVol string) {
 		return ""
 	}
 	if _, err := dockerOut(repo, "stop", svc); err != nil {
-		fmt.Fprintf(os.Stderr, "vaultwarden: stop failed, skipping consistent copy (live volume still backed up): %v\n", err)
+		fmt.Fprintf(os.Stderr, "vaultwarden: stop failed, backing up live volume as-is: %v\n", err)
 		return ""
 	}
 	// Always restart, even if the copy fails — never leave the password manager down.
@@ -992,12 +1033,19 @@ func stageVaultwarden(repo, staging string) (stagedVol string) {
 			fmt.Fprintln(os.Stderr, "vaultwarden: WARNING — failed to restart after backup, start it manually:", err)
 		}
 	}()
-	if err := copyContents(mp, dest); err != nil {
-		fmt.Fprintln(os.Stderr, "vaultwarden: copy to staging failed, falling back to live volume:", err)
+	src := filepath.Join(mp, "db.sqlite3")
+	if !fileExists(src) {
+		fmt.Fprintln(os.Stderr, "vaultwarden: db.sqlite3 not found, backing up live volume as-is")
 		return ""
 	}
-	fmt.Printf("vaultwarden: staged a consistent copy of %s (container stopped ~a few seconds)\n", vol)
-	return vol
+	if err := copyFile(src, filepath.Join(dest, "db.sqlite3")); err != nil {
+		fmt.Fprintln(os.Stderr, "vaultwarden: DB copy to staging failed, backing up live volume as-is:", err)
+		return ""
+	}
+	fmt.Println("vaultwarden: staged a consistent db.sqlite3 (container stopped ~1s); attachments backed up live")
+	// Exclude the live DB files (db.sqlite3 + -wal/-shm) from the volume backup — the consistent
+	// copy is in staging. restic matches this glob against each file's absolute path.
+	return filepath.Join(mp, "db.sqlite3*")
 }
 
 // dumpNextcloudDB writes a consistent SQL dump (preferred over the raw volume on restore).
