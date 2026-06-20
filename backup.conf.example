@@ -13,3 +13,9 @@ RESTIC_REPO=/mnt/usb/restic
 
 # restic retention policy, applied by `hsctl backup run` and `hsctl backup forget`.
 RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
+
+# Optional safety guard. If set, every backup/restore op REFUSES unless this path is a real
+# mount (a different device than /). This stops a backup from silently landing on the root
+# disk when an external HDD isn't mounted. Set it to the mountpoint your repo lives on; leave
+# unset to disable. Set/clear it via:  hsctl backup config --require-mount /mnt/restic
+# REQUIRE_MOUNT=/mnt/restic

@@ -92,6 +92,9 @@ hsctl backup config --repo /mnt/usb/restic \
 
 - `RESTIC_REPO` — local path / `sftp:user@host:/path` / `b2:bucket:path` / `s3:…` (off-box!).
 - `RETENTION` — restic forget policy applied by `backup run` / `backup forget`.
+- `REQUIRE_MOUNT` (optional) — a path that must be a real mount before any backup/restore runs,
+  so a backup can't silently land on the root disk when an external HDD isn't mounted. Set it to
+  the repo's mountpoint: `hsctl backup config --require-mount /mnt/restic` (empty string disables).
 
 ### The repo password — `.restic-password`
 
