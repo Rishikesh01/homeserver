@@ -21,3 +21,18 @@ hsctl/hsctl
 backup.conf
 .restic-password
 backups/
+# restore extraction dir (transient, root-owned)
+restore/
+
+# cloud migration: provider creds, Tailscale auth key, per-host migration state + ssh keys
+# (NEVER commit — these hold provider tokens, the tailnet key, and host-specific authority).
+cloud.conf
+cloud/
+.tailscale-authkey
+cloud-state
+migration.state
+migration.lock
+migration.log
+known_hosts_home
+id_restic
+id_restic.pub

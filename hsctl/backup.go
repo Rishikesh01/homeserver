@@ -83,6 +83,20 @@ type backupCfg struct {
 // the snapshots (and their key) are scattered somewhere unexpected.
 func backupRepoDir() (string, error) { return requireRepoDir() }
 
+// isRemoteRepo reports whether the restic repo is a network/object backend rather than a
+// local path: sftp:, rest:, s3:, b2:, gs:, azure:, swift:, rclone:. For these there is no
+// local mountpoint to guard (so REQUIRE_MOUNT doesn't apply) and the repo key must never be
+// auto-generated (a new key cannot open the existing remote repo). The cloud side of a
+// migration always uses sftp: back to the home HDD over Tailscale.
+func isRemoteRepo(repo string) bool {
+	for _, p := range []string{"sftp:", "rest:", "s3:", "b2:", "gs:", "azure:", "swift:", "rclone:"} {
+		if strings.HasPrefix(repo, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // requireBackupMount guards against the classic external-disk failure: when the backup
 // HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
 // restic would create/write a repo THERE — a "successful" backup that silently lives on the
@@ -90,7 +104,11 @@ func backupRepoDir() (string, error) { return requireRepoDir() }
 // backup.conf, we refuse any repo operation unless that path is a real mount, detected by
 // comparing its device id to /'s: a mounted HDD has a different st_dev, an unmounted
 // mountpoint shares root's. Unset = no check (e.g. the default repo that lives on root).
+// A remote/object repo (sftp:/s3:/…) has no local mount, so the guard is skipped entirely.
 func requireBackupMount(cfg backupCfg) error {
+	if isRemoteRepo(cfg.Repo) {
+		return nil // network/object backend: nothing local to mount
+	}
 	p := cfg.RequireMount
 	if p == "" {
 		return nil
@@ -255,7 +273,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 }
 
 func backupRun(repo string, cfg backupCfg) error {
-	ensureResticPassword(repo)
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
 			"pin may have been overridden by a system upgrade. Run `hsctl backup verify` to re-test.\n",
@@ -328,7 +348,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		snap = args[0]
 	}
-	ensureResticPassword(repo)
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
 	}
@@ -379,7 +401,9 @@ func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
 	if snap == "" {
 		snap = "latest"
 	}
-	ensureResticPassword(repo)
+	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
+		return err
+	}
 	target := filepath.Join(repo, "restore")
 	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
@@ -1202,4 +1226,23 @@ func ensureResticPassword(repo string) {
 	pw := genPassword(32)
 	_ = writeFile0600(path, pw+"\n")
 	fmt.Printf("generated restic repo password -> %s  (BACK THIS UP; without it backups are unrecoverable)\n", path)
+}
+
+// ensureResticPasswordStrict is the safe variant for the run/restore paths: it NEVER mints a
+// key. A missing .restic-password on these paths would otherwise cause a NEW key to be
+// generated that cannot open the EXISTING repo — silently splitting history on a local repo,
+// and catastrophic on a remote/cloud repo (the only copy of the data lives there, encrypted
+// under the real key). Minting is reserved for `backup init` (ensureResticPassword). So here
+// we require the key to already exist, and fail closed with guidance if it doesn't.
+func ensureResticPasswordStrict(repo string, cfg backupCfg) error {
+	if fileExists(filepath.Join(repo, resticPassFile)) {
+		return nil
+	}
+	if isRemoteRepo(cfg.Repo) {
+		return fmt.Errorf("%s is missing and the repo (%s) is remote — refusing to auto-generate a key, "+
+			"because a new key CANNOT open the existing repo. Restore your original %s first.",
+			resticPassFile, cfg.Repo, resticPassFile)
+	}
+	return fmt.Errorf("%s is missing — run `hsctl backup init` first (or restore the key). Refusing to "+
+		"auto-generate it on a run/restore, since a fresh key cannot open an existing repo.", resticPassFile)
 }
