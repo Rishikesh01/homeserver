@@ -72,3 +72,42 @@ func TestEnsureResticPasswordStrict(t *testing.T) {
 		t.Errorf("present key should pass, got: %v", err)
 	}
 }
+
+func TestAssertCaptureConsistent(t *testing.T) {
+	// mk builds a staging dir: optionally with a staged Vaultwarden db.sqlite3, and with a
+	// nextcloud-db.sql of ncSize bytes (ncSize < 0 = no dump file at all).
+	mk := func(withVWDB bool, ncSize int) string {
+		s := t.TempDir()
+		if withVWDB {
+			_ = os.MkdirAll(filepath.Join(s, "vaultwarden"), 0700)
+			_ = os.WriteFile(filepath.Join(s, "vaultwarden", "db.sqlite3"), []byte("sqlite"), 0600)
+		}
+		if ncSize >= 0 {
+			_ = os.WriteFile(filepath.Join(s, "nextcloud-db.sql"), make([]byte, ncSize), 0600)
+		}
+		return s
+	}
+	cases := []struct {
+		name        string
+		staging     string
+		vwRunning   bool
+		vwExclude   string
+		ncDBRunning bool
+		wantErr     bool
+	}{
+		{"VW running, staging failed (torn)", mk(false, -1), true, "", false, true},
+		{"VW running, exclude set but db not staged", mk(false, -1), true, "/v/db.sqlite3*", false, true},
+		{"VW running, db staged", mk(true, -1), true, "/v/db.sqlite3*", false, false},
+		{"VW down, nothing staged", mk(false, -1), false, "", false, false},
+		{"NC DB running, no dump", mk(false, -1), false, "", true, true},
+		{"NC DB running, tiny dump", mk(false, 10), false, "", true, true},
+		{"NC DB running, valid dump", mk(false, 128), false, "", true, false},
+		{"NC DB down, no dump", mk(false, -1), false, "", false, false},
+	}
+	for _, c := range cases {
+		err := assertCaptureConsistent(c.staging, c.vwRunning, c.vwExclude, c.ncDBRunning)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: got err=%v, wantErr=%v", c.name, err, c.wantErr)
+		}
+	}
+}

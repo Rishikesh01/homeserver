@@ -272,7 +272,21 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func backupRun(repo string, cfg backupCfg) error {
+// backupRunOpts tunes a capture. The zero value is the normal nightly/manual backup.
+type backupRunOpts struct {
+	// strict aborts the capture if it would be inconsistent (Vaultwarden running but its DB
+	// wasn't staged, or the Nextcloud pg_dump is missing/empty) and verifies the resulting
+	// snapshot (restic check + the staged DB artifacts are present) before returning. Used by
+	// the migration capture, where a torn snapshot could become the only copy of the data.
+	strict bool
+	// noPrune skips the retention forget+prune. Used by the move-back capture from the cloud:
+	// the one repo that is the only path home must never be pruned in that step.
+	noPrune bool
+}
+
+func backupRun(repo string, cfg backupCfg) error { return backupRunWith(repo, cfg, backupRunOpts{}) }
+
+func backupRunWith(repo string, cfg backupCfg, opts backupRunOpts) error {
 	if err := ensureResticPasswordStrict(repo, cfg); err != nil {
 		return err
 	}
@@ -289,7 +303,14 @@ func backupRun(repo string, cfg backupCfg) error {
 	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments,
 	// keys and config are static files backed up live with the volume below — so the stop stays
 	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
+	vwRunning := containerState(repo, "vaultwarden") == "running" // read BEFORE staging stops it
 	vwExclude := stageVaultwardenDB(repo, staging)
+	ncDBRunning := containerState(repo, "nextcloud-db") == "running"
+	if opts.strict {
+		if err := assertCaptureConsistent(staging, vwRunning, vwExclude, ncDBRunning); err != nil {
+			return err
+		}
+	}
 
 	vols := backupVolumesFor(repo)
 	fmt.Printf("volumes to back up (%d): %s\n", len(vols), strings.Join(vols, " "))
@@ -319,8 +340,61 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
 		return err
 	}
-	if cfg.Retention != "" {
+	if opts.strict {
+		if err := verifySnapshotComplete(repo, cfg, vwRunning, ncDBRunning); err != nil {
+			return err
+		}
+	}
+	if !opts.noPrune && cfg.Retention != "" {
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+	}
+	return nil
+}
+
+// assertCaptureConsistent (strict mode) refuses a capture that would be inconsistent. It is
+// pure (takes the container states the caller already read, does no docker) so it can be
+// unit-tested:
+//   - Vaultwarden running but vwExclude=="" means staging failed, so the live volume backup
+//     would capture a TORN SQLite DB — refuse.
+//   - Vaultwarden running: the consistent db.sqlite3 must actually be in staging.
+//   - Nextcloud DB running: the pg_dump must be present and non-trivial (a failed dump leaves
+//     an empty/near-empty file).
+func assertCaptureConsistent(staging string, vwRunning bool, vwExclude string, ncDBRunning bool) error {
+	if vwRunning {
+		if vwExclude == "" {
+			return fmt.Errorf("strict: Vaultwarden is running but its DB was not staged — refusing to " +
+				"capture a torn live database (see the staging warnings above)")
+		}
+		if !fileExists(filepath.Join(staging, "vaultwarden", "db.sqlite3")) {
+			return fmt.Errorf("strict: staged Vaultwarden db.sqlite3 is missing from %s", staging)
+		}
+	}
+	if ncDBRunning {
+		fi, err := os.Stat(filepath.Join(staging, "nextcloud-db.sql"))
+		if err != nil || fi.Size() < 64 {
+			return fmt.Errorf("strict: Nextcloud DB is running but its pg_dump is missing or empty — " +
+				"refusing to capture Nextcloud without a consistent DB dump")
+		}
+	}
+	return nil
+}
+
+// verifySnapshotComplete (strict mode) proves the snapshot just written is usable BEFORE the
+// caller relies on it: a structural restic check, plus the staged DB artifacts we restore from
+// must actually be present in the latest snapshot.
+func verifySnapshotComplete(repo string, cfg backupCfg, vwRunning, ncDBRunning bool) error {
+	if err := resticRun(repo, cfg, "check"); err != nil {
+		return fmt.Errorf("strict: restic check failed after backup: %w", err)
+	}
+	out, err := resticOutput(repo, cfg, "ls", "latest")
+	if err != nil {
+		return fmt.Errorf("strict: restic ls latest failed: %w\n%s", err, out)
+	}
+	if vwRunning && !strings.Contains(out, "/staging/vaultwarden/db.sqlite3") {
+		return fmt.Errorf("strict: the new snapshot is missing the staged Vaultwarden DB")
+	}
+	if ncDBRunning && !strings.Contains(out, "nextcloud-db.sql") {
+		return fmt.Errorf("strict: the new snapshot is missing the Nextcloud DB dump")
 	}
 	return nil
 }
