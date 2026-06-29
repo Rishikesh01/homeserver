@@ -31,23 +31,37 @@ udevadm settle --timeout=5 2>/dev/null || true
 cleanup() { [ -n "${LOOP:-}" ] && losetup -d "$LOOP" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-# Generate service .env so `hsctl up` works. Pin the app ports to known values so the
-# Makefile can forward them out to your browser deterministically (see the URLs below).
+# Generate service .env so `hsctl up` works. Bind Pi-hole's DNS to 0.0.0.0 — the default
+# would try the host IP, which doesn't exist inside the nested daemon (so `up` would abort).
 echo "[sandbox] generating service config (hsctl setup)..."
-if hsctl setup --yes --vw-port 8082 --nc-port 8081 --pihole-port 8053 >/var/log/setup.log 2>&1; then
+if hsctl setup --yes --pihole-dns-bind 0.0.0.0 >/var/log/setup.log 2>&1; then
   echo "[sandbox] service config generated"
 else
   echo "[sandbox] setup had problems; tail of its log:"; tail -n 10 /var/log/setup.log
 fi
 
+# Serve the apps over HTTPS through the RESTORED Caddy (which carries your trusted CA), on
+# ports the Makefile forwards to the host (live https ports + 10000). Vaultwarden refuses
+# http when its DOMAIN is https, so we point Caddy's ports + VW_DOMAIN at the forwarded
+# https URL — giving a real, trusted-cert HTTPS origin (a secure context the vault accepts).
 H="${ACCESS_HOST:-localhost}"
+setkv() { f="$1"; k="$2"; v="$3"; touch "$f"; grep -v "^${k}=" "$f" 2>/dev/null > "$f.tmp" || true; mv "$f.tmp" "$f"; echo "${k}=${v}" >> "$f"; }
+setkv /repo/caddy/.env VAULT_HTTPS 18443
+setkv /repo/caddy/.env CLOUD_HTTPS 18444
+setkv /repo/caddy/.env PIHOLE_HTTPS 18445
+setkv /repo/caddy/.env STIRLING_HTTPS 18446
+setkv /repo/caddy/.env ITTOOLS_HTTPS 18447
+setkv /repo/caddy/.env IMAGETOOLS_HTTPS 18448
+setkv /repo/vaultwarden/.env VW_DOMAIN "https://${H}:18443"
+echo "[sandbox] apps will be served over HTTPS at https://${H}:18443 (vault), :18444 (cloud)"
+
 echo "==================================================================="
 echo "  SANDBOX READY  (isolated; your live system is untouched)"
 echo "  Admin UI : http://${H}:18088/admin   (admin / ${HSCTL_UI_PASSWORD:-test})"
 echo "  Bring up : UI -> Commands -> 'Start all services', or:  make sandbox-restore"
-echo "  Once up, open the apps in your browser (live ports + 10000):"
-echo "    Vaultwarden : http://${H}:18082     Nextcloud : http://${H}:18081"
-echo "    Pi-hole     : http://${H}:18053/admin"
+echo "  Once up, open the apps over HTTPS (your trusted cert):"
+echo "    Vaultwarden : https://${H}:18443    Nextcloud : https://${H}:18444"
+echo "    Pi-hole     : https://${H}:18445/admin"
 echo "  Stop     : from the host ->  make sandbox-down   (cleans up fully)"
 echo "==================================================================="
 

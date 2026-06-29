@@ -72,19 +72,17 @@ hsctl up
 # its generated URLs at plain http on the forwarded port. Best-effort + a short wait for it
 # to finish initialising.
 H="${ACCESS_HOST:-localhost}"
-echo "[restore] making the restored Nextcloud browsable at http://$H:18081 ..."
+echo "[restore] making the restored Nextcloud browsable at https://$H:18444 ..."
 for _ in $(seq 1 20); do docker exec -u www-data nextcloud-app php occ status >/dev/null 2>&1 && break; sleep 3; done
-docker exec -u www-data nextcloud-app php occ config:system:set trusted_domains 8 --value="$H:18081" >/dev/null 2>&1 || true
-docker exec -u www-data nextcloud-app php occ config:system:set overwrite.cli.url --value="http://$H:18081" >/dev/null 2>&1 || true
-docker exec -u www-data nextcloud-app php occ config:system:set overwriteprotocol --value="http" >/dev/null 2>&1 || true
+docker exec -u www-data nextcloud-app php occ config:system:set trusted_domains 8 --value="$H:18444" >/dev/null 2>&1 || true
+docker exec -u www-data nextcloud-app php occ config:system:set overwrite.cli.url --value="https://$H:18444" >/dev/null 2>&1 || true
+docker exec -u www-data nextcloud-app php occ config:system:set overwriteprotocol --value="https" >/dev/null 2>&1 || true
 
 echo "==================================================================="
 echo "  RESTORE DONE — this is a COPY of snapshot '$SNAP', live system untouched."
-echo "  Open your restored data in a browser:"
-echo "    Vaultwarden (passwords) : http://$H:18082"
-echo "    Nextcloud   (files)     : http://$H:18081"
-echo "    Pi-hole                 : http://$H:18053/admin"
+echo "  Open your restored data over HTTPS (your devices already trust this cert):"
+echo "    Vaultwarden (passwords) : https://$H:18443"
+echo "    Nextcloud   (files)     : https://$H:18444"
+echo "    Pi-hole                 : https://$H:18445/admin"
 echo "  Log in with your normal credentials and confirm everything's there."
-echo "  (http, not https — fine for the sandbox; Vaultwarden may show a domain"
-echo "   warning banner, but your vault still opens.)"
 echo "==================================================================="
