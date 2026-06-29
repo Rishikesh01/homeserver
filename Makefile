@@ -38,7 +38,8 @@ sandbox: ## build the sandbox image (with your current hsctl) and start it
 	@mkdir -p sandbox/_build
 	CGO_ENABLED=0 go build -C hsctl -o ../sandbox/_build/hsctl .
 	docker build -f sandbox/Dockerfile -t $(SANDBOX_IMAGE) .
-	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1
+	-docker stop -t 8 $(SANDBOX_NAME) >/dev/null 2>&1   # graceful: lets the old loopback detach
+	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1       # belt-and-suspenders (no-op after --rm)
 	docker run -d --rm --privileged --name $(SANDBOX_NAME) -p $(PORT):8088 \
 		-e HSCTL_UI_PASSWORD=$(PASS) \
 		-v $(abspath $(IMAGES)):/sandbox/images.env:ro \
