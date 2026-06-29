@@ -184,12 +184,8 @@ func (c *wsConn) writeFrame(opcode byte, payload []byte) error {
 	if _, err := c.conn.Write(head); err != nil {
 		return err
 	}
-	if n > 0 {
-		if _, err := c.conn.Write(payload); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := c.conn.Write(payload) // payload may be empty (e.g. a close frame); Write handles that
+	return err
 }
 
 // Close sends a close frame (best-effort) and tears down the connection.

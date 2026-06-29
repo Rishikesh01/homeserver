@@ -54,8 +54,10 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
 	mux.HandleFunc("/admin/devices", s.requireAuth(s.handleDevices))
-	mux.HandleFunc("/admin/devices/mount", s.requireAuth(s.handleDeviceMount))
-	mux.HandleFunc("/admin/devices/unmount", s.requireAuth(s.handleDeviceUnmount))
+	mux.HandleFunc("/admin/devices/mount", s.requireAuth(s.deviceActionHandler(
+		mountDevice, "Mount failed: ", func(t string) string { return "Mounted at " + t })))
+	mux.HandleFunc("/admin/devices/unmount", s.requireAuth(s.deviceActionHandler(
+		unmountDevice, "Eject failed: ", func(mp string) string { return "Ejected (unmounted " + mp + ") — safe to unplug." })))
 	mux.HandleFunc("/admin/terminal", s.requireAuth(s.handleTerminalPage))
 	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
@@ -388,32 +390,23 @@ func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 	render(w, devicesTmpl, d)
 }
 
-func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
-		return
+// deviceActionHandler builds the POST handler for a mount/unmount: run the action on the
+// posted device, then flash the result back on /admin/devices. Mount and Eject share this —
+// only the action and its messages differ.
+func (s *uiServer) deviceActionHandler(action func(string) (string, error), errPrefix string, ok func(string) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
+			return
+		}
+		var msg string
+		if res, err := action(strings.TrimSpace(r.FormValue("dev"))); err != nil {
+			msg = errPrefix + err.Error()
+		} else {
+			msg = ok(res)
+		}
+		http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 	}
-	var msg string
-	if target, err := mountDevice(strings.TrimSpace(r.FormValue("dev"))); err != nil {
-		msg = "Mount failed: " + err.Error()
-	} else {
-		msg = "Mounted at " + target
-	}
-	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
-}
-
-func (s *uiServer) handleDeviceUnmount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
-		return
-	}
-	var msg string
-	if mp, err := unmountDevice(strings.TrimSpace(r.FormValue("dev"))); err != nil {
-		msg = "Eject failed: " + err.Error()
-	} else {
-		msg = "Ejected (unmounted " + mp + ") — safe to unplug."
-	}
-	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
 // ---- Terminal page (the WebSocket handler lives in terminal.go) --------------

@@ -46,9 +46,8 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		if _, err := exec.LookPath("bash"); err == nil {
-			shell = "bash"
-		} else {
+		shell = "bash"
+		if _, err := exec.LookPath("bash"); err != nil {
 			shell = "/bin/sh"
 		}
 	}

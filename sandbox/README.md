@@ -43,15 +43,15 @@ Override on the command line, e.g. `make sandbox PORT=19000`:
 
 ## Testing image updates
 
-`sandbox/images.env` lists the image tag for every component. To try a new version, bump
-its tag there and `make sandbox` — the sandbox writes a `docker-compose.override.yml` into
-each service dir so `hsctl up` runs **those** images, leaving the real `docker-compose.yml`
-files untouched. Confirm everything still works in the sandbox, *then* change the live
-compose file.
+`sandbox/images.env` is an **override** file. By default it's empty, so the sandbox uses the
+tags pinned in each service's own `docker-compose.yml` (the single source of truth — nothing
+to keep in sync). To try a new version, add/uncomment a line for that component; the sandbox
+writes a `docker-compose.override.yml` into just that service dir so `hsctl up` runs **that**
+image, leaving the real compose files untouched. Confirm it works, *then* bump the live tag.
 
 ```bash
 # e.g. try a Nextcloud major bump
-sed -i 's#^nextcloud-app=.*#nextcloud-app=nextcloud:31-apache#' sandbox/images.env
+echo 'nextcloud-app=nextcloud:31-apache' >> sandbox/images.env
 make sandbox        # boot, click "Start all services", log in, look around
 ```
 
