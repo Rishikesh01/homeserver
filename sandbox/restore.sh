@@ -67,8 +67,24 @@ fi
 echo "[restore] bringing the stack up on the restored data..."
 hsctl up
 
+# Make the restored Nextcloud reachable on the forwarded host:port. Out of the box it
+# rejects any host not in its trusted_domains (a white error page), so add ours and point
+# its generated URLs at plain http on the forwarded port. Best-effort + a short wait for it
+# to finish initialising.
+H="${ACCESS_HOST:-localhost}"
+echo "[restore] making the restored Nextcloud browsable at http://$H:18081 ..."
+for _ in $(seq 1 20); do docker exec -u www-data nextcloud-app php occ status >/dev/null 2>&1 && break; sleep 3; done
+docker exec -u www-data nextcloud-app php occ config:system:set trusted_domains 8 --value="$H:18081" >/dev/null 2>&1 || true
+docker exec -u www-data nextcloud-app php occ config:system:set overwrite.cli.url --value="http://$H:18081" >/dev/null 2>&1 || true
+docker exec -u www-data nextcloud-app php occ config:system:set overwriteprotocol --value="http" >/dev/null 2>&1 || true
+
 echo "==================================================================="
-echo "  RESTORE DONE — this is a COPY of snapshot '$SNAP'."
-echo "  Open the apps via the sandbox and check your data is all there."
-echo "  Your live system and your backup repo were NOT modified."
+echo "  RESTORE DONE — this is a COPY of snapshot '$SNAP', live system untouched."
+echo "  Open your restored data in a browser:"
+echo "    Vaultwarden (passwords) : http://$H:18082"
+echo "    Nextcloud   (files)     : http://$H:18081"
+echo "    Pi-hole                 : http://$H:18053/admin"
+echo "  Log in with your normal credentials and confirm everything's there."
+echo "  (http, not https — fine for the sandbox; Vaultwarden may show a domain"
+echo "   warning banner, but your vault still opens.)"
 echo "==================================================================="

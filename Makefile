@@ -21,6 +21,8 @@ SANDBOX_NAME  ?= hsctl-sandbox
 IMAGES        ?= sandbox/images.env
 PORT          ?= 18088
 PASS          ?= test
+# Host LAN IP the apps should trust (so the restored Nextcloud/Vaultwarden open in a browser).
+ACCESS_HOST   ?= $(shell ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
 PASSFILE      ?= .restic-password
 SNAPSHOT      ?= latest
 REPO          ?= $(shell sed -n 's/^RESTIC_REPO=//p' backup.conf 2>/dev/null)
@@ -40,16 +42,23 @@ sandbox: ## build the sandbox image (with your current hsctl) and start it
 	docker build -f sandbox/Dockerfile -t $(SANDBOX_IMAGE) .
 	-docker stop -t 8 $(SANDBOX_NAME) >/dev/null 2>&1   # graceful: lets the old loopback detach
 	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1       # belt-and-suspenders (no-op after --rm)
-	docker run -d --rm --privileged --name $(SANDBOX_NAME) -p $(PORT):8088 \
-		-e HSCTL_UI_PASSWORD=$(PASS) \
+	docker run -d --rm --privileged --name $(SANDBOX_NAME) \
+		-p $(PORT):8088 \
+		-p 18082:8082 -p 18081:8081 -p 18053:8053 \
+		-p 18090:8090 -p 18091:8091 -p 18092:8092 \
+		-e HSCTL_UI_PASSWORD=$(PASS) -e ACCESS_HOST=$(ACCESS_HOST) \
 		-v $(abspath $(IMAGES)):/sandbox/images.env:ro \
 		$(REPO_MOUNT) \
 		$(SANDBOX_IMAGE)
 	@echo ""
-	@echo "Sandbox starting: http://localhost:$(PORT)/admin   (admin / $(PASS))"
-	@echo "  In the UI: Commands -> 'Start all services' to bring the stack up."
-	@if [ -n "$(REPO_MOUNT)" ]; then echo "  Restore a backup:  make sandbox-restore"; \
-	 else echo "  (no local REPO mounted — pass REPO=/mnt/backup/restic to enable 'make sandbox-restore')"; fi
+	@echo "Sandbox starting: http://$(ACCESS_HOST):$(PORT)/admin   (admin / $(PASS))"
+	@echo "  Bring the stack up:  in the UI -> Commands -> 'Start all services',"
+	@echo "                       or (with your real data):  make sandbox-restore"
+	@echo "  Then open the RESTORED apps in your browser (live ports + 10000):"
+	@echo "    Vaultwarden : http://$(ACCESS_HOST):18082    (passwords)"
+	@echo "    Nextcloud   : http://$(ACCESS_HOST):18081    (files)"
+	@echo "    Pi-hole     : http://$(ACCESS_HOST):18053/admin"
+	@if [ -z "$(REPO_MOUNT)" ]; then echo "  (no local REPO mounted — pass REPO=/mnt/restic to enable 'make sandbox-restore')"; fi
 
 sandbox-restore: ## restore a real backup into the running sandbox (SNAPSHOT=latest)
 	docker exec -it $(SANDBOX_NAME) /sandbox/restore.sh $(SNAPSHOT)

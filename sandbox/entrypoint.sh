@@ -31,20 +31,23 @@ udevadm settle --timeout=5 2>/dev/null || true
 cleanup() { [ -n "${LOOP:-}" ] && losetup -d "$LOOP" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-# Generate service .env so `hsctl up` works (fast, no image pulls here).
+# Generate service .env so `hsctl up` works. Pin the app ports to known values so the
+# Makefile can forward them out to your browser deterministically (see the URLs below).
 echo "[sandbox] generating service config (hsctl setup)..."
-if hsctl setup --yes >/var/log/setup.log 2>&1; then
+if hsctl setup --yes --vw-port 8082 --nc-port 8081 --pihole-port 8053 >/var/log/setup.log 2>&1; then
   echo "[sandbox] service config generated"
 else
   echo "[sandbox] setup had problems; tail of its log:"; tail -n 10 /var/log/setup.log
 fi
 
+H="${ACCESS_HOST:-localhost}"
 echo "==================================================================="
 echo "  SANDBOX READY  (isolated; your live system is untouched)"
-echo "  Admin UI : http://localhost:8088/admin   (admin / ${HSCTL_UI_PASSWORD:-test})"
-echo "  Bring up : in the UI -> Commands -> 'Start all services'"
-echo "             (pulls the manifest's images into the nested daemon)"
-echo "  Restore  : from the host ->  make sandbox-restore"
+echo "  Admin UI : http://${H}:18088/admin   (admin / ${HSCTL_UI_PASSWORD:-test})"
+echo "  Bring up : UI -> Commands -> 'Start all services', or:  make sandbox-restore"
+echo "  Once up, open the apps in your browser (live ports + 10000):"
+echo "    Vaultwarden : http://${H}:18082     Nextcloud : http://${H}:18081"
+echo "    Pi-hole     : http://${H}:18053/admin"
 echo "  Stop     : from the host ->  make sandbox-down   (cleans up fully)"
 echo "==================================================================="
 

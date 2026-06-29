@@ -66,10 +66,23 @@ upgrade restic on the live box.
 ## Testing a restore (see your data)
 
 ```bash
-make sandbox REPO=/mnt/backup/restic    # mount your real repo read-only
-make sandbox-restore                    # restore latest, bring the stack up on it
-# open the apps via the sandbox, confirm your passwords/files are all there
+make sandbox REPO=/mnt/restic    # mount your real repo read-only
+make sandbox-restore             # restore latest, bring the stack up on it
 ```
+
+Then open your restored data in a browser. The sandbox forwards each app's port to the host
+at **its live port + 10000** (so it never collides with your running stack):
+
+| App | Sandbox URL |
+|-----|-------------|
+| Vaultwarden (passwords) | `http://<host>:18082` |
+| Nextcloud (files)       | `http://<host>:18081` |
+| Pi-hole                 | `http://<host>:18053/admin` |
+
+Log in with your normal credentials and confirm everything's there. It's plain `http` (no
+TLS in the sandbox), so Vaultwarden may show a "domain not configured" banner — your vault
+still opens. `make sandbox-restore` auto-adds the host to Nextcloud's trusted domains so it
+loads.
 
 **Safety:** the real repo is mounted **read-only** and read with `restic restore --no-lock`,
 so this never writes to (or even locks) your live backup repository. The restored data lands
