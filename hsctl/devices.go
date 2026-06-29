@@ -136,8 +136,20 @@ func mountableRows(devs []blockDevice) []deviceRow {
 		rows = append(rows, r)
 	}
 	for _, disk := range devs {
-		if disk.Type == "loop" || disk.Type == "rom" {
-			continue // skip snap loop devices and empty optical drives
+		if disk.Type == "rom" {
+			continue // empty optical drive
+		}
+		if disk.Type == "loop" {
+			// Most loop devices are system/snap images (read-only squashfs, or with no
+			// filesystem) — hide those so the list stays clean. But surface a loop that
+			// carries a real filesystem: a disk image an admin attached on purpose (and
+			// what the test sandbox uses to demo mounting). Keep it visible even when
+			// mounted, so it still gets an Eject button — same as a real partition does.
+			if disk.FSType == "" || disk.FSType == "squashfs" {
+				continue
+			}
+			add(disk, "loop device", true)
+			continue
 		}
 		model := strings.TrimSpace(disk.Model)
 		if model == "" {
