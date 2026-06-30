@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // A minimal RFC 6455 WebSocket server — just enough to carry the interactive terminal,
@@ -34,6 +35,12 @@ type wsConn struct {
 	conn net.Conn
 	br   *bufio.Reader
 	wmu  sync.Mutex // serialises frame writes (PTY pump + ping/pong can race)
+
+	// readTimeout, when > 0, bounds how long any single frame read may block. It's
+	// refreshed before every frame, so a connection whose peer keeps sending (incl. pong
+	// replies to our pings) stays open, while a vanished peer trips the deadline and the
+	// read returns an error — letting the caller tear the session down. 0 = no deadline.
+	readTimeout time.Duration
 }
 
 // WebSocket opcodes (the ones we care about).
@@ -116,6 +123,9 @@ func (c *wsConn) ReadMessage() (opcode byte, payload []byte, err error) {
 // readFrame reads one WebSocket frame, unmasking the payload (client frames are always
 // masked). It enforces a payload cap so a hostile client can't make us allocate wildly.
 func (c *wsConn) readFrame() (fin bool, opcode byte, payload []byte, err error) {
+	if c.readTimeout > 0 {
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
+	}
 	var h [2]byte
 	if _, err = io.ReadFull(c.br, h[:]); err != nil {
 		return
@@ -138,7 +148,10 @@ func (c *wsConn) readFrame() (fin bool, opcode byte, payload []byte, err error) 
 		}
 		length = binary.BigEndian.Uint64(ext[:])
 	}
-	const maxFrame = 1 << 20 // 1 MiB is plenty for keystrokes + resize control frames
+	// Generous cap: a single keystroke frame is tiny, but pasting a file/key bundle into
+	// the terminal arrives as one big frame — 16 MiB covers realistic pastes while still
+	// bounding what a hostile client can make us allocate.
+	const maxFrame = 16 << 20
 	if length > maxFrame {
 		return false, 0, nil, fmt.Errorf("websocket frame too large: %d bytes", length)
 	}

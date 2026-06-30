@@ -57,7 +57,7 @@ echo "[sandbox] apps will be served over HTTPS at https://${H}:18443 (vault), :1
 
 echo "==================================================================="
 echo "  SANDBOX READY  (isolated; your live system is untouched)"
-echo "  Admin UI : http://${H}:18088/admin   (admin / ${HSCTL_UI_PASSWORD:-test})"
+echo "  Admin UI : http://${H}:${SANDBOX_PORT:-18088}/admin   (admin / ${HSCTL_UI_PASSWORD:-test})"
 echo "  Bring up : UI -> Commands -> 'Start all services', or:  make sandbox-restore"
 echo "  Once up, open the apps over HTTPS (your trusted cert):"
 echo "    Vaultwarden : https://${H}:18443    Nextcloud : https://${H}:18444"

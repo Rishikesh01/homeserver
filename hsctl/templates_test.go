@@ -35,7 +35,7 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		{"login", loginTmpl, loginData{Err: "", Next: "/admin"}},
 		{"help", helpTmpl, helpData{Body: "<p>hi</p>"}},
 		{"commands", commandsTmpl, commandsData{Groups: groups}},
-		{"devices", devicesTmpl, devicesData{MountAt: "/mnt", Msg: "ok", Rows: []deviceRow{
+		{"devices", devicesTmpl, devicesData{MountAt: "/mnt", Msg: "ok", GuardPath: "/mnt", GuardOK: false, Rows: []deviceRow{
 			{Path: "/dev/sdb1", Name: "sdb1", Parent: "Seagate", Size: "1.8T", FSType: "ext4",
 				Label: "backup", Mountpoint: "", Removable: true, Mountable: true},
 			{Path: "/dev/sda1", Name: "sda1", Size: "200M", FSType: "vfat", Mountpoint: "/boot",

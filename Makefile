@@ -47,7 +47,7 @@ sandbox: ## build the sandbox image (with your current hsctl) and start it
 		-p $(PORT):8088 \
 		-p 18443:18443 -p 18444:18444 -p 18445:18445 \
 		-p 18446:18446 -p 18447:18447 -p 18448:18448 \
-		-e HSCTL_UI_PASSWORD=$(PASS) -e ACCESS_HOST=$(ACCESS_HOST) \
+		-e HSCTL_UI_PASSWORD=$(PASS) -e ACCESS_HOST=$(ACCESS_HOST) -e SANDBOX_PORT=$(PORT) \
 		-v $(DATA_VOL):/var/lib/docker \
 		-v $(abspath $(IMAGES)):/sandbox/images.env:ro \
 		$(REPO_MOUNT) \

@@ -2,11 +2,23 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+// WebSocket keepalive: ping the browser periodically; if it's gone (laptop slept, Wi-Fi
+// dropped) it stops answering, the read deadline below expires, ReadMessage returns an
+// error, and the deferred teardown kills the shell. Without this a silently-dropped client
+// would leak a root shell + goroutine + PTY forever. pingEvery < pongWait so a live client
+// always refreshes the deadline in time.
+const (
+	wsPongWait  = 60 * time.Second
+	wsPingEvery = 25 * time.Second
 )
 
 // The interactive admin terminal: a real shell on the server, driven from the browser
@@ -68,6 +80,26 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		_, _ = cmd.Process.Wait()
 	}()
 
+	// Detect a vanished client: a read deadline (refreshed on every frame, including the
+	// pong replies to the pings below) tears the read loop down if nothing arrives in time.
+	ws.readTimeout = wsPongWait
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		t := time.NewTicker(wsPingEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-t.C:
+				if err := ws.WriteMessage(opPing, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	// PTY -> browser. When the shell exits (read error/EOF), close the socket to unblock
 	// the reader below.
 	go func() {
@@ -87,6 +119,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// browser -> PTY. Binary frames are keystrokes; text frames are JSON control.
+readLoop:
 	for {
 		op, data, err := ws.ReadMessage()
 		if err != nil {
@@ -100,7 +133,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 			}
 		default: // opBinary (and anything else): treat as input
 			if _, werr := ptm.Write(data); werr != nil {
-				break
+				break readLoop // labelled: a bare break would only exit the switch
 			}
 		}
 	}
@@ -123,10 +156,13 @@ func wsOriginOK(r *http.Request, serverIP string) bool {
 	return oh == hostOnly(r.Host) || oh == serverIP
 }
 
-// hostOnly strips any :port from a Host header value.
+// hostOnly returns the hostname from a Host header, dropping any :port and the brackets
+// around an IPv6 literal — so it matches url.Hostname() (which also returns "::1", not
+// "[::1]"). Without the bracket handling the Origin check rejected every IPv6 connection.
 func hostOnly(host string) string {
-	if i := strings.LastIndexByte(host, ':'); i >= 0 && !strings.Contains(host[i:], "]") {
-		return host[:i]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h // also strips the [] from a bracketed IPv6 literal
 	}
-	return host
+	// No port present: trim brackets off a bare IPv6 literal like "[::1]".
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 }

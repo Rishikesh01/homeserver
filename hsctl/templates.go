@@ -154,10 +154,10 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 
 <h3 style="margin-top:24px">Operations</h3>
 <p class="foot">Output appears below each runs. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
-<button class="btn green" data-slug="backup-run" data-confirm="">Back up now</button>
-<button class="btn gray" data-slug="backup-init" data-confirm="">Initialize repo</button>
+<button class="btn green" data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
+<button class="btn gray" data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
-<button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good.">Prune old</button>
+<button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
 <button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
 <div id="out" class="out" style="margin-top:12px">Snapshots and command output appear here.</div>
 
@@ -218,13 +218,16 @@ const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
 // literal script text. (Careful editing: avoid literal "{{" or "}}" — they're template
 // delimiters; build any nested object so its closing braces aren't adjacent.)
 const runJS = `
-async function runCmd(slug, confirmMsg){
+async function runCmd(slug, confirmMsg, reload){
   if(confirmMsg && !window.confirm(confirmMsg)) return;
   const out=document.getElementById('out');
   out.textContent='Running…\n';
   document.querySelectorAll('button[data-slug]').forEach(b=>b.disabled=true);
+  var ok=false;
   try{
-    const res=await fetch('/admin/run',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'slug='+encodeURIComponent(slug)});
+    var body='slug='+encodeURIComponent(slug);
+    if(confirmMsg) body+='&confirm='+encodeURIComponent(slug); // server-side guard for destructive ops
+    const res=await fetch('/admin/run',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
     if(!res.ok){ out.textContent='error '+res.status+': '+(await res.text()); return; }
     out.textContent='';
     const reader=res.body.getReader(), dec=new TextDecoder();
@@ -234,11 +237,13 @@ async function runCmd(slug, confirmMsg){
       out.textContent+=dec.decode(step.value,{stream:true});
       out.scrollTop=out.scrollHeight;
     }
+    ok=out.textContent.trimEnd().endsWith('[done]');
   }catch(e){ out.textContent+='\nrequest failed: '+e; }
   finally{ document.querySelectorAll('button[data-slug]').forEach(b=>b.disabled=false); }
+  if(ok && reload){ setTimeout(function(){ location.reload(); }, 1200); } // refresh server-rendered panels (e.g. Snapshots)
 }
 document.querySelectorAll('button[data-slug]').forEach(function(b){
-  b.addEventListener('click',function(){ runCmd(b.dataset.slug, b.dataset.confirm); });
+  b.addEventListener('click',function(){ runCmd(b.dataset.slug, b.dataset.confirm, b.dataset.reload); });
 });`
 
 const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -268,6 +273,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="sub">Storage attached to the server. Mount one to start using it (for example, as a backup destination).</p>
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
 {{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
+{{if and .GuardPath (not .GuardOK)}}<div class="note">Your backups require a disk mounted at <code>{{.GuardPath}}</code>, which isn't mounted right now — use the green <b>Mount for backups</b> button next to the right drive so the <a href="/admin/backup">Backups</a> page will run.</div>{{end}}
 
 <table>
 <tr><th>Device</th><th>Size</th><th>Format</th><th>Label</th><th>Mounted at</th><th></th></tr>
@@ -277,7 +283,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <td>{{if .FSType}}{{.FSType}}{{else}}—{{end}}</td>
   <td>{{if .Label}}{{.Label}}{{else}}—{{end}}</td>
   <td>{{if .Mountpoint}}<span class="tag ok">{{.Mountpoint}}</span>{{else}}<span class="foot">not mounted</span>{{end}}</td>
-  <td>{{if .Mountpoint}}<form method="post" action="/admin/devices/unmount" style="margin:0" onsubmit="return confirm('Eject {{.Path}}? Make sure nothing is reading or writing it.')"><input type="hidden" name="dev" value="{{.Path}}"><button class="btn gray">Eject</button></form>{{else if .Mountable}}<form method="post" action="/admin/devices/mount" style="margin:0"><input type="hidden" name="dev" value="{{.Path}}"><button class="btn">Mount</button></form>{{else}}<span class="foot">{{.Why}}</span>{{end}}</td>
+  <td>{{if .Mountpoint}}<form method="post" action="/admin/devices/unmount" style="margin:0" onsubmit="return confirm('Eject {{.Path}}? Make sure nothing is reading or writing it.')"><input type="hidden" name="dev" value="{{.Path}}"><button class="btn gray">Eject</button></form>{{else if .Mountable}}<form method="post" action="/admin/devices/mount" style="margin:0 0 4px"><input type="hidden" name="dev" value="{{.Path}}"><button class="btn">Mount</button></form>{{if and $.GuardPath (not $.GuardOK)}}<form method="post" action="/admin/devices/mount" style="margin:0" onsubmit="return confirm('Mount {{.Path}} at {{$.GuardPath}} for backups?')"><input type="hidden" name="dev" value="{{.Path}}"><input type="hidden" name="target" value="{{$.GuardPath}}"><button class="btn green">Mount for backups</button></form>{{end}}{{else}}<span class="foot">{{.Why}}</span>{{end}}</td>
 </tr>{{else}}<tr><td colspan="6">No drives detected.</td></tr>{{end}}
 </table>
 
@@ -287,7 +293,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 const terminalTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Terminal</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link rel="stylesheet" href="/admin/assets/xterm.css">
 <style>{{css}}
 #term{height:76vh;padding:8px;background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px}</style>
 </head><body><div class="wrap">
@@ -296,8 +302,8 @@ const terminalTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <div class="banner"><b>This is a full shell (root under the service).</b> Anything you type runs for real. Only the admin login can reach it, and it isn't exposed outside your network — but treat it with the same care as sitting at the machine.</div>
 <div id="term"></div>
 <p class="foot"><a href="/admin">← Admin</a> · blank screen? Click it and press Enter.</p>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="/admin/assets/xterm.js"></script>
+<script src="/admin/assets/addon-fit.js"></script>
 <script>
 var term=new Terminal({cursorBlink:true,fontFamily:'ui-monospace,Menlo,Consolas,monospace',fontSize:14,theme:{background:'#0b0d11',foreground:'#e7e9ee'}});
 var fit=new FitAddon.FitAddon(); term.loadAddon(fit);

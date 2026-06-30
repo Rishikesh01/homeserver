@@ -157,6 +157,14 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown command", http.StatusNotFound)
 		return
 	}
+	// Destructive commands (down-volumes, setup-force) require an explicit confirmation
+	// token in the POST. The page prompts the operator and only then sends confirm=<slug>,
+	// so a blind or replayed POST without the token is refused here — the data-wipe can't
+	// fire on a stray request, not just on a client-side window.confirm.
+	if c.Danger == dangerDestructive && r.FormValue("confirm") != c.Slug {
+		http.Error(w, "this command is destructive — confirmation required", http.StatusForbidden)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")

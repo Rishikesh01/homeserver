@@ -200,11 +200,16 @@ func findDeviceRow(devPath string) (deviceRow, error) {
 	return deviceRow{}, fmt.Errorf("device %q is not an attached block device", devPath)
 }
 
-// mountDevice mounts the given block device under /mnt and returns the mountpoint. It
-// validates the device against a fresh lsblk, refuses devices we deem non-mountable
-// (already mounted, no filesystem, LUKS/swap/…), creates the target dir, and runs
-// `mount`. No /etc/fstab entry is written — this is a one-shot mount, gone on reboot.
-func mountDevice(devPath string) (string, error) {
+// mountDevice mounts the given block device at the per-label default under /mnt.
+func mountDevice(devPath string) (string, error) { return mountDeviceAt(devPath, "") }
+
+// mountDeviceAt mounts the given block device and returns the mountpoint. It validates the
+// device against a fresh lsblk, refuses devices we deem non-mountable (already mounted, no
+// filesystem, LUKS/swap/…), creates the target dir, and runs `mount`. target=="" uses the
+// per-label default under /mnt; a non-empty target (the configured backup-guard path, so a
+// UI mount can satisfy REQUIRE_MOUNT) is used as-is — the caller is responsible for vetting
+// it. No /etc/fstab entry is written — this is a one-shot mount, gone on reboot.
+func mountDeviceAt(devPath, target string) (string, error) {
 	d, err := findDeviceRow(devPath)
 	if err != nil {
 		return "", err
@@ -212,13 +217,15 @@ func mountDevice(devPath string) (string, error) {
 	if !d.Mountable {
 		return "", fmt.Errorf("can't mount %s: %s", d.Path, d.Why)
 	}
-	target := mountTargetFor(d)
+	if target == "" {
+		target = mountTargetFor(d)
+	}
 	if err := os.MkdirAll(target, 0755); err != nil {
 		return "", fmt.Errorf("create mountpoint %s: %w", target, err)
 	}
 	// If the directory already holds a mount (e.g. a different disk), bail rather than
 	// stack a second filesystem over it.
-	if mp := mountpointOf(target); mp {
+	if mountpointOf(target) {
 		return "", fmt.Errorf("%s is already a mountpoint — unmount it first", target)
 	}
 	if out, err := privCmd("mount", d.Path, target).CombinedOutput(); err != nil {
