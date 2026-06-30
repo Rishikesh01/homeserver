@@ -126,7 +126,8 @@ This stack stores your passwords and files, so treat the server like a safe.
 - **Keep things updated.** All images are pinned to specific versions (reproducible). To
   update one, bump the tag in that service's `docker-compose.yml`, then `cd <service> &&
   docker compose pull && docker compose up -d`. Keep the OS patched too (`sudo apt update
-  && sudo apt upgrade`).
+  && sudo apt upgrade`). Want to try a new image (or restic) **before** touching the live
+  box? Test it in a throwaway sandbox first — see [Testing changes safely](#testing-changes-safely-the-sandbox).
 - **Encrypt Nextcloud (optional).** Server-side encryption is off by default; enable it in
   *Nextcloud → Admin → Settings → Security* if you want it on top of disk encryption.
 
@@ -242,6 +243,10 @@ It also enforces the **restic version pin**: `verify` fails if the installed res
 from the one recorded by `--pin-restic`, so a system upgrade that swaps restic out is caught
 instead of silently changing your backup tool. Safe to run anytime.
 
+To instead **see your real data come back** — restore an actual snapshot and log into the
+apps — without risking the live stack, use the [sandbox](#testing-changes-safely-the-sandbox)
+(`make sandbox-restore`).
+
 ### Schedule it nightly
 
 ```bash
@@ -301,6 +306,34 @@ saved.
 
 ---
 
+## Testing changes safely (the sandbox)
+
+Before you change the live box — a new service image, a newer restic, an `hsctl` change, or
+just to **see a backup actually restore** — try it in a throwaway sandbox. It runs a complete
+copy of the stack inside its **own nested Docker daemon** (docker-in-docker), so nothing it
+does can reach your real Docker, containers, or volumes. Stop it and it's gone.
+
+```bash
+make sandbox            # build your current hsctl + boot the isolated sandbox
+                        #   -> http://localhost:18088/admin   (admin / test)
+make sandbox-restore    # restore your REAL backup into it (repo read-only), bring the stack up
+make sandbox-down       # stop + clean up
+```
+
+- **Try an image update:** bump a tag in `sandbox/images.env`, `make sandbox`, click
+  *Commands → Start all services*, log in and look around. Only then change the live
+  `docker-compose.yml`.
+- **Try a restic upgrade:** bump the base tag in `sandbox/Dockerfile`, `make sandbox`, then
+  `make sandbox-restore` to confirm it still restores your repo.
+- **See your data restored:** `make sandbox REPO=/mnt/backup/restic && make sandbox-restore`,
+  then open the apps via the sandbox. The real repo is mounted **read-only** (`restic
+  --no-lock`) — your live backup is never written.
+
+This is the *human* companion to `hsctl backup verify` (the automated pass/fail self-test).
+Full details: **[sandbox/README.md](sandbox/README.md)**.
+
+---
+
 ## Pi-hole / ad-blocking
 
 Pi-hole is a network-wide ad-blocker. To ad-block **every** device automatically, point your
@@ -341,5 +374,6 @@ install` does the same for the dashboard.
 ## More docs
 
 - **[CONFIG.md](CONFIG.md)** — every configurable value, in one place (incl. the restic password).
-- **[hsctl/README.md](hsctl/README.md)** — the `hsctl` command reference.
+- **[hsctl/README.md](hsctl/README.md)** — the `hsctl` command reference + the web admin pages.
+- **[sandbox/README.md](sandbox/README.md)** — the `make` test sandbox (try updates / restores safely).
 - **[ONBOARDING.md](ONBOARDING.md)** — per-device setup for family members.

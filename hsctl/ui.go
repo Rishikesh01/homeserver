@@ -51,6 +51,15 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
+	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
+	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/devices", s.requireAuth(s.handleDevices))
+	mux.HandleFunc("/admin/devices/mount", s.requireAuth(s.handleDeviceMount))
+	mux.HandleFunc("/admin/devices/unmount", s.requireAuth(s.deviceActionHandler(
+		unmountDevice, "Eject failed: ", func(mp string) string { return "Ejected (unmounted " + mp + ") — safe to unplug." })))
+	mux.HandleFunc("/admin/terminal", s.requireAuth(s.handleTerminalPage))
+	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
+	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
@@ -332,20 +341,135 @@ func shutdownCmd() *exec.Cmd {
 	return exec.Command("sudo", "shutdown", "-h", "now")
 }
 
+// ---- Command Center ---------------------------------------------------------
+
+type cmdGroup struct {
+	Name string
+	Cmds []webCmd
+}
+
+type commandsData struct {
+	Groups []cmdGroup
+}
+
+// handleCommands renders every CLI command as an explained, runnable card, grouped by
+// category. Running happens client-side via /admin/run (streamed), so this is read-only.
+func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
+	var groups []cmdGroup
+	for _, cat := range webCmdCategories {
+		g := cmdGroup{Name: cat}
+		for _, c := range webCmds {
+			if c.Category == cat {
+				g.Cmds = append(g.Cmds, c)
+			}
+		}
+		if len(g.Cmds) > 0 {
+			groups = append(groups, g)
+		}
+	}
+	render(w, commandsTmpl, commandsData{Groups: groups})
+}
+
+// ---- Devices (list + guided mount) ------------------------------------------
+
+type devicesData struct {
+	Rows      []deviceRow
+	Err       string
+	Msg       string
+	MountAt   string // where mounts land (/mnt), shown to the user
+	GuardPath string // configured backup REQUIRE_MOUNT path, "" if none
+	GuardOK   bool   // is that path a real mount right now
+}
+
+func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
+	cfg := loadBackupCfg(s.repo)
+	d := devicesData{Msg: r.URL.Query().Get("msg"), MountAt: mountRoot, GuardPath: cfg.RequireMount}
+	if cfg.RequireMount != "" {
+		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk already mounted there?
+	}
+	devs, err := listBlockDevices()
+	if err != nil {
+		d.Err = err.Error()
+	} else {
+		d.Rows = mountableRows(devs)
+	}
+	render(w, devicesTmpl, d)
+}
+
+// handleDeviceMount mounts the posted device. Normally it lands at the per-label default
+// under /mnt; but if the operator's backup guard path (REQUIRE_MOUNT) is posted as `target`
+// we mount there instead, so a UI mount can actually satisfy the guard (otherwise the disk
+// lands at /mnt/<label> and the Backups page keeps reporting "NOT mounted"). Only that one
+// configured path is honoured as an alternate target — anything else is ignored.
+func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
+		return
+	}
+	target := ""
+	if want := strings.TrimSpace(r.FormValue("target")); want != "" && want == loadBackupCfg(s.repo).RequireMount {
+		target = want
+	}
+	var msg string
+	if mp, err := mountDeviceAt(strings.TrimSpace(r.FormValue("dev")), target); err != nil {
+		msg = "Mount failed: " + err.Error()
+	} else {
+		msg = "Mounted at " + mp
+	}
+	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+}
+
+// deviceActionHandler builds the POST handler for a device action (currently Eject): run it
+// on the posted device, then flash the result back on /admin/devices.
+func (s *uiServer) deviceActionHandler(action func(string) (string, error), errPrefix string, ok func(string) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
+			return
+		}
+		var msg string
+		if res, err := action(strings.TrimSpace(r.FormValue("dev"))); err != nil {
+			msg = errPrefix + err.Error()
+		} else {
+			msg = ok(res)
+		}
+		http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+	}
+}
+
+// ---- Terminal page (the WebSocket handler lives in terminal.go) --------------
+
+func (s *uiServer) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
+	render(w, terminalTmpl, nil)
+}
+
 type backupData struct {
 	Repo, Retention, Snapshots, Msg string
 	ResticOK                        bool
+	ResticVersion                   string
+	GuardPath                       string // REQUIRE_MOUNT path, "" if unset
+	GuardOK                         bool   // is that path a real mount right now
+	Stats                           string // restic repo stats, "" if unavailable
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, ResticOK: resticInstalled(),
-		Msg: r.URL.Query().Get("msg")}
+		Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount}
+	if cfg.RequireMount != "" {
+		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk actually mounted now?
+	}
+	if v, err := resticVersion(); err == nil {
+		d.ResticVersion = v
+	}
 	if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
 			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
 		} else {
 			d.Snapshots = out
+		}
+		if out, err := resticOutput(s.repo, cfg, "stats", "--mode", "raw-data"); err == nil {
+			d.Stats = strings.TrimSpace(out)
 		}
 	}
 	render(w, backupTmpl, d)

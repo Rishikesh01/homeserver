@@ -21,3 +21,6 @@ hsctl/hsctl
 backup.conf
 .restic-password
 backups/
+
+# sandbox: host-built hsctl binary (rebuilt by `make sandbox`)
+sandbox/_build/
