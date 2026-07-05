@@ -54,6 +54,31 @@ func TestValidSessionAndLogout(t *testing.T) {
 	}
 }
 
+// TestSweepSessions checks the periodic reaper drops expired tokens and keeps live ones, so the
+// session map can't grow unbounded.
+func TestSweepSessions(t *testing.T) {
+	s := &uiServer{sessions: map[string]time.Time{
+		"live1": time.Now().Add(time.Hour),
+		"live2": time.Now().Add(time.Minute),
+		"dead1": time.Now().Add(-time.Second),
+		"dead2": time.Now().Add(-time.Hour),
+	}}
+	s.sweepSessions()
+	if len(s.sessions) != 2 {
+		t.Fatalf("after sweep want 2 live sessions, got %d: %v", len(s.sessions), s.sessions)
+	}
+	for _, dead := range []string{"dead1", "dead2"} {
+		if _, ok := s.sessions[dead]; ok {
+			t.Errorf("expired token %q should have been swept", dead)
+		}
+	}
+	for _, live := range []string{"live1", "live2"} {
+		if _, ok := s.sessions[live]; !ok {
+			t.Errorf("live token %q should have survived", live)
+		}
+	}
+}
+
 // TestWSOriginOK guards the anti-cross-site-WebSocket-hijack check on the root terminal. The
 // load-bearing case is a sibling service on another PORT of the same host: it shares our
 // hostname and cookie, so a hostname-only check would wrongly admit it.

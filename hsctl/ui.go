@@ -46,6 +46,15 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
 	c := LoadConfig(s.repo)
 	c.Normalize()
+
+	// Reap expired sessions periodically so the token map can't grow without bound.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for range t.C {
+			s.sweepSessions()
+		}
+	}()
 	if addr == "" {
 		addr = fmt.Sprintf(":%d", c.UIPort)
 	}
@@ -165,6 +174,20 @@ func (s *uiServer) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		h(w, r)
+	}
+}
+
+// sweepSessions deletes every expired token. validSession only drops the one token it's handed,
+// so without a periodic sweep the map grows unbounded with sessions from devices that logged in
+// once and never came back. Called on a timer from runUI.
+func (s *uiServer) sweepSessions() {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, exp := range s.sessions {
+		if now.After(exp) {
+			delete(s.sessions, tok)
+		}
 	}
 }
 

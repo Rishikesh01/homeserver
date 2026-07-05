@@ -29,7 +29,9 @@ for d in vaultwarden nextcloud pihole caddy stirling it-tools imagetools; do
 done
 
 declare -A BODY
-while IFS='=' read -r key img; do
+# `|| [ -n "$key" ]` processes a final line with no trailing newline (read returns non-zero at
+# EOF but still fills key), so the last manifest entry isn't silently dropped.
+while IFS='=' read -r key img || [ -n "$key" ]; do
   key="$(echo "$key" | tr -d '[:space:]')"
   img="$(echo "$img" | tr -d '[:space:]')"
   [ -z "$key" ] && continue

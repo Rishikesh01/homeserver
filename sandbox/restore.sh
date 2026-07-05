@@ -52,7 +52,9 @@ for d in "$VROOT"/*/; do
   [ -d "$src" ] || continue
   docker volume create "$name" >/dev/null
   mp="$(docker volume inspect -f '{{.Mountpoint}}' "$name")"
-  [ -n "$mp" ] && rm -rf "${mp:?}/"* 2>/dev/null || true
+  # Clear the volume including dotfiles (a bare * glob would skip them, leaving stale hidden
+  # files on a re-run); find -mindepth 1 empties the dir without removing the mountpoint itself.
+  [ -n "$mp" ] && find "${mp:?}" -mindepth 1 -delete 2>/dev/null || true
   cp -a "$src/." "$mp/"
   echo "  loaded volume $name"
 done

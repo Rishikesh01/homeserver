@@ -28,7 +28,10 @@ IMG=/var/tmp/sandboxdisk.img
 LOOP="$(losetup -f --show "$IMG" 2>/dev/null || true)"
 udevadm trigger --subsystem-match=block 2>/dev/null || true
 udevadm settle --timeout=5 2>/dev/null || true
-cleanup() { [ -n "${LOOP:-}" ] && losetup -d "$LOOP" 2>/dev/null || true; }
+cleanup() {
+  [ -n "${UI_PID:-}" ] && kill -TERM "$UI_PID" 2>/dev/null || true   # forward docker stop's SIGTERM to hsctl ui
+  [ -n "${LOOP:-}" ] && losetup -d "$LOOP" 2>/dev/null || true
+}
 trap cleanup EXIT INT TERM
 
 # Generate service .env so `hsctl up` works. Bind Pi-hole's DNS to 0.0.0.0 — the default
@@ -66,4 +69,7 @@ echo "  Stop     : from the host ->  make sandbox-down   (cleans up fully)"
 echo "==================================================================="
 
 hsctl ui --addr :8088 &
-wait $!
+UI_PID=$!
+# On `docker stop`, PID 1 (this shell) gets SIGTERM and the trap forwards it to hsctl ui, so it
+# shuts down cleanly instead of being hard-killed when the stop grace period ends.
+wait "$UI_PID"
