@@ -89,3 +89,25 @@ func TestMountableRows(t *testing.T) {
 		t.Errorf("mounted loop3 should be shown with its mountpoint, got %q", r.Mountpoint)
 	}
 }
+
+// TestCleanMountTarget covers the operator-chosen mount directory validation: absolute paths
+// pass (cleaned), relative/blank/root are refused.
+func TestCleanMountTarget(t *testing.T) {
+	ok := map[string]string{
+		"/mnt/backup":  "/mnt/backup",
+		"  /mnt/x  ":   "/mnt/x",       // trimmed
+		"/mnt/a/../b":  "/mnt/b",       // cleaned
+		"/data/restic": "/data/restic", // anywhere absolute is the operator's call
+	}
+	for in, want := range ok {
+		got, err := cleanMountTarget(in)
+		if err != nil || got != want {
+			t.Errorf("cleanMountTarget(%q) = %q, %v; want %q, nil", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "   ", "relative/dir", "mnt/x", "/", "//"} {
+		if got, err := cleanMountTarget(bad); err == nil {
+			t.Errorf("cleanMountTarget(%q) = %q, nil; want an error", bad, got)
+		}
+	}
+}
