@@ -9,9 +9,13 @@ Go is at `~/sdk/go` on this box (no sudo needed to build).
 
 ```bash
 cd hsctl
-make build              # -> ./hsctl   (or: ~/sdk/go/bin/go build -o hsctl .)
-make install            # -> /usr/local/bin/hsctl   (uses sudo)
+make build              # -> ./hsctl   (version stamped from the git tag; see below)
+make install            # -> /usr/local/bin/hsctl (uses sudo); restarts hsctl-ui if it's running
 ```
+
+`make build`/`make install` bake the version into `hsctl --version` from the git tag via
+`-ldflags` (e.g. `v1.1.0`, or `v1.1.0-3-gabc123` past a tag). A bare `go build .` (no ldflags)
+reports `dev` — fine for local hacking; use `make` for anything you install.
 
 So the UI can control Docker without password prompts, add yourself to the docker
 group once: `sudo usermod -aG docker $USER` then log out/in.

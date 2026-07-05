@@ -10,7 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "1.1.0"
+// version is reported by `hsctl --version`. It's overridden at build time via
+// -ldflags "-X main.version=<git tag>" (see the Makefile), so a released binary reports its
+// git tag (e.g. v1.1.0). A plain `go build` with no ldflags reports "dev".
+var version = "dev"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
