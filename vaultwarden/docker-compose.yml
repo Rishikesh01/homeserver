@@ -15,9 +15,10 @@ services:
       INVITATIONS_ALLOWED: "true"
     volumes:
       - vw-data:/data
-    ports:
-      # Put a reverse proxy (Caddy/Nginx/Traefik) in front for HTTPS.
-      - "${VW_HTTP_PORT:-8080}:80"
+    # No published port: Caddy reaches this over the shared "edge" network as vaultwarden:80,
+    # so the vault is never exposed as plaintext HTTP on the LAN — only Caddy's HTTPS is.
+    networks:
+      - edge
     healthcheck:
       test: ["CMD", "/vaultwarden", "--version"]
       interval: 30s
@@ -26,3 +27,8 @@ services:
 
 volumes:
   vw-data:
+
+networks:
+  edge:
+    external: true
+    name: homeserver-edge

@@ -78,6 +78,36 @@ func setEnvKey(path, key, value string) error {
 	return writeFile0600(path, strings.Join(lines, "\n"))
 }
 
+// removeEnvKeys deletes any KEY=... lines for the given keys from a simple env file,
+// preserving everything else (other keys, comments, order). A missing file is a no-op.
+// Reports whether it changed anything — used to migrate away from settings no longer used.
+func removeEnvKeys(path string, keys ...string) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	drop := map[string]bool{}
+	for _, k := range keys {
+		drop[k] = true
+	}
+	var kept []string
+	changed := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, _, ok := strings.Cut(strings.TrimSpace(line), "="); ok && drop[strings.TrimSpace(k)] {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, writeFile0600(path, strings.Join(kept, "\n"))
+}
+
 func writeFile0600(path, content string) error { return os.WriteFile(path, []byte(content), 0600) }
 func writeFile0644(path, content string) error { return os.WriteFile(path, []byte(content), 0644) }
 

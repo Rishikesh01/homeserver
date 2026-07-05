@@ -23,7 +23,7 @@ func secretsCmd() *cobra.Command {
 		}})
 	s.AddCommand(&cobra.Command{Use: "rotate-vw-admin",
 		Short: "Generate a NEW Vaultwarden /admin token, store it Argon2-hashed, recreate the container",
-		Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+		Args:  cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 			repo, err := requireRepoDir()
 			if err != nil {
 				return err

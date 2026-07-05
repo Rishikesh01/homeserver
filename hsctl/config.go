@@ -13,13 +13,13 @@ import (
 // Config is everything a user can configure. It round-trips to setup.conf as
 // KEY=value pairs.
 type Config struct {
-	ServerIP         string
-	TZ               string
-	ACMEEmail        string
-	VWPort           int
-	NCPort           int
-	PiholeWebPort    int
-	UIPort           int // hsctl web UI port (Caddy upstream + direct IP access)
+	ServerIP  string
+	TZ        string
+	ACMEEmail string
+	// UIPort is the hsctl web UI port. It's the one app port that's still a host port: the
+	// dashboard runs on the host (not a container), so Caddy reaches it via the host gateway.
+	// The other apps moved onto the shared "edge" network and no longer publish HTTP ports.
+	UIPort           int
 	PiholeDNSBind    string
 	VWSignupsAllowed bool
 }
@@ -39,11 +39,7 @@ func Defaults() Config {
 		ACMEEmail:        "you@example.com",
 		VWSignupsAllowed: true,
 	}
-	used := map[int]bool{}
-	c.VWPort = pickPort(8080, used)
-	c.NCPort = pickPort(8081, used)
-	c.PiholeWebPort = pickPort(8053, used)
-	c.UIPort = pickPort(8088, used)
+	c.UIPort = pickPort(8088, map[int]bool{})
 	return c
 }
 
@@ -56,18 +52,8 @@ func (c *Config) Normalize() {
 			c.PiholeDNSBind = c.ServerIP
 		}
 	}
-	used := map[int]bool{}
-	if c.VWPort == 0 {
-		c.VWPort = pickPort(8080, used)
-	}
-	if c.NCPort == 0 {
-		c.NCPort = pickPort(8081, used)
-	}
-	if c.PiholeWebPort == 0 {
-		c.PiholeWebPort = pickPort(8053, used)
-	}
 	if c.UIPort == 0 {
-		c.UIPort = pickPort(8088, used)
+		c.UIPort = pickPort(8088, map[int]bool{})
 	}
 }
 
@@ -94,9 +80,6 @@ func overlayFromConf(c *Config, repo string) {
 	c.ServerIP = get("SERVER_IP", c.ServerIP)
 	c.TZ = get("TZ_VAL", c.TZ)
 	c.ACMEEmail = get("ACME_EMAIL", c.ACMEEmail)
-	c.VWPort = atoiDef(get("VW_HTTP_PORT", ""), c.VWPort)
-	c.NCPort = atoiDef(get("NC_HTTP_PORT", ""), c.NCPort)
-	c.PiholeWebPort = atoiDef(get("PIHOLE_WEB_PORT", ""), c.PiholeWebPort)
 	c.UIPort = atoiDef(get("UI_PORT", ""), c.UIPort)
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
@@ -109,38 +92,19 @@ func overlayFromEnv(c *Config, repo string) {
 		if v := kv["ACME_EMAIL"]; v != "" {
 			c.ACMEEmail = v
 		}
-		if v := portFromUpstream(kv["VAULT_UPSTREAM"]); v > 0 {
-			c.VWPort = v
-		}
-		if v := portFromUpstream(kv["CLOUD_UPSTREAM"]); v > 0 {
-			c.NCPort = v
-		}
-		if v := portFromUpstream(kv["PIHOLE_UPSTREAM"]); v > 0 {
-			c.PiholeWebPort = v
-		}
+		// The dashboard is still a host process reached via host.docker.internal:<port>.
 		if v := portFromUpstream(kv["HOME_UPSTREAM"]); v > 0 {
 			c.UIPort = v
 		}
 	}
 	if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
-		if v := atoiDef(kv["VW_HTTP_PORT"], 0); v > 0 {
-			c.VWPort = v
-		}
 		if _, ok := kv["VW_SIGNUPS_ALLOWED"]; ok {
 			c.VWSignupsAllowed = kv["VW_SIGNUPS_ALLOWED"] == "true"
-		}
-	}
-	if kv, err := readKV(filepath.Join(repo, "nextcloud/.env")); err == nil {
-		if v := atoiDef(kv["NC_HTTP_PORT"], 0); v > 0 {
-			c.NCPort = v
 		}
 	}
 	if kv, err := readKV(filepath.Join(repo, "pihole/.env")); err == nil {
 		if v := kv["TZ"]; v != "" {
 			c.TZ = v
-		}
-		if v := atoiDef(kv["PIHOLE_WEB_PORT"], 0); v > 0 {
-			c.PiholeWebPort = v
 		}
 		if v := kv["PIHOLE_DNS_BIND"]; v != "" {
 			c.PiholeDNSBind = v
@@ -168,8 +132,7 @@ func (c Config) Save(repo string) error {
 	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). Edit + re-run freely.\n")
 	for _, kv := range [][2]string{
 		{"SERVER_IP", c.ServerIP}, {"TZ_VAL", c.TZ}, {"ACME_EMAIL", c.ACMEEmail},
-		{"VW_HTTP_PORT", strconv.Itoa(c.VWPort)}, {"NC_HTTP_PORT", strconv.Itoa(c.NCPort)},
-		{"PIHOLE_WEB_PORT", strconv.Itoa(c.PiholeWebPort)}, {"UI_PORT", strconv.Itoa(c.UIPort)},
+		{"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"VW_SIGNUPS_ALLOWED", tf(c.VWSignupsAllowed)},
 	} {

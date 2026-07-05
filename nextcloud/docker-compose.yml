@@ -37,9 +37,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      # Put a reverse proxy in front for HTTPS — required for the mobile/desktop clients.
-      - "${NC_HTTP_PORT:-8081}:80"
+    # No published port: Caddy reaches the app over the shared "edge" network as
+    # nextcloud-app:80, so Nextcloud (and its login) is never plaintext HTTP on the LAN.
+    # `app` stays on the project's default network too, to reach db + redis by name.
+    networks:
+      - default
+      - edge
     environment:
       POSTGRES_HOST: db
       POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
@@ -64,3 +67,10 @@ volumes:
   redis-data:
   nc-html:
   nc-data:
+
+# db + redis have no `networks:` key, so they stay on the project-internal default network
+# only — unreachable from edge. Just the app is bridged to Caddy.
+networks:
+  edge:
+    external: true
+    name: homeserver-edge

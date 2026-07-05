@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,19 +65,72 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
-	port := portOf(addr)
-	fmt.Printf("hsctl ui listening on %s\n", addr)
-	fmt.Printf("  dashboard : https://%s/   (via Caddy)   ·   http://%s%s/   (direct)\n", c.ServerIP, c.ServerIP, port)
-	fmt.Printf("  admin     : https://%s/admin   ·   http://%s%s/admin\n", c.ServerIP, c.ServerIP, port)
+	fmt.Printf("hsctl ui:\n")
+	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
+	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
 	fmt.Printf("  login     : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
-	return http.ListenAndServe(addr, mux)
+
+	// An explicit --addr is honoured verbatim (dev runs, and the sandbox which forwards a port).
+	if addr != "" {
+		fmt.Printf("  listening : %s   (explicit --addr)\n", addr)
+		return http.ListenAndServe(addr, mux)
+	}
+	// Default: the dashboard is plain HTTP and grants a root shell, so keep it OFF the LAN.
+	// Bind loopback (local use) + the docker bridge gateway (so Caddy, which fronts us with
+	// HTTPS via host.docker.internal, can still reach us) — never the LAN interface.
+	addrs, warn := uiListenAddrs(c.UIPort)
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	return serveUI(mux, addrs)
 }
 
-func portOf(addr string) string {
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		return addr[i:]
+// uiListenAddrs returns the addresses the dashboard binds to by default: always loopback, plus
+// the docker bridge gateway so Caddy can reach it over the host gateway — without exposing the
+// plaintext dashboard on the LAN. If the bridge gateway can't be detected it falls back to all
+// interfaces (so the dashboard stays reachable) and returns a warning to print.
+func uiListenAddrs(port int) (addrs []string, warn string) {
+	addrs = []string{fmt.Sprintf("127.0.0.1:%d", port)}
+	if gw := dockerBridgeGateway(); gw != "" {
+		return append(addrs, fmt.Sprintf("%s:%d", gw, port)), ""
 	}
-	return addr
+	return []string{fmt.Sprintf("0.0.0.0:%d", port)},
+		fmt.Sprintf("warning: could not detect the docker bridge gateway, so the dashboard is bound\n"+
+			"on ALL interfaces (reachable as plain http on the LAN). Keep its port off your router,\n"+
+			"or restrict it with:  hsctl ui --addr 127.0.0.1:%d", port)
+}
+
+// dockerBridgeGateway returns the gateway IP of docker's default bridge (e.g. 172.17.0.1) —
+// the address host.docker.internal resolves to, i.e. where Caddy connects to reach the host.
+func dockerBridgeGateway() string {
+	out, err := dockerOut(repoDir(), "network", "inspect", "bridge", "-f",
+		"{{range .IPAM.Config}}{{.Gateway}}{{end}}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// serveUI serves mux on every address, returning when the first listener stops. A listener
+// that can't bind is warned about and skipped; it's an error only if none come up.
+func serveUI(mux http.Handler, addrs []string) error {
+	srv := &http.Server{Handler: mux}
+	errc := make(chan error, len(addrs))
+	started := 0
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot listen on %s: %v\n", a, err)
+			continue
+		}
+		fmt.Printf("  listening : http://%s/\n", a)
+		started++
+		go func(l net.Listener) { errc <- srv.Serve(l) }(ln)
+	}
+	if started == 0 {
+		return fmt.Errorf("no usable listen address for the dashboard")
+	}
+	return <-errc
 }
 
 // uiPassword returns the admin password from $HSCTL_UI_PASSWORD or .ui-password,
@@ -301,6 +355,11 @@ func (s *uiServer) runLifecycle(action string) string {
 	if action == "down" {
 		cargs = []string{"compose", "down"}
 		order = reversed(services)
+	} else {
+		migrateSharedNetworkEnv(s.repo)
+		if err := ensureEdgeNetwork(); err != nil {
+			return "up: FAILED — " + err.Error()
+		}
 	}
 	var failed []string
 	for _, svc := range order {

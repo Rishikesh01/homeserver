@@ -43,9 +43,6 @@ func rootCmd() *cobra.Command {
 	setup.Flags().String("server-ip", "", "server LAN IP")
 	setup.Flags().String("tz", "", "timezone")
 	setup.Flags().String("email", "", "admin email")
-	setup.Flags().Int("vw-port", 0, "Vaultwarden host port")
-	setup.Flags().Int("nc-port", 0, "Nextcloud host port")
-	setup.Flags().Int("pihole-port", 0, "Pi-hole web port")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
 	setup.Flags().Bool("vw-signups", true, "allow open Vaultwarden signups")
 
