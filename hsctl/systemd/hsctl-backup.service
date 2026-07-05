@@ -10,7 +10,7 @@ RequiresMountsFor=/mnt/restic
 [Service]
 Type=oneshot
 # Root so restic can read Docker volume files under /var/lib/docker/volumes.
-# Replace __DIR__ with the repo path.
+# __DIR__ is filled in by `make install-services`.
 WorkingDirectory=__DIR__
 ExecStart=/usr/local/bin/hsctl backup run
 User=root

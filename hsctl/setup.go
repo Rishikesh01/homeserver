@@ -27,15 +27,6 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if f.Changed("email") {
 		c.ACMEEmail, _ = f.GetString("email")
 	}
-	if f.Changed("vw-port") {
-		c.VWPort, _ = f.GetInt("vw-port")
-	}
-	if f.Changed("nc-port") {
-		c.NCPort, _ = f.GetInt("nc-port")
-	}
-	if f.Changed("pihole-port") {
-		c.PiholeWebPort, _ = f.GetInt("pihole-port")
-	}
 	if f.Changed("pihole-dns-bind") {
 		c.PiholeDNSBind, _ = f.GetString("pihole-dns-bind")
 	}
@@ -105,9 +96,6 @@ func promptConfig(c Config) Config {
 	c.ServerIP = ask("Server LAN IP", c.ServerIP)
 	c.TZ = ask("Timezone", c.TZ)
 	c.ACMEEmail = ask("Admin email (Let's Encrypt contact, if you ever use a domain)", c.ACMEEmail)
-	c.VWPort = atoiDef(ask("Vaultwarden host port", strconv.Itoa(c.VWPort)), c.VWPort)
-	c.NCPort = atoiDef(ask("Nextcloud host port", strconv.Itoa(c.NCPort)), c.NCPort)
-	c.PiholeWebPort = atoiDef(ask("Pi-hole web port", strconv.Itoa(c.PiholeWebPort)), c.PiholeWebPort)
 	c.UIPort = atoiDef(ask("Dashboard (web UI) port", strconv.Itoa(c.UIPort)), c.UIPort)
 	// derived defaults follow the IP just entered
 	dnsDef := c.PiholeDNSBind
@@ -120,4 +108,3 @@ func promptConfig(c Config) Config {
 	c.VWSignupsAllowed = askYN("Allow open Vaultwarden signups?", c.VWSignupsAllowed)
 	return c
 }
-

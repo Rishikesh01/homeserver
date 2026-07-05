@@ -32,9 +32,10 @@ hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
 ```
 
-`setup` autodetects the LAN IP/timezone, picks free host ports, reads any existing
-`.env` so it stays consistent with a running stack, and saves answers to `setup.conf`
-(re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
+`setup` autodetects the LAN IP/timezone, picks a free dashboard port (the apps aren't
+published on the LAN — Caddy reaches them over an internal network — so there are no per-app
+host ports), reads any existing `.env` so it stays consistent with a running stack, and saves
+answers to `setup.conf` (re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
 
 ## Backups & restore
 
@@ -80,8 +81,9 @@ hsctl completion bash | sudo tee /etc/bash_completion.d/hsctl >/dev/null
 ## Web UI
 
 ```bash
-hsctl ui              # binds :<UI port>; reach it at https://<server-ip> via Caddy,
-                      # or http://<server-ip>:8088 directly
+hsctl ui              # reach it at https://<server-ip> via Caddy. With no --addr it binds
+                      # loopback + the docker bridge gateway only (so Caddy can reach it),
+                      # never the LAN — the dashboard is a root shell, so it stays off the LAN.
 ```
 
 - **`/`** — the dashboard / home page: tiles for every app (from `services.json`, so it
@@ -110,7 +112,7 @@ hsctl install        # installs + enables the dashboard systemd service (uses su
 
 The app **containers** already come back on reboot (`restart: unless-stopped`); `hsctl
 install` does the same for the dashboard process. For the nightly backup timer too, use
-`make install-services` (edit `systemd/*.service` first: set `__DIR__` to this repo).
+`make install-services` (it fills `__DIR__` in the unit templates with this repo's path).
 
 ## Files it creates (all gitignored)
 

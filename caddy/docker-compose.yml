@@ -19,14 +19,18 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:-you@example.com}
       # Server LAN IP — used as the cert SAN so https://<ip>:<port> is trusted.
       SERVER_IP: ${SERVER_IP}
-      VAULT_UPSTREAM: ${VAULT_UPSTREAM}
-      CLOUD_UPSTREAM: ${CLOUD_UPSTREAM}
-      PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM}
-      # The hsctl web UI on the host (bind it to :8088 so this gateway can reach it).
+      # App upstreams are the container names on the shared "edge" network (below), NOT
+      # host-published ports — so the apps no longer expose plaintext HTTP on the LAN and
+      # Caddy is the only way in. The defaults are the source of truth; .env may override.
+      VAULT_UPSTREAM: ${VAULT_UPSTREAM:-vaultwarden:80}
+      CLOUD_UPSTREAM: ${CLOUD_UPSTREAM:-nextcloud-app:80}
+      PIHOLE_UPSTREAM: ${PIHOLE_UPSTREAM:-pihole:80}
+      # The hsctl web UI runs on the HOST (not a container), so this one still goes through
+      # the docker host gateway. hsctl binds it to the gateway + loopback, never the LAN.
       HOME_UPSTREAM: ${HOME_UPSTREAM:-host.docker.internal:8088}
-      STIRLING_UPSTREAM: ${STIRLING_UPSTREAM:-host.docker.internal:8090}
-      ITTOOLS_UPSTREAM: ${ITTOOLS_UPSTREAM:-host.docker.internal:8091}
-      IMAGETOOLS_UPSTREAM: ${IMAGETOOLS_UPSTREAM:-host.docker.internal:8092}
+      STIRLING_UPSTREAM: ${STIRLING_UPSTREAM:-stirling-pdf:8080}
+      ITTOOLS_UPSTREAM: ${ITTOOLS_UPSTREAM:-it-tools:80}
+      IMAGETOOLS_UPSTREAM: ${IMAGETOOLS_UPSTREAM:-imagetools:80}
       # HTTPS ports each app is exposed on (must match services.json on the dashboard).
       VAULT_HTTPS: ${VAULT_HTTPS:-8443}
       CLOUD_HTTPS: ${CLOUD_HTTPS:-8444}
@@ -39,7 +43,17 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # issued certs + local CA root — back this up
       - caddy-config:/config
+    networks:
+      - edge
 
 volumes:
   caddy-data:
   caddy-config:
+
+# Shared reverse-proxy network. Every app joins it so Caddy reaches them by container name
+# instead of a host-published port — created by hsctl (`docker network create homeserver-edge`)
+# before the stack comes up, hence external. This is what keeps the apps off the LAN.
+networks:
+  edge:
+    external: true
+    name: homeserver-edge

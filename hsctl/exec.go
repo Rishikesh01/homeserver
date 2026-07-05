@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // requireRepoDir resolves the homeserver repo and errors — instead of silently using the
@@ -55,16 +56,19 @@ func isRepo(dir string) bool {
 	return err == nil
 }
 
-// dockerSudo caches whether the docker daemon needs sudo from this user.
-var dockerSudo *bool
+// dockerSudo caches whether the docker daemon needs sudo from this user. The web UI probes
+// this from many request goroutines at once, so the one-time detection is guarded by Once —
+// otherwise concurrent first calls would race on the cache variable.
+var (
+	dockerSudoOnce sync.Once
+	dockerSudo     bool
+)
 
 func dockerNeedsSudo() bool {
-	if dockerSudo == nil {
-		err := exec.Command("docker", "info").Run()
-		v := err != nil
-		dockerSudo = &v
-	}
-	return *dockerSudo
+	dockerSudoOnce.Do(func() {
+		dockerSudo = exec.Command("docker", "info").Run() != nil
+	})
+	return dockerSudo
 }
 
 // dockerCmd builds a docker (or sudo docker) command rooted at dir.

@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,6 +35,36 @@ type uiServer struct {
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
+
+	// opMu serialises the in-process destructive operations (backup run, restore-into-volumes)
+	// so two clicks can't run at once — a concurrent restore + backup would wipe volumes while
+	// they're being read. Held with TryLock: a second request is turned away, not queued.
+	opMu sync.Mutex
+
+	// restoreSt tracks the async web restore so its progress page can poll for completion even
+	// while Caddy (and thus normal dashboard access) is down mid-restore.
+	restoreMu sync.Mutex
+	restoreSt restoreStatus
+}
+
+// restoreStatus is the live state of the background web restore, polled by its progress page.
+type restoreStatus struct {
+	Active  bool   `json:"active"`  // a restore is running now
+	Done    bool   `json:"done"`    // the most recent restore has finished
+	OK      bool   `json:"ok"`      // ...successfully
+	Message string `json:"message"` // human-facing result
+}
+
+func (s *uiServer) setRestore(st restoreStatus) {
+	s.restoreMu.Lock()
+	s.restoreSt = st
+	s.restoreMu.Unlock()
+}
+
+func (s *uiServer) getRestore() restoreStatus {
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
+	return s.restoreSt
 }
 
 func runUI(cmd *cobra.Command, _ []string) error {
@@ -40,9 +72,15 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
 	c := LoadConfig(s.repo)
 	c.Normalize()
-	if addr == "" {
-		addr = fmt.Sprintf(":%d", c.UIPort)
-	}
+
+	// Reap expired sessions periodically so the token map can't grow without bound.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for range t.C {
+			s.sweepSessions()
+		}
+	}()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/help", s.handleHelp)
@@ -64,19 +102,83 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
-	port := portOf(addr)
-	fmt.Printf("hsctl ui listening on %s\n", addr)
-	fmt.Printf("  dashboard : https://%s/   (via Caddy)   ·   http://%s%s/   (direct)\n", c.ServerIP, c.ServerIP, port)
-	fmt.Printf("  admin     : https://%s/admin   ·   http://%s%s/admin\n", c.ServerIP, c.ServerIP, port)
+	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
+	fmt.Printf("hsctl ui:\n")
+	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
+	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
 	fmt.Printf("  login     : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
-	return http.ListenAndServe(addr, mux)
+
+	// An explicit --addr is honoured verbatim (dev runs, and the sandbox which forwards a port).
+	if addr != "" {
+		fmt.Printf("  listening : %s   (explicit --addr)\n", addr)
+		return http.ListenAndServe(addr, mux)
+	}
+	// Default: the dashboard is plain HTTP and grants a root shell, so keep it OFF the LAN.
+	// Bind loopback (local use) + the docker bridge gateway (so Caddy, which fronts us with
+	// HTTPS via host.docker.internal, can still reach us) — never the LAN interface.
+	addrs, warn := uiListenAddrs(c.UIPort)
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	return serveUI(mux, addrs)
 }
 
-func portOf(addr string) string {
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		return addr[i:]
+// uiListenAddrs returns the addresses the dashboard binds to by default: always loopback, plus
+// the docker bridge gateway so Caddy can reach it over the host gateway — without exposing the
+// plaintext dashboard on the LAN. If the bridge gateway can't be detected it falls back to all
+// interfaces (so the dashboard stays reachable) and returns a warning to print.
+func uiListenAddrs(port int) (addrs []string, warn string) {
+	addrs = []string{fmt.Sprintf("127.0.0.1:%d", port)}
+	if gw := dockerBridgeGateway(); gw != "" {
+		return append(addrs, fmt.Sprintf("%s:%d", gw, port)), ""
 	}
-	return addr
+	return []string{fmt.Sprintf("0.0.0.0:%d", port)},
+		fmt.Sprintf("warning: could not detect the docker bridge gateway, so the dashboard is bound\n"+
+			"on ALL interfaces (reachable as plain http on the LAN). Keep its port off your router,\n"+
+			"or restrict it with:  hsctl ui --addr 127.0.0.1:%d", port)
+}
+
+// dockerBridgeGateway returns the IPv4 gateway of docker's default bridge (e.g. 172.17.0.1) —
+// the address host.docker.internal resolves to, i.e. where Caddy connects to reach the host.
+// The bridge can have several IPAM configs (IPv4 + IPv6), so we pick the first IPv4 one rather
+// than concatenating them into a malformed address.
+func dockerBridgeGateway() string {
+	out, err := dockerOut(repoDir(), "network", "inspect", "bridge", "-f",
+		"{{range .IPAM.Config}}{{.Gateway}} {{end}}")
+	if err != nil {
+		return ""
+	}
+	for _, f := range strings.Fields(out) {
+		if ip := net.ParseIP(f); ip != nil && ip.To4() != nil {
+			return f
+		}
+	}
+	return ""
+}
+
+// serveUI serves mux on every address, returning when the first listener stops. Binding is
+// all-or-nothing: a partial bind is worse than none — coming up on loopback but not the docker
+// bridge gateway would look healthy to systemd while Caddy (its only route to us) gets
+// connection-refused, so we fail and let the unit restart and retry cleanly.
+func serveUI(mux http.Handler, addrs []string) error {
+	srv := &http.Server{Handler: mux}
+	var lns []net.Listener
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			for _, l := range lns {
+				_ = l.Close()
+			}
+			return fmt.Errorf("cannot listen on %s: %w", a, err)
+		}
+		fmt.Printf("  listening : http://%s/\n", a)
+		lns = append(lns, ln)
+	}
+	errc := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func(l net.Listener) { errc <- srv.Serve(l) }(ln)
+	}
+	return <-errc
 }
 
 // uiPassword returns the admin password from $HSCTL_UI_PASSWORD or .ui-password,
@@ -106,6 +208,20 @@ func (s *uiServer) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		h(w, r)
+	}
+}
+
+// sweepSessions deletes every expired token. validSession only drops the one token it's handed,
+// so without a periodic sweep the map grows unbounded with sessions from devices that logged in
+// once and never came back. Called on a timer from runUI.
+func (s *uiServer) sweepSessions() {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, exp := range s.sessions {
+		if now.After(exp) {
+			delete(s.sessions, tok)
+		}
 	}
 }
 
@@ -168,9 +284,12 @@ func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// safeNext keeps post-login redirects on this site (a local path), defaulting to /admin.
+// safeNext keeps post-login redirects on this site (a local path), defaulting to /admin. It
+// must reject anything that resolves off-site: a protocol-relative "//host", and — because
+// browsers fold "\" into "/" per the URL spec — any backslash (so "/\host" can't sneak through
+// as "//host"). A legitimate in-app path never contains a backslash.
 func safeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") && !strings.ContainsRune(next, '\\') {
 		return next
 	}
 	return "/admin"
@@ -278,8 +397,19 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 		return
 	}
+	do := r.FormValue("do")
+	// up/down/restart/shutdown all move the stack, so they must not overlap a running backup or
+	// (now-async) restore — that's the same wipe-while-in-use collision opMu guards elsewhere.
+	if do == "up" || do == "down" || do == "restart" || do == "shutdown" {
+		if !s.opMu.TryLock() {
+			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(
+				"A backup or restore is running — try this again once it finishes."), http.StatusSeeOther)
+			return
+		}
+		defer s.opMu.Unlock()
+	}
 	var msg string
-	switch r.FormValue("do") {
+	switch do {
 	case "up":
 		msg = s.runLifecycle("up")
 	case "down":
@@ -301,6 +431,11 @@ func (s *uiServer) runLifecycle(action string) string {
 	if action == "down" {
 		cargs = []string{"compose", "down"}
 		order = reversed(services)
+	} else {
+		migrateSharedNetworkEnv(s.repo)
+		if err := ensureEdgeNetwork(); err != nil {
+			return "up: FAILED — " + err.Error()
+		}
 	}
 	var failed []string
 	for _, svc := range order {
@@ -480,6 +615,12 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
 		return
 	}
+	if !s.opMu.TryLock() {
+		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
+			"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
+		return
+	}
+	defer s.opMu.Unlock()
 	msg := "Backup complete."
 	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
 		msg = "Backup failed: " + err.Error()
@@ -488,17 +629,22 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		cfg := loadBackupCfg(s.repo)
-		if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
-			cfg.Repo = v
-		}
-		if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
-			cfg.Retention = v
-		}
-		_ = cfg.save(s.repo)
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
+		return
 	}
-	http.Redirect(w, r, "/admin/backup?msg=Destination+saved", http.StatusSeeOther)
+	msg := "Destination saved"
+	cfg := loadBackupCfg(s.repo)
+	if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
+		cfg.Repo = v
+	}
+	if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
+		cfg.Retention = v
+	}
+	if err := cfg.save(s.repo); err != nil {
+		msg = "Save failed: " + err.Error()
+	}
+	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
 type restoreData struct {
@@ -509,8 +655,9 @@ type restoreData struct {
 // handleBackupRestore shows a confirmation page (GET) and runs the destructive DR put-back
 // (POST) — but only when the operator types RESTORE. It stops the stack, repopulates every
 // volume from the snapshot (Vaultwarden from its staged copy), and brings the stack back up.
-// The run is synchronous so the operator sees the real result; note it restarts Caddy, so
-// prefer the server's direct http address over the https one (see the page's warning).
+// The put-back runs in the BACKGROUND (it restarts Caddy, which would otherwise cut off the
+// response); the POST returns a progress page that polls handleBackupRestoreStatus and updates
+// itself once the stack — and Caddy — are back.
 func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	if r.Method == http.MethodPost {
@@ -519,11 +666,36 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
 			return
 		}
-		msg := "Restore complete — all services were brought back up."
-		if err := restoreSnapshotIntoVolumes(s.repo, cfg, strings.TrimSpace(r.FormValue("snapshot"))); err != nil {
-			msg = "Restore FAILED: " + err.Error()
+		// A restore stops the stack — Caddy included — so a synchronous response would be cut off
+		// mid-way (the dashboard is only reachable through Caddy, and no longer on the LAN). Run
+		// it in the background and hand back a page that polls for completion, tolerating the
+		// proxy being down while the stack is restarting.
+		if !s.opMu.TryLock() {
+			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
+				"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
+			return
 		}
-		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+		snap := strings.TrimSpace(r.FormValue("snapshot"))
+		s.setRestore(restoreStatus{Active: true})
+		go func() {
+			defer s.opMu.Unlock()
+			defer func() {
+				if p := recover(); p != nil {
+					s.setRestore(restoreStatus{Done: true, Message: fmt.Sprintf("Restore crashed: %v", p)})
+				}
+			}()
+			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
+			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
+				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
+				// Best-effort: make sure Caddy is back even if an earlier service failed to start,
+				// so this failure is actually visible again — the progress page can only reach the
+				// status endpoint through Caddy.
+				_ = ensureEdgeNetwork()
+				_, _ = dockerCombined(filepath.Join(s.repo, "caddy"), "compose", "up", "-d")
+			}
+			s.setRestore(st)
+		}()
+		render(w, restoreProgressTmpl, nil)
 		return
 	}
 	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
@@ -533,6 +705,15 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	render(w, restoreTmpl, d)
+}
+
+// handleBackupRestoreStatus reports the background restore's state as JSON. The progress page
+// polls it, tolerating failures while Caddy is down mid-restore, and shows the result once the
+// stack (and the proxy) come back up.
+func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(s.getRestore())
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).

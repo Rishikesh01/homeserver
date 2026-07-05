@@ -35,11 +35,10 @@ var backupVolumeSkip = map[string]bool{
 // dir name), minus the skip-list above. Discovering volumes instead of hardcoding
 // them means a newly added service's data is protected automatically — no list to
 // keep in sync, so we can't silently miss a service again.
-func backupVolumesFor(repo string) []string {
+func backupVolumesFor(repo string) ([]string, error) {
 	out, err := dockerOut(repo, "volume", "ls", "--format", "{{.Name}}")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not list docker volumes:", err)
-		return nil
+		return nil, fmt.Errorf("listing docker volumes (is docker up?): %w", err)
 	}
 	ours := map[string]bool{}
 	for _, s := range services {
@@ -60,7 +59,7 @@ func backupVolumesFor(repo string) []string {
 		}
 	}
 	sort.Strings(vols)
-	return vols
+	return vols, nil
 }
 
 const (
@@ -271,15 +270,28 @@ func backupRun(repo string, cfg backupCfg) error {
 	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
 	vwExclude := stageVaultwardenDB(repo, staging)
 
-	vols := backupVolumesFor(repo)
+	vols, err := backupVolumesFor(repo)
+	if err != nil {
+		return fmt.Errorf("discovering docker volumes: %w", err)
+	}
+	// Refuse to take an "empty" backup. A real stack always has data volumes; zero means docker
+	// discovery came back blank (daemon hiccup, stack down) — and since we prune right after, an
+	// empty snapshot would delete older, good snapshots. Fail loudly instead.
+	if len(vols) == 0 {
+		return fmt.Errorf("no stack data volumes found — is the stack up (hsctl status)? " +
+			"refusing to take an empty backup that would then prune your good snapshots")
+	}
 	fmt.Printf("volumes to back up (%d): %s\n", len(vols), strings.Join(vols, " "))
 	var paths []string
 	for _, v := range vols {
-		if mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", v); err == nil && mp != "" {
-			paths = append(paths, mp)
-		} else {
-			fmt.Fprintf(os.Stderr, "skip volume %s (not found)\n", v)
+		// A volume we just discovered must resolve. If it doesn't, abort rather than write a
+		// snapshot that's silently missing a service's data (and then prune behind it).
+		mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", v)
+		if err != nil || mp == "" {
+			return fmt.Errorf("resolving volume %s failed — aborting rather than writing an "+
+				"incomplete snapshot: %v", v, err)
 		}
+		paths = append(paths, mp)
 	}
 	paths = append(paths, staging)
 	for _, s := range services {
@@ -321,6 +333,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	target, _ := cmd.Flags().GetString("target")
+	userTarget := cmd.Flags().Changed("target") && strings.TrimSpace(target) != ""
 	if target == "" {
 		target = filepath.Join(repo, "restore")
 	}
@@ -329,7 +342,14 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		snap = args[0]
 	}
 	ensureResticPassword(repo)
-	if err := os.MkdirAll(target, 0700); err != nil {
+	// A user-supplied --target is the operator's own directory: extract INTO it without wiping
+	// (restic overlays). Only the default reusable scratch dir gets emptied first, so a prior
+	// extraction there can't contaminate an --into-volumes put-back.
+	if userTarget {
+		if err := os.MkdirAll(target, 0700); err != nil {
+			return err
+		}
+	} else if err := prepareRestoreTarget(target); err != nil {
 		return err
 	}
 	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {
@@ -366,6 +386,23 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// prepareRestoreTarget makes target an empty directory before `restic restore` writes into it.
+// restic restore is ADDITIVE — it won't remove files already in the target that aren't in the
+// snapshot — and we reuse a fixed target (<repo>/restore) across restores. Without wiping first,
+// leftovers from an earlier extraction (individual files, or a whole volume dir) get copied into
+// the live volumes by restoreIntoVolumes, resurrecting deleted data or even a volume not in the
+// requested snapshot. Guarded so a blank/mistyped target can't wipe a system path.
+func prepareRestoreTarget(target string) error {
+	clean := filepath.Clean(target)
+	if clean == "" || clean == "." || clean == "/" || clean == filepath.Dir(clean) {
+		return fmt.Errorf("refusing to use unsafe restore target %q", target)
+	}
+	if err := os.RemoveAll(clean); err != nil {
+		return fmt.Errorf("clearing restore target %s: %w", clean, err)
+	}
+	return os.MkdirAll(clean, 0700)
+}
+
 // restoreSnapshotIntoVolumes extracts a snapshot to <repo>/restore and writes every volume
 // back in place (the full DR put-back). Shared by the CLI `restore --into-volumes` and the
 // web UI's Restore button. Destructive — see restoreIntoVolumes.
@@ -381,7 +418,7 @@ func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
 	}
 	ensureResticPassword(repo)
 	target := filepath.Join(repo, "restore")
-	if err := os.MkdirAll(target, 0700); err != nil {
+	if err := prepareRestoreTarget(target); err != nil {
 		return err
 	}
 	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {

@@ -5,13 +5,14 @@ services:
     container_name: pihole
     restart: unless-stopped
     ports:
-      # Default 0.0.0.0 = listen on every interface (LAN-wide). If something else
-      # already holds :53 on this host (systemd-resolved, or libvirt/LXC dnsmasq),
-      # either free it or pin PIHOLE_DNS_BIND to this host's LAN IP in .env.
+      # DNS stays published LAN-wide — that's the whole point of Pi-hole. Default 0.0.0.0 =
+      # listen on every interface. If something else already holds :53 on this host
+      # (systemd-resolved, or libvirt/LXC dnsmasq), either free it or pin PIHOLE_DNS_BIND
+      # to this host's LAN IP in .env.
       - "${PIHOLE_DNS_BIND:-0.0.0.0}:53:53/tcp"
       - "${PIHOLE_DNS_BIND:-0.0.0.0}:53:53/udp"
-      # Web admin UI. Reach it at http://<host>:8053/admin
-      - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
+      # The web admin UI is NOT published: Caddy reaches it over the shared "edge" network as
+      # pihole:80 and serves it over HTTPS, so it isn't exposed as plaintext HTTP on the LAN.
     environment:
       TZ: ${TZ:-Etc/UTC}
       # Web/API password for the admin panel.
@@ -35,6 +36,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - edge
 
 volumes:
   pihole-etc:
+
+networks:
+  edge:
+    external: true
+    name: homeserver-edge

@@ -4,8 +4,9 @@ services:
     image: ghcr.io/stirling-tools/stirling-pdf:2.12.0
     container_name: stirling-pdf
     restart: unless-stopped
-    ports:
-      - "${STIRLING_PORT:-8090}:8080"
+    # No published port: Caddy reaches it over the shared "edge" network as stirling-pdf:8080.
+    networks:
+      - edge
     environment:
       DISABLE_ADDITIONAL_FEATURES: "true"   # lighter; flip on for OCR/extra tools
       LANG: en_US.UTF-8
@@ -19,3 +20,8 @@ services:
 
 volumes:
   stirling-config:
+
+networks:
+  edge:
+    external: true
+    name: homeserver-edge

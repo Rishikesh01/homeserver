@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -78,7 +79,81 @@ func setEnvKey(path, key, value string) error {
 	return writeFile0600(path, strings.Join(lines, "\n"))
 }
 
-func writeFile0600(path, content string) error { return os.WriteFile(path, []byte(content), 0600) }
-func writeFile0644(path, content string) error { return os.WriteFile(path, []byte(content), 0644) }
+// removeEnvLinesMatching deletes KEY=VALUE lines where match(key, value) is true, preserving
+// everything else (other keys, comments, order). A missing file is a no-op. Reports whether it
+// changed anything — used to migrate away from settings no longer used.
+func removeEnvLinesMatching(path string, match func(key, value string) bool) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var kept []string
+	changed := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && match(strings.TrimSpace(k), strings.TrimSpace(v)) {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, writeFile0600(path, strings.Join(kept, "\n"))
+}
+
+// removeEnvKeys deletes any KEY=... lines for the given keys, whatever their value.
+func removeEnvKeys(path string, keys ...string) (bool, error) {
+	drop := map[string]bool{}
+	for _, k := range keys {
+		drop[k] = true
+	}
+	return removeEnvLinesMatching(path, func(k, _ string) bool { return drop[k] })
+}
+
+// writeFileAtomic writes content to path atomically: it writes a temp file in the SAME
+// directory, fsyncs it, then renames it over path. A rename is all-or-nothing on POSIX, so a
+// crash or power loss mid-write can never leave a half-written secret file — a truncated .env or
+// password is worse than a missing one, since `setup` skips (won't regenerate) a file that
+// exists. On any failure the temp file is removed and path is left untouched.
+func writeFileAtomic(path, content string, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".hsctl-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	remove := true
+	defer func() {
+		if remove {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	remove = false // renamed into place; nothing to clean up
+	return nil
+}
+
+func writeFile0600(path, content string) error { return writeFileAtomic(path, content, 0600) }
+func writeFile0644(path, content string) error { return writeFileAtomic(path, content, 0644) }
 
 func fileExists(path string) bool { _, err := os.Stat(path); return err == nil }

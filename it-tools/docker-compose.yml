@@ -4,5 +4,11 @@ services:
     image: ghcr.io/corentinth/it-tools:2024.10.22-7ca5933
     container_name: it-tools
     restart: unless-stopped
-    ports:
-      - "${ITTOOLS_PORT:-8091}:80"
+    # No published port: Caddy reaches it over the shared "edge" network as it-tools:80.
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+    name: homeserver-edge
