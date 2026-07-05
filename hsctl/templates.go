@@ -214,21 +214,24 @@ const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <h1>♻️ Restoring…</h1>
 <p class="sub">Putting your backup back into the stack.</p>
 <div class="note"><span class="spin" id="spin"></span><span id="status">Restore in progress. The services — including this dashboard's proxy — go offline for a few minutes while it runs; <b>that's expected</b>. This page keeps checking on its own and updates when it's done. No need to reload.</span></div>
+<p class="banner" id="hint" style="display:none">This is taking longer than usual. The stack is probably still restarting — please keep waiting. If the page still hasn't updated after several more minutes, the restore may have hit a problem: check on the server itself (open the dashboard on the machine, or log in and run <code>hsctl status</code>).</p>
 <p class="foot" id="link" style="display:none"><a href="/admin/backup">← Back to Backups</a></p>
 <script>
 (function(){
-  var statusEl=document.getElementById('status'), spin=document.getElementById('spin'), link=document.getElementById('link');
+  var statusEl=document.getElementById('status'), spin=document.getElementById('spin'),
+      link=document.getElementById('link'), hint=document.getElementById('hint'), fails=0;
   function finish(msg){
     spin.style.display='none';
     statusEl.textContent=msg;
+    hint.style.display='none';
     link.style.display='';
     setTimeout(function(){ location.href='/admin/backup?msg='+encodeURIComponent(msg); }, 2500);
   }
   function poll(){
     fetch('/admin/backup/restore/status',{cache:'no-store'})
       .then(function(r){ return r.json(); })
-      .then(function(s){ if(s.done){ finish(s.message); } else { setTimeout(poll, 3000); } })
-      .catch(function(){ setTimeout(poll, 3000); }); // proxy likely down mid-restore; keep trying
+      .then(function(s){ fails=0; hint.style.display='none'; if(s.done){ finish(s.message); } else { setTimeout(poll, 3000); } })
+      .catch(function(){ fails++; if(fails>=40){ hint.style.display=''; } setTimeout(poll, 3000); }); // proxy down mid-restore; keep trying, warn after ~2 min
   }
   setTimeout(poll, 3000);
 })();

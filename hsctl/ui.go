@@ -81,9 +81,6 @@ func runUI(cmd *cobra.Command, _ []string) error {
 			s.sweepSessions()
 		}
 	}()
-	if addr == "" {
-		addr = fmt.Sprintf(":%d", c.UIPort)
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/help", s.handleHelp)
@@ -141,35 +138,45 @@ func uiListenAddrs(port int) (addrs []string, warn string) {
 			"or restrict it with:  hsctl ui --addr 127.0.0.1:%d", port)
 }
 
-// dockerBridgeGateway returns the gateway IP of docker's default bridge (e.g. 172.17.0.1) —
+// dockerBridgeGateway returns the IPv4 gateway of docker's default bridge (e.g. 172.17.0.1) —
 // the address host.docker.internal resolves to, i.e. where Caddy connects to reach the host.
+// The bridge can have several IPAM configs (IPv4 + IPv6), so we pick the first IPv4 one rather
+// than concatenating them into a malformed address.
 func dockerBridgeGateway() string {
 	out, err := dockerOut(repoDir(), "network", "inspect", "bridge", "-f",
-		"{{range .IPAM.Config}}{{.Gateway}}{{end}}")
+		"{{range .IPAM.Config}}{{.Gateway}} {{end}}")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	for _, f := range strings.Fields(out) {
+		if ip := net.ParseIP(f); ip != nil && ip.To4() != nil {
+			return f
+		}
+	}
+	return ""
 }
 
-// serveUI serves mux on every address, returning when the first listener stops. A listener
-// that can't bind is warned about and skipped; it's an error only if none come up.
+// serveUI serves mux on every address, returning when the first listener stops. Binding is
+// all-or-nothing: a partial bind is worse than none — coming up on loopback but not the docker
+// bridge gateway would look healthy to systemd while Caddy (its only route to us) gets
+// connection-refused, so we fail and let the unit restart and retry cleanly.
 func serveUI(mux http.Handler, addrs []string) error {
 	srv := &http.Server{Handler: mux}
-	errc := make(chan error, len(addrs))
-	started := 0
+	var lns []net.Listener
 	for _, a := range addrs {
 		ln, err := net.Listen("tcp", a)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: cannot listen on %s: %v\n", a, err)
-			continue
+			for _, l := range lns {
+				_ = l.Close()
+			}
+			return fmt.Errorf("cannot listen on %s: %w", a, err)
 		}
 		fmt.Printf("  listening : http://%s/\n", a)
-		started++
-		go func(l net.Listener) { errc <- srv.Serve(l) }(ln)
+		lns = append(lns, ln)
 	}
-	if started == 0 {
-		return fmt.Errorf("no usable listen address for the dashboard")
+	errc := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func(l net.Listener) { errc <- srv.Serve(l) }(ln)
 	}
 	return <-errc
 }
@@ -390,8 +397,19 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 		return
 	}
+	do := r.FormValue("do")
+	// up/down/restart/shutdown all move the stack, so they must not overlap a running backup or
+	// (now-async) restore — that's the same wipe-while-in-use collision opMu guards elsewhere.
+	if do == "up" || do == "down" || do == "restart" || do == "shutdown" {
+		if !s.opMu.TryLock() {
+			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(
+				"A backup or restore is running — try this again once it finishes."), http.StatusSeeOther)
+			return
+		}
+		defer s.opMu.Unlock()
+	}
 	var msg string
-	switch r.FormValue("do") {
+	switch do {
 	case "up":
 		msg = s.runLifecycle("up")
 	case "down":
@@ -611,18 +629,20 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
+		return
+	}
 	msg := "Destination saved"
-	if r.Method == http.MethodPost {
-		cfg := loadBackupCfg(s.repo)
-		if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
-			cfg.Repo = v
-		}
-		if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
-			cfg.Retention = v
-		}
-		if err := cfg.save(s.repo); err != nil {
-			msg = "Save failed: " + err.Error()
-		}
+	cfg := loadBackupCfg(s.repo)
+	if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
+		cfg.Repo = v
+	}
+	if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
+		cfg.Retention = v
+	}
+	if err := cfg.save(s.repo); err != nil {
+		msg = "Save failed: " + err.Error()
 	}
 	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
@@ -635,8 +655,9 @@ type restoreData struct {
 // handleBackupRestore shows a confirmation page (GET) and runs the destructive DR put-back
 // (POST) — but only when the operator types RESTORE. It stops the stack, repopulates every
 // volume from the snapshot (Vaultwarden from its staged copy), and brings the stack back up.
-// The run is synchronous so the operator sees the real result; note it restarts Caddy, so
-// prefer the server's direct http address over the https one (see the page's warning).
+// The put-back runs in the BACKGROUND (it restarts Caddy, which would otherwise cut off the
+// response); the POST returns a progress page that polls handleBackupRestoreStatus and updates
+// itself once the stack — and Caddy — are back.
 func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	if r.Method == http.MethodPost {
@@ -666,6 +687,11 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
 			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
 				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
+				// Best-effort: make sure Caddy is back even if an earlier service failed to start,
+				// so this failure is actually visible again — the progress page can only reach the
+				// status endpoint through Caddy.
+				_ = ensureEdgeNetwork()
+				_, _ = dockerCombined(filepath.Join(s.repo, "caddy"), "compose", "up", "-d")
 			}
 			s.setRestore(st)
 		}()

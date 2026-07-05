@@ -54,7 +54,7 @@ func detectDefaults() Config {
 		ACMEEmail:        "you@example.com",
 		VWSignupsAllowed: true,
 	}
-	c.UIPort = pickPort(8088, map[int]bool{})
+	c.UIPort = pickPort(8088)
 	return c
 }
 
@@ -68,7 +68,7 @@ func (c *Config) Normalize() {
 		}
 	}
 	if c.UIPort == 0 {
-		c.UIPort = pickPort(8088, map[int]bool{})
+		c.UIPort = pickPort(8088)
 	}
 }
 
@@ -233,12 +233,11 @@ func portBusy(p int) bool {
 	return strings.Contains(string(out), fmt.Sprintf(":%d ", p))
 }
 
-// pickPort returns the first port >= start that is neither in use nor already picked.
-func pickPort(start int, used map[int]bool) int {
+// pickPort returns the first port >= start that isn't currently in use.
+func pickPort(start int) int {
 	p := start
-	for portBusy(p) || used[p] {
+	for portBusy(p) {
 		p++
 	}
-	used[p] = true
 	return p
 }

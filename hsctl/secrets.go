@@ -79,10 +79,10 @@ func setEnvKey(path, key, value string) error {
 	return writeFile0600(path, strings.Join(lines, "\n"))
 }
 
-// removeEnvKeys deletes any KEY=... lines for the given keys from a simple env file,
-// preserving everything else (other keys, comments, order). A missing file is a no-op.
-// Reports whether it changed anything — used to migrate away from settings no longer used.
-func removeEnvKeys(path string, keys ...string) (bool, error) {
+// removeEnvLinesMatching deletes KEY=VALUE lines where match(key, value) is true, preserving
+// everything else (other keys, comments, order). A missing file is a no-op. Reports whether it
+// changed anything — used to migrate away from settings no longer used.
+func removeEnvLinesMatching(path string, match func(key, value string) bool) (bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -90,14 +90,10 @@ func removeEnvKeys(path string, keys ...string) (bool, error) {
 		}
 		return false, err
 	}
-	drop := map[string]bool{}
-	for _, k := range keys {
-		drop[k] = true
-	}
 	var kept []string
 	changed := false
 	for _, line := range strings.Split(string(b), "\n") {
-		if k, _, ok := strings.Cut(strings.TrimSpace(line), "="); ok && drop[strings.TrimSpace(k)] {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && match(strings.TrimSpace(k), strings.TrimSpace(v)) {
 			changed = true
 			continue
 		}
@@ -107,6 +103,15 @@ func removeEnvKeys(path string, keys ...string) (bool, error) {
 		return false, nil
 	}
 	return true, writeFile0600(path, strings.Join(kept, "\n"))
+}
+
+// removeEnvKeys deletes any KEY=... lines for the given keys, whatever their value.
+func removeEnvKeys(path string, keys ...string) (bool, error) {
+	drop := map[string]bool{}
+	for _, k := range keys {
+		drop[k] = true
+	}
+	return removeEnvLinesMatching(path, func(k, _ string) bool { return drop[k] })
 }
 
 // writeFileAtomic writes content to path atomically: it writes a temp file in the SAME

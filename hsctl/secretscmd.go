@@ -49,6 +49,11 @@ func rotateVWAdmin(repo string) error {
 	fmt.Println("New Vaultwarden /admin token — SAVE THIS NOW, it is NOT recoverable:")
 	fmt.Println("\n    " + token + "\n")
 	fmt.Println("Stored as an Argon2id hash in vaultwarden/.env. Recreating the container...")
+	// vaultwarden's compose file attaches to the external edge network, so it must exist before
+	// `compose up` — otherwise recreate fails and the (already-written) new token wouldn't take.
+	if err := ensureEdgeNetwork(); err != nil {
+		return err
+	}
 	if err := dockerRun(filepath.Join(repo, "vaultwarden"), "compose", "up", "-d", "--force-recreate", "vaultwarden"); err != nil {
 		return fmt.Errorf("recreate vaultwarden: %w", err)
 	}

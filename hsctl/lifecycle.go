@@ -37,20 +37,38 @@ func ensureEdgeNetwork() error {
 // caddy/docker-compose.yml) and the per-app host ports the apps no longer publish. A stale
 // caddy/.env would otherwise still point Caddy at now-dead host ports. Best-effort + idempotent.
 func migrateSharedNetworkEnv(repo string) {
-	for _, m := range []struct {
-		rel  string
-		keys []string
-	}{
-		{"caddy/.env", []string{"VAULT_UPSTREAM", "CLOUD_UPSTREAM", "PIHOLE_UPSTREAM",
-			"STIRLING_UPSTREAM", "ITTOOLS_UPSTREAM", "IMAGETOOLS_UPSTREAM"}},
-		{"vaultwarden/.env", []string{"VW_HTTP_PORT"}},
-		{"nextcloud/.env", []string{"NC_HTTP_PORT"}},
-		{"pihole/.env", []string{"PIHOLE_WEB_PORT"}},
+	warn := func(rel string, err error) {
+		fmt.Fprintf(os.Stderr, "warning: could not migrate %s to the shared network: %v\n", rel, err)
+	}
+	note := func(rel string) {
+		fmt.Printf("migrated %s onto the shared Caddy network (dropped obsolete host-port settings)\n", rel)
+	}
+
+	// caddy/.env: drop only the STALE host-gateway upstreams (host.docker.internal:<port>). A
+	// user's deliberate container-name override (which caddy/.env.example explicitly permits, for
+	// a renamed service) doesn't contain host.docker.internal, so it's left intact.
+	upstream := map[string]bool{
+		"VAULT_UPSTREAM": true, "CLOUD_UPSTREAM": true, "PIHOLE_UPSTREAM": true,
+		"STIRLING_UPSTREAM": true, "ITTOOLS_UPSTREAM": true, "IMAGETOOLS_UPSTREAM": true,
+	}
+	if changed, err := removeEnvLinesMatching(filepath.Join(repo, "caddy/.env"), func(k, v string) bool {
+		return upstream[k] && strings.Contains(v, "host.docker.internal")
+	}); err != nil {
+		warn("caddy/.env", err)
+	} else if changed {
+		note("caddy/.env")
+	}
+
+	// The per-app host ports are simply gone now (the apps aren't published), so drop them outright.
+	for _, m := range []struct{ rel, key string }{
+		{"vaultwarden/.env", "VW_HTTP_PORT"},
+		{"nextcloud/.env", "NC_HTTP_PORT"},
+		{"pihole/.env", "PIHOLE_WEB_PORT"},
 	} {
-		if changed, err := removeEnvKeys(filepath.Join(repo, m.rel), m.keys...); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not migrate %s to the shared network: %v\n", m.rel, err)
+		if changed, err := removeEnvKeys(filepath.Join(repo, m.rel), m.key); err != nil {
+			warn(m.rel, err)
 		} else if changed {
-			fmt.Printf("migrated %s onto the shared Caddy network (dropped obsolete host-port settings)\n", m.rel)
+			note(m.rel)
 		}
 	}
 }

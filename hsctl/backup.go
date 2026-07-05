@@ -333,6 +333,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	target, _ := cmd.Flags().GetString("target")
+	userTarget := cmd.Flags().Changed("target") && strings.TrimSpace(target) != ""
 	if target == "" {
 		target = filepath.Join(repo, "restore")
 	}
@@ -341,7 +342,14 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		snap = args[0]
 	}
 	ensureResticPassword(repo)
-	if err := prepareRestoreTarget(target); err != nil {
+	// A user-supplied --target is the operator's own directory: extract INTO it without wiping
+	// (restic overlays). Only the default reusable scratch dir gets emptied first, so a prior
+	// extraction there can't contaminate an --into-volumes put-back.
+	if userTarget {
+		if err := os.MkdirAll(target, 0700); err != nil {
+			return err
+		}
+	} else if err := prepareRestoreTarget(target); err != nil {
 		return err
 	}
 	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {

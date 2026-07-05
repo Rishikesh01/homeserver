@@ -36,7 +36,7 @@ REPO_DIR := $(abspath $(CURDIR)/..)
 install-services:
 	@tmp=$$(mktemp -d); \
 	for u in hsctl-ui.service hsctl-backup.service hsctl-backup.timer; do \
-		sed 's#__DIR__#$(REPO_DIR)#g' systemd/$$u > $$tmp/$$u; \
+		HSCTL_DIR='$(REPO_DIR)' python3 -c 'import os,sys; sys.stdout.write(open(sys.argv[1]).read().replace("__DIR__", os.environ["HSCTL_DIR"]))' systemd/$$u > $$tmp/$$u; \
 	done; \
 	sudo cp $$tmp/hsctl-ui.service $$tmp/hsctl-backup.service $$tmp/hsctl-backup.timer /etc/systemd/system/; \
 	rm -rf $$tmp

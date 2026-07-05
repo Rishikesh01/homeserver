@@ -55,3 +55,38 @@ func TestRemoveEnvKeys(t *testing.T) {
 		t.Errorf("missing file should be a no-op, got changed=%v err=%v", changed, err)
 	}
 }
+
+// TestMigrateSharedNetworkEnvPreservesOverrides checks the migration strips only the STALE
+// host.docker.internal upstreams and leaves a user's deliberate container-name override alone.
+func TestMigrateSharedNetworkEnvPreservesOverrides(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "caddy"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	caddyEnv := filepath.Join(repo, "caddy", ".env")
+	if err := os.WriteFile(caddyEnv, []byte(
+		"SERVER_IP=192.168.0.150\n"+
+			"VAULT_UPSTREAM=host.docker.internal:8082\n"+ // stale -> removed
+			"CLOUD_UPSTREAM=my-nextcloud:80\n"+ // user override -> kept
+			"HOME_UPSTREAM=host.docker.internal:8088\n"+ // dashboard host upstream -> kept
+			"VAULT_HTTPS=8443\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateSharedNetworkEnv(repo)
+
+	got, _ := os.ReadFile(caddyEnv)
+	s := string(got)
+	if strings.Contains(s, "VAULT_UPSTREAM") {
+		t.Errorf("stale host.docker.internal upstream should have been removed:\n%s", s)
+	}
+	for _, keep := range []string{
+		"CLOUD_UPSTREAM=my-nextcloud:80",          // the override must survive
+		"HOME_UPSTREAM=host.docker.internal:8088", // dashboard upstream is not in the stripped set
+		"SERVER_IP=192.168.0.150", "VAULT_HTTPS=8443",
+	} {
+		if !strings.Contains(s, keep) {
+			t.Errorf("%q should have been preserved:\n%s", keep, s)
+		}
+	}
+}
