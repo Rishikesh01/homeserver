@@ -19,6 +19,7 @@
 SANDBOX_IMAGE ?= hsctl-sandbox
 SANDBOX_NAME  ?= hsctl-sandbox
 DATA_VOL      ?= hsctl-sandbox-data
+VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGES        ?= sandbox/images.env
 PORT          ?= 18088
 PASS          ?= test
@@ -39,7 +40,7 @@ help:
 
 sandbox: ## build the sandbox image (with your current hsctl) and start it
 	@mkdir -p sandbox/_build
-	CGO_ENABLED=0 go build -C hsctl -o ../sandbox/_build/hsctl .
+	CGO_ENABLED=0 go build -C hsctl -ldflags "-X main.version=$(VERSION)" -o ../sandbox/_build/hsctl .
 	docker build -f sandbox/Dockerfile -t $(SANDBOX_IMAGE) .
 	-docker stop -t 8 $(SANDBOX_NAME) >/dev/null 2>&1   # graceful: lets the old loopback detach
 	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1       # belt-and-suspenders (no-op after --rm)

@@ -46,8 +46,8 @@ You need, on the machine that will be the server:
 # 1. Get the code onto the server, then enter the folder
 git clone <this-repo> homeserver && cd homeserver
 
-# 2. Build hsctl and install it so you can run it from anywhere
-cd hsctl && go build -o hsctl . && sudo install -m755 hsctl /usr/local/bin/hsctl && cd ..
+# 2. Build hsctl (version stamped from the git tag) and install it system-wide
+make -C hsctl install
 
 # 3. Let your user run Docker without sudo (log out + back in afterwards)
 sudo usermod -aG docker $USER

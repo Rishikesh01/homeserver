@@ -2,8 +2,14 @@
 GO     ?= $(shell command -v go || echo $(HOME)/sdk/go/bin/go)
 PREFIX ?= /usr/local
 
+# Version baked into the binary (`hsctl --version`), derived from the git tag: exactly the
+# tag on a release (v1.1.0), tag+commits+sha past it (v1.1.0-3-gabcdef), "-dirty" with local
+# edits, or a short sha if untagged. Falls back to "dev". Override with `make build VERSION=…`.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 build:
-	$(GO) build -o hsctl .
+	$(GO) build -ldflags "$(LDFLAGS)" -o hsctl .
 
 vet:
 	$(GO) vet ./...
