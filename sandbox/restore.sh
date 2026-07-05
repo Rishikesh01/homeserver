@@ -38,6 +38,13 @@ if [ ! -d "$VROOT" ]; then
   exit 1
 fi
 
+# Stop the stack before touching its volumes. If the (empty) stack is already running, its
+# containers hold the DB/files open, so overwriting the volumes underneath them wouldn't take
+# effect — and could corrupt a live DB. Bring it down first (no-op if it was never started),
+# load the data, then start clean. Mirrors the real `hsctl backup restore --into-volumes`.
+echo "[restore] stopping the stack so its volumes can be safely replaced..."
+hsctl down >/dev/null 2>&1 || true
+
 echo "[restore] loading restored data into the sandbox's Docker volumes..."
 for d in "$VROOT"/*/; do
   name="$(basename "$d")"
