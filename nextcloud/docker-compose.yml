@@ -3,6 +3,9 @@ services:
     image: postgres:16-alpine
     container_name: nextcloud-db
     restart: unless-stopped
+    # The postgres image stops on SIGINT (a clean "fast shutdown"). Give it room to finish that
+    # cleanly before Docker's SIGKILL, so a stop/restart/restore never truncates a checkpoint.
+    stop_grace_period: 60s
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
       POSTGRES_USER: ${POSTGRES_USER:-nextcloud}

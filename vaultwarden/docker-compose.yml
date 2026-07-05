@@ -3,6 +3,9 @@ services:
     image: vaultwarden/server:1.36.0
     container_name: vaultwarden
     restart: unless-stopped
+    # Let it close its SQLite database cleanly on stop before Docker's SIGKILL (the backup path
+    # also stages a consistent copy, but this keeps ordinary stop/restart/restore clean too).
+    stop_grace_period: 60s
     environment:
       # VW_ADMIN_TOKEN is an Argon2id HASH (set/rotate via: hsctl secrets rotate-vw-admin).
       # In .env every '$' is doubled to '$$' so this interpolation yields the real hash.
