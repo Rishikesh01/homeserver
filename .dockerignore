@@ -1,0 +1,16 @@
+# Keep secrets, real data, and VCS noise OUT of the sandbox build context (the sandbox
+# generates its own secrets via `hsctl setup`). Compose files and *.env.example stay in.
+.git
+restore/
+backups/
+*.img
+caddy-root-ca.crt
+# secrets (note: .env.example is deliberately NOT matched and stays in the image)
+.env
+**/.env
+.ui-password
+**/.ui-password
+.restic-password
+**/.restic-password*
+# host build leftovers we don't need inside the image
+**/*.test

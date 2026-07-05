@@ -59,6 +59,10 @@ Two config files (gitignored, in the repo root):
 volume files). The full disaster-recovery walkthrough (putting the volumes + DB dump back)
 is in the main [README](../README.md#backup--restore).
 
+`backup verify` is the automated self-test (synthetic data, pass/fail). To instead **see a
+real backup restore** into the actual apps without risking the live stack, use the `make`
+sandbox: `make sandbox-restore` → [sandbox/README.md](../sandbox/README.md).
+
 ## Shell completion
 
 hsctl uses Cobra, so `hsctl <Tab>` completes commands and flags. Enable it for your shell:
@@ -79,10 +83,20 @@ hsctl ui              # binds :<UI port>; reach it at https://<server-ip> via Ca
 - **`/`** — the dashboard / home page: tiles for every app (from `services.json`, so it
   updates when you add/remove one) + one-click **certificate install**. No login.
 - **`/admin`** — sign in at `/login` (user `admin`, password in `.ui-password`; a form,
-  not Basic Auth, so Bitwarden/Vaultwarden can autofill it — login sets a session cookie):
-  container status + Start/Stop/Restart, **Shut down server** (graceful power-off; the
-  apps auto-start again on next boot), and **Backups** (set destination, run, view
-  snapshots).
+  not Basic Auth, so Bitwarden/Vaultwarden can autofill it — login sets a session cookie).
+  From here, four tools plus the basics (container status + Start/Stop/Restart and
+  **Shut down server** — a graceful power-off; the apps auto-start again on next boot):
+  - **🧰 Commands** (`/admin/commands`) — every `hsctl` command as an explained card with a
+    Run button; output streams live. Each maps to a fixed argument list (the browser only
+    sends a slug), so there's no command-injection surface. Destructive ones are flagged red
+    and confirm first.
+  - **💽 Drives** (`/admin/devices`) — lists the attached disks (`lsblk`) and mounts one to
+    `/mnt/<label>` with one click, plus Eject. No `/etc/fstab` changes — a one-shot mount.
+  - **💾 Backups** (`/admin/backup`) — destination + retention, live status (restic version,
+    `REQUIRE_MOUNT` guard, repo size), and streamed Initialize / Back up / Prune / Self-test,
+    plus the destructive **Restore**.
+  - **⌨️ Terminal** (`/admin/terminal`) — a real shell on the server (xterm.js over a
+    WebSocket; admin-session gated + Origin-checked). Powerful — it's a root shell on the LAN.
 
 **Make it permanent (auto-start on boot):**
 

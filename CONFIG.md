@@ -121,9 +121,71 @@ RESTIC_PASSWORD_FILE=.restic-password restic -r "$RESTIC_REPO" key passwd   # pr
 - **Keep a copy of the password OFF the server** (write it down / another vault). It lives in
   `.restic-password` on the box; if the box dies and you don't have it elsewhere, the backups
   are mathematically unrecoverable.
-- **You don't need hsctl to restore** — it's a standard restic repo:
-  ```bash
-  export RESTIC_REPOSITORY=/mnt/usb/restic
-  restic --password-file /path/to/.restic-password snapshots
-  restic --password-file /path/to/.restic-password restore latest --target /tmp/restore
-  ```
+- **You don't need hsctl to restore** — it's a standard restic repo. See below.
+
+### Manual disaster recovery — plain restic, no hsctl
+
+hsctl just wraps `restic`; the repo is a vanilla restic repository. If the server is gone
+and all you have is the **backup destination** + the **repo password**, you can decrypt and
+extract everything from any machine with the `restic` binary — no Go, no Docker, no this repo.
+
+You need exactly two things:
+
+1. **The repo location** — wherever you pointed `RESTIC_REPO` (the USB drive, or the
+   `sftp:` / `b2:` / `s3:` URL).
+2. **The password** — the contents of `.restic-password` (this is why you keep a copy off the box).
+
+```bash
+sudo apt install -y restic          # any machine; the repo format is portable across OSes.
+                                    # Use restic >= 0.14 (the repo is v2 format); ideally match the
+                                    # RESTIC_VERSION in backup.conf — a too-old restic can't open it.
+
+export RESTIC_REPOSITORY=/mnt/usb/restic           # your RESTIC_REPO (or sftp:user@nas:/backups, b2:…, s3:…)
+export RESTIC_PASSWORD_FILE=/path/to/.restic-password   # the password FILE — keeps the secret out of shell
+                                                        # history. No file handy? `read -rs RESTIC_PASSWORD;
+                                                        # export RESTIC_PASSWORD` types it in without echoing.
+
+restic snapshots                                   # decrypts the repo + lists every backup
+restic restore latest --target ~/restore           # ~/restore, not /tmp (often RAM-backed — a big restore
+                                                   # can fill it); or restore a specific id from the list
+```
+
+For a **remote** repo, also export the backend's credentials before running restic — e.g.
+`B2_ACCOUNT_ID` / `B2_ACCOUNT_KEY` for Backblaze, or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+for S3. (An `sftp:` repo just uses your SSH key.)
+
+**What's inside `~/restore`** (the snapshot mirrors the original absolute paths):
+
+| Path under the target | What it is |
+|-----------------------|------------|
+| `var/lib/docker/volumes/<name>/_data/` | every data volume — Nextcloud files, the Postgres DB volume, Pi-hole config, Caddy certs, Vaultwarden attachments/keys |
+| `<repo>/backups/staging/vaultwarden/db.sqlite3*` | Vaultwarden's **consistent DB fileset** (`db.sqlite3` + `-wal` + `-shm`) — excluded from the volume, lives only here |
+| `<repo>/backups/staging/nextcloud-db.sql` | consistent Postgres dump (fallback if the DB volume won't start) |
+| `<repo>/*/.env`, `<repo>/setup.conf` | per-service config and the main server config |
+
+`<repo>` is the absolute path the server used, e.g. `/home/you/homeserver`.
+
+**Just need your passwords back?** Vaultwarden is plain SQLite — you don't even have to boot
+the stack. Point a fresh Vaultwarden at the restored fileset, or read it directly. Dump the
+**whole fileset** (main + `-wal` + `-shm`), not just `db.sqlite3`: the `-wal` can hold recent
+entries not yet folded into the main file, and SQLite replays it only if it's named alongside:
+
+```bash
+base=/home/you/homeserver/backups/staging/vaultwarden/db.sqlite3
+for suf in "" -wal -shm; do                          # -wal/-shm may be absent (already checkpointed) — fine
+  restic dump latest "$base$suf" > "vault.sqlite3$suf" 2>/dev/null || true
+done
+sqlite3 vault.sqlite3 'select name, email from users;'   # WAL replayed on open; cipher data stays encrypted
+```
+
+**Browse without extracting** — inspect a snapshot, or pull a single file:
+
+```bash
+restic ls latest                       # list every path in the snapshot
+restic mount /mnt/snap                 # FUSE-mount all snapshots read-only (needs fuse3); browse, then Ctrl-C
+restic dump latest <path-from-ls>      # stream one file to stdout (no FUSE needed)
+```
+
+To actually put the extracted tree back into a running stack, follow the **Manual restore**
+steps in [README → Restore](README.md#backup--restore) (stop the stack, `cp -a` each
+`_data` back, overlay the Vaultwarden fileset, start up).

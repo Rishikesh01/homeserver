@@ -102,3 +102,16 @@ database is captured cleanly — nothing else goes offline.
 - **Check it works:** `sudo hsctl backup verify` — a safe self-test that never touches live data.
 - **Keep `.restic-password` somewhere safe** (it lives in the repo). Without it, the backups
   are unrecoverable.
+- **Recover without this server (plain restic).** The backups are a standard restic repo, so
+  if the box is gone you can decrypt them on *any* machine with just the backup disk + the
+  password — no hsctl, no Docker:
+  ```bash
+  sudo apt install -y restic                      # use restic >= 0.14 (match backup.conf's version if you can)
+  export RESTIC_REPOSITORY=/mnt/restic            # the mountpoint you used above (or your sftp:/b2:/s3: URL)
+  export RESTIC_PASSWORD_FILE=/path/to/.restic-password   # the password FILE — keeps the secret out of history
+  restic snapshots                                # list backups
+  restic restore latest --target ~/restore        # extract everything (~/ , not /tmp, in case /tmp is small)
+  ```
+  Your passwords are in the restored `…/backups/staging/vaultwarden/` fileset (`db.sqlite3` **plus**
+  its `-wal`/`-shm` — keep them together). How to read or boot it by hand: CONFIG.md → *Backups*.
+  Full path layout and the put-back steps: README → *Backup & restore* and CONFIG.md → *Backups*.
