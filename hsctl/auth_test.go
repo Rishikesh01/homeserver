@@ -79,6 +79,27 @@ func TestSweepSessions(t *testing.T) {
 	}
 }
 
+// TestSafeNext pins the post-login open-redirect guard: only same-site absolute paths pass;
+// protocol-relative and backslash-folded off-site targets fall back to /admin.
+func TestSafeNext(t *testing.T) {
+	cases := map[string]string{
+		"/admin":            "/admin",
+		"/admin/terminal":   "/admin/terminal",
+		"":                  "/admin",
+		"//evil.com":        "/admin",
+		`/\evil.com`:        "/admin", // browsers fold \ -> /, so this is //evil.com off-site
+		`/\/evil.com`:       "/admin",
+		`\/evil.com`:        "/admin",
+		"https://evil.com":  "/admin",
+		`/ok/\notauthority`: "/admin", // any backslash is rejected (no in-app path has one)
+	}
+	for in, want := range cases {
+		if got := safeNext(in); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestWSOriginOK guards the anti-cross-site-WebSocket-hijack check on the root terminal. The
 // load-bearing case is a sibling service on another PORT of the same host: it shares our
 // hostname and cookie, so a hostname-only check would wrongly admit it.

@@ -250,9 +250,12 @@ func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// safeNext keeps post-login redirects on this site (a local path), defaulting to /admin.
+// safeNext keeps post-login redirects on this site (a local path), defaulting to /admin. It
+// must reject anything that resolves off-site: a protocol-relative "//host", and — because
+// browsers fold "\" into "/" per the URL spec — any backslash (so "/\host" can't sneak through
+// as "//host"). A legitimate in-app path never contains a backslash.
 func safeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") && !strings.ContainsRune(next, '\\') {
 		return next
 	}
 	return "/admin"
