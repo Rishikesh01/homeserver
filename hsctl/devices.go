@@ -98,6 +98,7 @@ type deviceRow struct {
 	IsDisk     bool   // a whole disk with no partitions (some USB sticks)
 	Mountable  bool   // we'd let the user mount it
 	Why        string // when not Mountable, a short reason
+	Suggest    string // default mount directory, pre-filled in the UI (editable by the operator)
 }
 
 // fsBlocklist are pseudo/again-not-data filesystems we never offer to mount: swap has
@@ -132,6 +133,7 @@ func mountableRows(devs []blockDevice) []deviceRow {
 			r.Why = d.FSType + " — open via its mapper, not mountable directly"
 		default:
 			r.Mountable = true
+			r.Suggest = mountTargetFor(r) // a default the operator can accept or edit
 		}
 		rows = append(rows, r)
 	}
@@ -203,12 +205,23 @@ func findDeviceRow(devPath string) (deviceRow, error) {
 // mountDevice mounts the given block device at the per-label default under /mnt.
 func mountDevice(devPath string) (string, error) { return mountDeviceAt(devPath, "") }
 
+// cleanMountTarget validates and normalises an operator-chosen mount directory: it must be an
+// absolute path and not the filesystem root. (The operator picks the directory in the UI, the
+// same as a manual `mount <disk> <dir>`; this just keeps it a sane place to mount.)
+func cleanMountTarget(target string) (string, error) {
+	t := filepath.Clean(strings.TrimSpace(target))
+	if !filepath.IsAbs(t) || t == "/" {
+		return "", fmt.Errorf("mount directory must be an absolute path (got %q)", target)
+	}
+	return t, nil
+}
+
 // mountDeviceAt mounts the given block device and returns the mountpoint. It validates the
 // device against a fresh lsblk, refuses devices we deem non-mountable (already mounted, no
 // filesystem, LUKS/swap/…), creates the target dir, and runs `mount`. target=="" uses the
-// per-label default under /mnt; a non-empty target (the configured backup-guard path, so a
-// UI mount can satisfy REQUIRE_MOUNT) is used as-is — the caller is responsible for vetting
-// it. No /etc/fstab entry is written — this is a one-shot mount, gone on reboot.
+// per-label default under /mnt; a non-empty target is the directory the operator chose (they
+// pick it in the UI, like a manual mount) — validated to be an absolute path. No /etc/fstab
+// entry is written — this is a one-shot mount, gone on reboot.
 func mountDeviceAt(devPath, target string) (string, error) {
 	d, err := findDeviceRow(devPath)
 	if err != nil {
@@ -219,6 +232,10 @@ func mountDeviceAt(devPath, target string) (string, error) {
 	}
 	if target == "" {
 		target = mountTargetFor(d)
+	}
+	target, err = cleanMountTarget(target)
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(target, 0755); err != nil {
 		return "", fmt.Errorf("create mountpoint %s: %w", target, err)

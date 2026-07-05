@@ -531,20 +531,15 @@ func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 	render(w, devicesTmpl, d)
 }
 
-// handleDeviceMount mounts the posted device. Normally it lands at the per-label default
-// under /mnt; but if the operator's backup guard path (REQUIRE_MOUNT) is posted as `target`
-// we mount there instead, so a UI mount can actually satisfy the guard (otherwise the disk
-// lands at /mnt/<label> and the Backups page keeps reporting "NOT mounted"). Only that one
-// configured path is honoured as an alternate target — anything else is ignored.
+// handleDeviceMount mounts the posted device at the directory the operator chose in the form
+// (the same freedom as a manual `mount <disk> <dir>`). A blank target falls back to the
+// per-label default under /mnt; mountDeviceAt validates both the device and the directory.
 func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
 		return
 	}
-	target := ""
-	if want := strings.TrimSpace(r.FormValue("target")); want != "" && want == loadBackupCfg(s.repo).RequireMount {
-		target = want
-	}
+	target := strings.TrimSpace(r.FormValue("target"))
 	var msg string
 	if mp, err := mountDeviceAt(strings.TrimSpace(r.FormValue("dev")), target); err != nil {
 		msg = "Mount failed: " + err.Error()
