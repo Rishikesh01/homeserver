@@ -183,10 +183,9 @@ const restoreTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
 <div class="banner"><b>This is destructive.</b> It STOPS all services, WIPES every data volume,
 and replaces it with the snapshot's contents (Vaultwarden from its staged copy), then starts
-everything again. Anything not in the snapshot is lost. The apps are offline while it runs
-(can be several minutes for large data). <b>Tip:</b> run this from the server's direct address
-(<code>http://SERVER:PORT/admin</code>), not the https one — the restore restarts the web proxy,
-so over https this page may drop (the restore still completes).</div>
+everything again. Anything not in the snapshot is lost. The apps — including this dashboard —
+are offline for a few minutes while it runs; the next page tracks progress and updates itself
+when it's done, so you don't need to reload or do anything.</div>
 
 <h3>Available snapshots</h3>
 <pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto">{{if .Snapshots}}{{.Snapshots}}{{else}}(no snapshots / restic not available){{end}}</pre>
@@ -202,6 +201,38 @@ so over https this page may drop (the restore still completes).</div>
   <button class="btn red">♻️ Restore now</button>
 </form>
 <p class="foot"><a href="/admin/backup">← Cancel</a></p>
+</div></body></html>`
+
+// restoreProgressTmpl is shown after a restore is kicked off. It polls the status endpoint and
+// keeps retrying through the window where Caddy (the proxy) is down mid-restore — so the page
+// updates itself to "done" once the stack is back up, instead of just erroring out.
+const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Restoring…</title>
+<style>{{css}}
+.spin{display:inline-block;width:15px;height:15px;border:3px solid #2a2f3a;border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:9px}
+@keyframes sp{to{transform:rotate(360deg)}}</style></head><body><div class="wrap">
+<h1>♻️ Restoring…</h1>
+<p class="sub">Putting your backup back into the stack.</p>
+<div class="note"><span class="spin" id="spin"></span><span id="status">Restore in progress. The services — including this dashboard's proxy — go offline for a few minutes while it runs; <b>that's expected</b>. This page keeps checking on its own and updates when it's done. No need to reload.</span></div>
+<p class="foot" id="link" style="display:none"><a href="/admin/backup">← Back to Backups</a></p>
+<script>
+(function(){
+  var statusEl=document.getElementById('status'), spin=document.getElementById('spin'), link=document.getElementById('link');
+  function finish(msg){
+    spin.style.display='none';
+    statusEl.textContent=msg;
+    link.style.display='';
+    setTimeout(function(){ location.href='/admin/backup?msg='+encodeURIComponent(msg); }, 2500);
+  }
+  function poll(){
+    fetch('/admin/backup/restore/status',{cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(s){ if(s.done){ finish(s.message); } else { setTimeout(poll, 3000); } })
+      .catch(function(){ setTimeout(poll, 3000); }); // proxy likely down mid-restore; keep trying
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
 </div></body></html>`
 
 const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">

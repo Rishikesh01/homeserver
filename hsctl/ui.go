@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
@@ -39,6 +40,31 @@ type uiServer struct {
 	// so two clicks can't run at once — a concurrent restore + backup would wipe volumes while
 	// they're being read. Held with TryLock: a second request is turned away, not queued.
 	opMu sync.Mutex
+
+	// restoreSt tracks the async web restore so its progress page can poll for completion even
+	// while Caddy (and thus normal dashboard access) is down mid-restore.
+	restoreMu sync.Mutex
+	restoreSt restoreStatus
+}
+
+// restoreStatus is the live state of the background web restore, polled by its progress page.
+type restoreStatus struct {
+	Active  bool   `json:"active"`  // a restore is running now
+	Done    bool   `json:"done"`    // the most recent restore has finished
+	OK      bool   `json:"ok"`      // ...successfully
+	Message string `json:"message"` // human-facing result
+}
+
+func (s *uiServer) setRestore(st restoreStatus) {
+	s.restoreMu.Lock()
+	s.restoreSt = st
+	s.restoreMu.Unlock()
+}
+
+func (s *uiServer) getRestore() restoreStatus {
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
+	return s.restoreSt
 }
 
 func runUI(cmd *cobra.Command, _ []string) error {
@@ -79,6 +105,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
+	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
 	fmt.Printf("hsctl ui:\n")
 	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
 	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
@@ -618,17 +645,31 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
 			return
 		}
+		// A restore stops the stack — Caddy included — so a synchronous response would be cut off
+		// mid-way (the dashboard is only reachable through Caddy, and no longer on the LAN). Run
+		// it in the background and hand back a page that polls for completion, tolerating the
+		// proxy being down while the stack is restarting.
 		if !s.opMu.TryLock() {
 			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
 				"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
 			return
 		}
-		defer s.opMu.Unlock()
-		msg := "Restore complete — all services were brought back up."
-		if err := restoreSnapshotIntoVolumes(s.repo, cfg, strings.TrimSpace(r.FormValue("snapshot"))); err != nil {
-			msg = "Restore FAILED: " + err.Error()
-		}
-		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+		snap := strings.TrimSpace(r.FormValue("snapshot"))
+		s.setRestore(restoreStatus{Active: true})
+		go func() {
+			defer s.opMu.Unlock()
+			defer func() {
+				if p := recover(); p != nil {
+					s.setRestore(restoreStatus{Done: true, Message: fmt.Sprintf("Restore crashed: %v", p)})
+				}
+			}()
+			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
+			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
+				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
+			}
+			s.setRestore(st)
+		}()
+		render(w, restoreProgressTmpl, nil)
 		return
 	}
 	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
@@ -638,6 +679,15 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	render(w, restoreTmpl, d)
+}
+
+// handleBackupRestoreStatus reports the background restore's state as JSON. The progress page
+// polls it, tolerating failures while Caddy is down mid-restore, and shows the result once the
+// stack (and the proxy) come back up.
+func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(s.getRestore())
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).
