@@ -96,9 +96,10 @@ database is captured cleanly — nothing else goes offline.
 - **Back up:** *Admin → 💾 Backup & restore → Back up now* (or `sudo hsctl backup run`).
 - **Restore (disaster recovery):** *Admin → 💾 Backup & restore → ♻️ Restore from a backup*.
   It stops the stack, puts every volume back from a snapshot, and starts it all again; you
-  type `RESTORE` to confirm. Do this from the server's **direct** `http://SERVER_IP:<dashboard port>/admin`
-  address, not the https one — the restore restarts the proxy, so the https page may drop
-  mid-way (the restore still finishes). CLI equivalent: `sudo hsctl backup restore latest --into-volumes`.
+  type `RESTORE` to confirm. The restore restarts the proxy, so the dashboard page **will drop
+  part-way through — that's expected.** The restore keeps running on the server and finishes on
+  its own, so just wait a minute or two and reload `https://SERVER_IP/admin`. The most reliable
+  way is to run it on the server itself: `sudo hsctl backup restore latest --into-volumes`.
 - **Check it works:** `sudo hsctl backup verify` — a safe self-test that never touches live data.
 - **Keep `.restic-password` somewhere safe** (it lives in the repo). Without it, the backups
   are unrecoverable.

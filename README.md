@@ -62,10 +62,11 @@ hsctl up
 hsctl install
 ```
 
-**What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, and the host
-ports for each app — all pre-filled with sensible autodetected values, so you can usually
-just press Enter through it. It writes the configuration to `setup.conf` and generates each
-service's secrets.
+**What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, and the dashboard
+port — all pre-filled with sensible autodetected values, so you can usually just press Enter
+through it. (The apps themselves aren't published on the LAN — Caddy reaches them over an
+internal network — so there are no per-app ports to set.) It writes the configuration to
+`setup.conf` and generates each service's secrets.
 
 **Your generated logins** are printed once at the end of `setup`. You can see them again
 anytime — `hsctl secrets show` reads them straight from the `.env` files:
@@ -250,7 +251,7 @@ apps — without risking the live stack, use the [sandbox](#testing-changes-safe
 ### Schedule it nightly
 
 ```bash
-make -C hsctl install-services    # installs a systemd timer (edit systemd/*.service: set __DIR__ first)
+make -C hsctl install-services    # installs the UI service + nightly backup timer (fills in __DIR__ for you)
 ```
 
 ### Restore (disaster recovery)
@@ -365,9 +366,13 @@ install` does the same for the dashboard.
 
 ## Adding an app to the dashboard
 
-1. Create `myapp/docker-compose.yml` (publish its HTTP port, e.g. `8093:80`).
-2. In `caddy/Caddyfile` add an HTTPS block on a new port; add the upstream + port to
-   `caddy/docker-compose.yml`, `caddy/.env`, and `hsctl/env.go` (so a fresh `setup` includes them).
+1. Create `myapp/docker-compose.yml` with `container_name: myapp` and `networks: [edge]`
+   (declare the external `homeserver-edge` network the same way the other services do). Do
+   **not** publish its HTTP port — Caddy reaches it by container name over that network, so it
+   never touches the LAN.
+2. In `caddy/Caddyfile` add an HTTPS block on a new port; add its upstream default
+   (`MYAPP_UPSTREAM: ${MYAPP_UPSTREAM:-myapp:80}`) to `caddy/docker-compose.yml`, and the new
+   `*_HTTPS` port to `caddy/.env` (and `hsctl/env.go`, so a fresh `setup` writes it).
 3. Add a tile to **`services.json`** with that `https_port`.
 4. `hsctl up`. The tile appears on the dashboard.
 
