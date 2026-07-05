@@ -28,10 +28,18 @@ install: build
 		echo "hsctl-ui.service not active — skipped restart"; \
 	fi
 
-# Install the web-UI service + nightly backup timer. Edit systemd/*.service first
-# (set __DIR__ to this repo and __ADDR__ to your LAN IP:port).
+# Install the web-UI service + nightly backup timer. The unit templates carry a __DIR__
+# placeholder for WorkingDirectory; substitute this repo's path into them on the way in
+# (ExecStart already points at the installed /usr/local/bin/hsctl), so the services actually
+# start instead of failing on a literal "__DIR__".
+REPO_DIR := $(abspath $(CURDIR)/..)
 install-services:
-	sudo cp systemd/hsctl-ui.service systemd/hsctl-backup.service systemd/hsctl-backup.timer /etc/systemd/system/
+	@tmp=$$(mktemp -d); \
+	for u in hsctl-ui.service hsctl-backup.service hsctl-backup.timer; do \
+		sed 's#__DIR__#$(REPO_DIR)#g' systemd/$$u > $$tmp/$$u; \
+	done; \
+	sudo cp $$tmp/hsctl-ui.service $$tmp/hsctl-backup.service $$tmp/hsctl-backup.timer /etc/systemd/system/; \
+	rm -rf $$tmp
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now hsctl-ui.service hsctl-backup.timer
 	@echo "enabled hsctl-ui.service and hsctl-backup.timer"

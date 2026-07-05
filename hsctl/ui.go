@@ -34,6 +34,11 @@ type uiServer struct {
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
+
+	// opMu serialises the in-process destructive operations (backup run, restore-into-volumes)
+	// so two clicks can't run at once — a concurrent restore + backup would wipe volumes while
+	// they're being read. Held with TryLock: a second request is turned away, not queued.
+	opMu sync.Mutex
 }
 
 func runUI(cmd *cobra.Command, _ []string) error {
@@ -539,6 +544,12 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
 		return
 	}
+	if !s.opMu.TryLock() {
+		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
+			"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
+		return
+	}
+	defer s.opMu.Unlock()
 	msg := "Backup complete."
 	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
 		msg = "Backup failed: " + err.Error()
@@ -547,6 +558,7 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
+	msg := "Destination saved"
 	if r.Method == http.MethodPost {
 		cfg := loadBackupCfg(s.repo)
 		if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
@@ -555,9 +567,11 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
 			cfg.Retention = v
 		}
-		_ = cfg.save(s.repo)
+		if err := cfg.save(s.repo); err != nil {
+			msg = "Save failed: " + err.Error()
+		}
 	}
-	http.Redirect(w, r, "/admin/backup?msg=Destination+saved", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
 type restoreData struct {
@@ -578,6 +592,12 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
 			return
 		}
+		if !s.opMu.TryLock() {
+			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
+				"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
+			return
+		}
+		defer s.opMu.Unlock()
 		msg := "Restore complete — all services were brought back up."
 		if err := restoreSnapshotIntoVolumes(s.repo, cfg, strings.TrimSpace(r.FormValue("snapshot"))); err != nil {
 			msg = "Restore FAILED: " + err.Error()

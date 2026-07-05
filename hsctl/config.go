@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Config is everything a user can configure. It round-trips to setup.conf as
@@ -26,9 +27,23 @@ type Config struct {
 
 const confFile = "setup.conf"
 
+var (
+	defaultsOnce   sync.Once
+	cachedDefaults Config
+)
+
 // Defaults returns a config seeded from autodetected host values. PiholeDNSBind is left
 // blank and filled by Normalize AFTER any overrides, so it follows the final IP.
+//
+// The detection shells out (ip route, timedatectl, ss) and LoadConfig runs on every dashboard
+// request, so we compute it once per process: the host IP/timezone/free port don't change under
+// a running server, and any saved SERVER_IP/UI_PORT in setup.conf overrides these anyway.
 func Defaults() Config {
+	defaultsOnce.Do(func() { cachedDefaults = detectDefaults() })
+	return cachedDefaults
+}
+
+func detectDefaults() Config {
 	ip := detectIP()
 	if ip == "" {
 		ip = "192.168.1.10"

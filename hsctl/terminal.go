@@ -2,12 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -149,20 +147,18 @@ func wsOriginOK(r *http.Request, serverIP string) bool {
 		return false // real browsers always send Origin on a WS handshake
 	}
 	u, err := url.Parse(origin)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return false
 	}
-	oh := u.Hostname()
-	return oh == hostOnly(r.Host) || oh == serverIP
-}
-
-// hostOnly returns the hostname from a Host header, dropping any :port and the brackets
-// around an IPv6 literal — so it matches url.Hostname() (which also returns "::1", not
-// "[::1]"). Without the bracket handling the Origin check rejected every IPv6 connection.
-func hostOnly(host string) string {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		return h // also strips the [] from a bracketed IPv6 literal
+	// Same-origin only. Compare the FULL authority (scheme + host + PORT), not just the
+	// hostname: sibling services live on other ports of the same box (e.g. Nextcloud on
+	// https://<ip>:8444) and share our hostname and SameSite cookie, so a hostname-only check
+	// would let one of their pages open a WebSocket to this root terminal. We accept the
+	// request's own origin, or the Caddy HTTPS front for the server IP (port 443 = no :port).
+	got := u.Scheme + "://" + u.Host
+	scheme := "http"
+	if isHTTPS(r) {
+		scheme = "https"
 	}
-	// No port present: trim brackets off a bare IPv6 literal like "[::1]".
-	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return got == scheme+"://"+r.Host || got == "https://"+serverIP
 }
