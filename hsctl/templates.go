@@ -166,6 +166,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <div class="k">Destination</div><div><code>{{.Repo}}</code></div>
   <div class="k">Retention</div><div>{{.Retention}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
+  <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code>{{else}}none — set one below for fire/theft-proof backups{{end}}</div>
   {{if .Stats}}<div class="k">Repo size</div><div><span class="foot">{{.Stats}}</span></div>{{end}}
 </div>
 
@@ -176,6 +177,11 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p class="foot">Examples — external disk: <code>/mnt/backup/restic</code> · another host:
   <code>sftp:user@host:/backups</code> · Backblaze B2: <code>b2:bucket:homeserver</code></p>
   <p>Retention (how many to keep): <input class="in" name="retention" value="{{.Retention}}"></p>
+  <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
+  <input class="in" name="replica" value="{{.Replica}}" placeholder="b2:bucket:homeserver"></p>
+  <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
+  (e.g. <code>B2_ACCOUNT_ID=…</code> and <code>B2_ACCOUNT_KEY=…</code>, one per line). SFTP and local paths don't.
+  Then use <b>Copy off-site</b> below — the first run creates the replica repo.</p>
   <button class="btn gray">Save destination</button>
 </form>
 
@@ -186,6 +192,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
 <button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
 <button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
+<button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
 <div id="out" class="out" style="margin-top:12px">Snapshots and command output appear here.</div>
 
 <h3 style="margin-top:24px">Snapshots</h3>
