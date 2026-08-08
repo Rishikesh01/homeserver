@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hsctl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hsctl/go.mod
+          cache-dependency-path: hsctl/go.sum
+
+      # replica_test.go round-trips a real restic repo; without restic it skips itself,
+      # so install it here to actually exercise that path.
+      - name: Install restic
+        run: sudo apt-get update && sudo apt-get install -y restic
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # `make build` stamps the version from `git describe --tags`
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hsctl/go.mod
+          cache-dependency-path: hsctl/go.sum
+
+      - name: make build
+        run: make -C hsctl build
+
+      - name: Check the binary runs
+        run: ./hsctl/hsctl --version

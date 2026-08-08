@@ -5,11 +5,14 @@ UI** so non-technical users never need the terminal.
 
 ## Build & install
 
-Go is at `~/sdk/go` on this box (no sudo needed to build).
+Needs the Go version in [`go.mod`](go.mod). The Makefile uses `go` from your `PATH` and falls
+back to `~/sdk/go/bin/go` for a hand-unpacked toolchain — override with `make build GO=…`.
 
 ```bash
 cd hsctl
 make build              # -> ./hsctl   (version stamped from the git tag; see below)
+make vet                # go vet ./...
+make test               # go test ./...
 make install            # -> /usr/local/bin/hsctl (uses sudo); restarts hsctl-ui if it's running
 ```
 
@@ -27,10 +30,18 @@ hsctl setup             # interactive config -> writes every .env + setup.conf
 hsctl up                # start the stack (apps + tools -> caddy)
 hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
+hsctl updates           # check whether newer app images are available (read-only)
 hsctl install           # run the dashboard as a systemd service (auto-start on boot)
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
+hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
 ```
+
+`hsctl updates` compares each installed image against its registry digest and reports what's
+behind. It downloads nothing and restarts nothing, but it needs `docker buildx`
+(`sudo apt-get install -y docker-buildx-plugin`).
+
+Every command above is also a card in the dashboard's Command Center (`/admin/commands`).
 
 `setup` autodetects the LAN IP/timezone, picks a free dashboard port (the apps aren't
 published on the LAN — Caddy reaches them over an internal network — so there are no per-app
@@ -47,22 +58,27 @@ hsctl backup list                     # list snapshots
 sudo hsctl backup restore [snap] --target <dir>   # extract a snapshot (default: latest)
 sudo hsctl backup restore latest --into-volumes   # one-command DR: stop -> restore all volumes -> up
 sudo hsctl backup forget              # apply the retention policy + prune
+sudo hsctl backup replicate           # copy every snapshot to the off-site replica
 ```
 
-Two config files (gitignored, in the repo root):
+Three config files (gitignored, in the repo root):
 
-- **`backup.conf`** — `RESTIC_REPO` (the destination) and `RETENTION` (restic forget
-  policy). Written by `backup config`; see [`backup.conf.example`](../backup.conf.example).
-  Destinations: local path / USB (`/mnt/usb/restic`), another host (`sftp:user@host:/path`),
-  Backblaze (`b2:bucket:path`), or S3 (`s3:…`).
+- **`backup.conf`** — `RESTIC_REPO` (the destination), `RETENTION` (restic forget policy),
+  and optionally `REQUIRE_MOUNT`, `RESTIC_VERSION` and `REPLICA_REPO`. Written by
+  `backup config`; see [`backup.conf.example`](../backup.conf.example). Destinations: local
+  path / USB (`/mnt/restic`), another host (`sftp:user@host:/path`), Backblaze
+  (`b2:bucket:path`), or S3 (`s3:…`).
 - **`.restic-password`** — the repo encryption password. Set your own with
   `hsctl backup config --password '…'` (before `init`), or leave it to auto-generate on
   first `init`/`run`. **Back this up separately** — without it the backups are unrecoverable.
-  Full details (changing it later, restoring with plain restic) → [CONFIG.md](../CONFIG.md#backups).
+  Full details (changing it later, restoring with plain restic) →
+  [docs/configuration.md](../docs/configuration.md#backups).
+- **`.backup-env`** — cloud credentials (B2/S3) for a remote repo or replica, one `KEY=VALUE`
+  per line. Not needed for local paths or `sftp:`.
 
 `init`/`run`/`restore`/`forget` need **restic installed** and **root** (to read the Docker
 volume files). The full disaster-recovery walkthrough (putting the volumes + DB dump back)
-is in the main [README](../README.md#backup--restore).
+is in [docs/backup-restore.md](../docs/backup-restore.md).
 
 `backup verify` is the automated self-test (synthetic data, pass/fail). To instead **see a
 real backup restore** into the actual apps without risking the live stack, use the `make`
@@ -88,19 +104,25 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
 
 - **`/`** — the dashboard / home page: tiles for every app (from `services.json`, so it
   updates when you add/remove one) + one-click **certificate install**. No login.
+- **`/help`** — the setup guide: renders the repo's `ONBOARDING.md` with the server IP filled
+  in, so you can send a new user one link instead of a file. No login.
+- **`/root.crt`** — the CA certificate download. No login.
 - **`/admin`** — sign in at `/login` (user `admin`, password in `.ui-password`; a form,
   not Basic Auth, so Bitwarden/Vaultwarden can autofill it — login sets a session cookie).
-  From here, four tools plus the basics (container status + Start/Stop/Restart and
-  **Shut down server** — a graceful power-off; the apps auto-start again on next boot):
+  The page shows **system health** — CPU, memory, root and backup disk space, per-disk SMART
+  status (via `smartctl`, if installed) and how long ago the last backup ran, flagged when it
+  goes stale — then the container table with Start all / Restart / Stop all and **Shut down
+  server** (a graceful power-off; the apps auto-start again on next boot). Plus four tools:
   - **🧰 Commands** (`/admin/commands`) — every `hsctl` command as an explained card with a
     Run button; output streams live. Each maps to a fixed argument list (the browser only
     sends a slug), so there's no command-injection surface. Destructive ones are flagged red
     and confirm first.
-  - **💽 Drives** (`/admin/devices`) — lists the attached disks (`lsblk`) and mounts one to
-    `/mnt/<label>` with one click, plus Eject. No `/etc/fstab` changes — a one-shot mount.
-  - **💾 Backups** (`/admin/backup`) — destination + retention, live status (restic version,
-    `REQUIRE_MOUNT` guard, repo size), and streamed Initialize / Back up / Prune / Self-test,
-    plus the destructive **Restore**.
+  - **💽 Drives** (`/admin/devices`) — lists the attached disks (`lsblk`) and mounts one with
+    a click; the mount directory is pre-filled with a suggestion under `/mnt` and you can edit
+    it. Plus Eject. Mounts are one-shot — no `/etc/fstab` changes, so they clear on reboot.
+  - **💾 Backups** (`/admin/backup`) — destination, retention and off-site replica, live status
+    (restic version, `REQUIRE_MOUNT` guard, repo size), and streamed Initialize / Back up /
+    Prune / Self-test / Copy off-site, plus the destructive **Restore**.
   - **⌨️ Terminal** (`/admin/terminal`) — a real shell on the server (xterm.js over a
     WebSocket; admin-session gated + Origin-checked). Powerful — it's a root shell on the LAN.
 
@@ -116,5 +138,7 @@ install` does the same for the dashboard process. For the nightly backup timer t
 
 ## Files it creates (all gitignored)
 
-`setup.conf` (your settings) · `WELCOME.txt` (handout) · `.ui-password` (dashboard admin) ·
-`backup.conf` (backup destination) · `.restic-password` (back this up separately!).
+`setup.conf` (your settings, `0600`) · `WELCOME.txt` (the logins handout — `0644`, so delete
+it once you've saved them) · `.ui-password` (dashboard admin, `0600`) · `backup.conf` (backup
+destination, `0600`) · `.restic-password` (`0600` — back this up separately!) · `.backup-env`
+(cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`).

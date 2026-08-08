@@ -76,7 +76,7 @@ connect**.
 - Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
   `http://SERVER_IP/root.crt`.
 - Pi-hole is just a network ad-blocker now — point the router's DHCP DNS at the server to
-  ad-block every device (see README.md → "Pi-hole ad-blocking").
+  ad-block every device (see `docs/setup.md` → "Pi-hole / network-wide ad-blocking").
 - Add an app to the dashboard: add a service folder + a Caddy block (new HTTPS port) + an
   entry in `services.json`. The dashboard updates on next load.
 - Nextcloud users: create them in *Admin → Users*. Vaultwarden allows self-signup; switch
@@ -91,8 +91,9 @@ and the server config. Vaultwarden is paused for a few seconds during each backu
 database is captured cleanly — nothing else goes offline.
 
 - **Mount the backup disk first.** Backups go to an external HDD you mount by hand
-  (e.g. `sudo mount /dev/sdb1 /mnt/restic`). Backups *refuse to run* if it isn't mounted,
-  so they can never silently land on the system disk. Setup details: README → *Backup & restore*.
+  (e.g. `sudo mount /dev/sdb1 /mnt/restic`, or one click on *Admin → 💽 Drives*). Backups
+  *refuse to run* if it isn't mounted, so they can never silently land on the system disk.
+  Setup details: `docs/backup-restore.md`.
 - **Back up:** *Admin → 💾 Backup & restore → Back up now* (or `sudo hsctl backup run`).
 - **Restore (disaster recovery):** *Admin → 💾 Backup & restore → ♻️ Restore from a backup*.
   It stops the stack, puts every volume back from a snapshot, and starts it all again; you
@@ -101,8 +102,12 @@ database is captured cleanly — nothing else goes offline.
   its own, so just wait a minute or two and reload `https://SERVER_IP/admin`. The most reliable
   way is to run it on the server itself: `sudo hsctl backup restore latest --into-volumes`.
 - **Check it works:** `sudo hsctl backup verify` — a safe self-test that never touches live data.
-- **Keep `.restic-password` somewhere safe** (it lives in the repo). Without it, the backups
+- **Keep `.restic-password` somewhere safe.** It lives in the repo folder on the server —
+  keep a second copy somewhere else (written down, or in Vaultwarden). Without it, the backups
   are unrecoverable.
+- **Off-site copy (optional):** set a replica once with `hsctl backup config --replica …`,
+  then *Admin → 🧰 Commands → Copy backups off-site* keeps a second copy somewhere the house
+  isn't. Details: `docs/backup-restore.md`.
 - **Recover without this server (plain restic).** The backups are a standard restic repo, so
   if the box is gone you can decrypt them on *any* machine with just the backup disk + the
   password — no hsctl, no Docker:
@@ -114,5 +119,6 @@ database is captured cleanly — nothing else goes offline.
   restic restore latest --target ~/restore        # extract everything (~/ , not /tmp, in case /tmp is small)
   ```
   Your passwords are in the restored `…/backups/staging/vaultwarden/` fileset (`db.sqlite3` **plus**
-  its `-wal`/`-shm` — keep them together). How to read or boot it by hand: CONFIG.md → *Backups*.
-  Full path layout and the put-back steps: README → *Backup & restore* and CONFIG.md → *Backups*.
+  its `-wal`/`-shm` — keep them together). How to read or boot it by hand, plus the full path
+  layout and the put-back steps: `docs/configuration.md` → *Manual disaster recovery*, and
+  `docs/backup-restore.md` → *Restore*.

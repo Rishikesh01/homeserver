@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an improvement or a new service
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is deliberately LAN-only, single-machine, and small — see
+        [CONTRIBUTING.md → Scope](https://github.com/Rishikesh01/homeserver/blob/main/CONTRIBUTING.md#scope)
+        before suggesting remote access, clustering, or a cloud control plane.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you're in, not just the feature you want.
+      placeholder: When a family member gets a new phone, I have to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Would you be willing to work on this?
+      options:
+        - label: I'd be happy to open a PR
+          required: false

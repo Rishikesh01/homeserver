@@ -10,7 +10,7 @@ can reach the host's Docker, your live containers, or your live volumes. When yo
 it's gone.
 
 > This is an **operator tool, driven by `make`** — it is deliberately *not* part of the
-> `hsctl` binary your family uses.
+> `hsctl` binary the household uses.
 
 ## Use it
 
@@ -23,11 +23,13 @@ make sandbox-restore    # restore your real backup into it, then bring the stack
 make sandbox-shell      # a shell inside the sandbox
 make sandbox-logs       # follow its logs
 make sandbox-down       # stop it and sweep its loopback device off the host
+make sandbox-purge      # sandbox-down, plus delete the cached nested-image volume
 ```
 
 After `make sandbox`, open the admin UI and use **Commands → Start all services** to pull
 the manifest's images into the nested daemon and bring the stack up. Browsing from another
-machine? Use the server's LAN IP instead of `localhost` (e.g. `http://192.168.0.150:18088`).
+machine? Use the server's LAN IP instead of `localhost` (e.g. `http://HOST:18088`, where
+`HOST` is the server's LAN address).
 
 ## Knobs
 
@@ -40,6 +42,7 @@ Override on the command line, e.g. `make sandbox PORT=19000`:
 | `PASS`     | `test`  | admin password inside the sandbox |
 | `REPO`     | `RESTIC_REPO` from `backup.conf` | **local** restic repo to restore from |
 | `SNAPSHOT` | `latest` | snapshot id for `make sandbox-restore` |
+| `ACCESS_HOST` | autodetected LAN IP | host the app URLs are built for — Vaultwarden's `VW_DOMAIN` and Nextcloud's trusted domain are set from it, so override it if you'll browse the sandbox from a different machine |
 
 ## Testing image updates
 
@@ -70,19 +73,24 @@ make sandbox REPO=/mnt/restic    # mount your real repo read-only
 make sandbox-restore             # restore latest, bring the stack up on it
 ```
 
-Then open your restored data in a browser. The sandbox forwards each app's port to the host
-at **its live port + 10000** (so it never collides with your running stack):
+Then open your restored data in a browser. The apps are served **over HTTPS by the restored
+Caddy** — which carries your own CA, so the certificate is already trusted on any device
+that's been onboarded. Each port is **its live port + 10000**, so it never collides with your
+running stack:
 
 | App | Sandbox URL |
 |-----|-------------|
-| Vaultwarden (passwords) | `http://<host>:18082` |
-| Nextcloud (files)       | `http://<host>:18081` |
-| Pi-hole                 | `http://<host>:18053/admin` |
+| Vaultwarden (passwords) | `https://<host>:18443` |
+| Nextcloud (files)       | `https://<host>:18444` |
+| Pi-hole                 | `https://<host>:18445/admin` |
+| Stirling-PDF · IT-Tools · Image tool | `https://<host>:18446` · `:18447` · `:18448` |
 
-Log in with your normal credentials and confirm everything's there. It's plain `http` (no
-TLS in the sandbox), so Vaultwarden may show a "domain not configured" banner — your vault
-still opens. `make sandbox-restore` auto-adds the host to Nextcloud's trusted domains so it
-loads.
+The admin UI itself stays on plain http at `http://<host>:18088`.
+
+Log in with your normal credentials and confirm everything's there. HTTPS isn't cosmetic
+here: Vaultwarden refuses to unlock a vault outside a secure context, so the sandbox points
+`VW_DOMAIN` at the forwarded HTTPS URL. `make sandbox-restore` likewise adds the host to
+Nextcloud's `trusted_domains` so it loads instead of showing an error page.
 
 **Safety:** the real repo is mounted **read-only** and read with `restic restore --no-lock`,
 so this never writes to (or even locks) your live backup repository. The restored data lands

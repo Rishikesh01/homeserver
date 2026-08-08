@@ -1,0 +1,84 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please don't paste passwords, tokens, or the contents of any
+        `.env` file — redact before posting.
+
+        **Security vulnerability?** Don't file it here — see
+        [SECURITY.md](https://github.com/Rishikesh01/homeserver/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        I ran `sudo hsctl backup run` and it exited with ...
+        I expected a snapshot to be created.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. hsctl setup
+        2. hsctl up
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Command output, or logs from `docker logs <container>`. Redact secrets.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: hsctl version
+      description: Output of `hsctl --version`
+      placeholder: v1.5.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Docker version
+      description: e.g. Ubuntu 24.04, Docker 27.3.1, Compose v2.29
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      options:
+        - hsctl CLI
+        - Web dashboard
+        - Backups / restore
+        - Caddy / HTTPS / certificates
+        - A specific service (Vaultwarden, Nextcloud, Pi-hole, ...)
+        - Setup / configuration
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I'm on the latest tag or `main`
+          required: false
+        - label: I've removed any passwords, tokens, or secrets from the text above
+          required: true
