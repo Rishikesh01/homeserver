@@ -87,7 +87,7 @@ func TestSmartVerdict(t *testing.T) {
 // blows up at request time.
 func TestAdminTmplRenders(t *testing.T) {
 	d := adminData{
-		Cfg: Config{ServerIP: "192.168.1.2", TZ: "UTC"},
+		Cfg:    Config{ServerIP: "192.168.1.2", TZ: "UTC"},
 		Backup: backupFreshness{Known: true, Age: "9 days ago", Stale: true},
 		Sys: sysStats{
 			CPUPct: 42, CPUOK: true, Cores: 8, Load1: "0.55",
