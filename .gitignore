@@ -23,6 +23,8 @@ hsctl/hsctl
 # backups: destination config, restic repo password, local snapshots/staging
 backup.conf
 .restic-password
+# cloud credentials for the off-site backup replica (B2/S3 keys)
+.backup-env
 backups/
 
 # sandbox: host-built hsctl binary (rebuilt by `make sandbox`)
