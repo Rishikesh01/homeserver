@@ -93,6 +93,15 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   {{if .Sys.MemOK}}<div class="stat"><div class="k">Memory</div><div class="v">{{.Sys.MemPct}}% used</div>
     <div class="meter"><i class="{{meterClass .Sys.MemPct}}" style="width:{{.Sys.MemPct}}%"></i></div>
     <div class="d">{{.Sys.MemUsed}} of {{.Sys.MemTotal}}</div></div>{{end}}
+  {{if .Sys.RootDisk.OK}}<div class="stat"><div class="k">Disk space · system</div><div class="v">{{.Sys.RootDisk.Pct}}% used</div>
+    <div class="meter"><i class="{{meterClass .Sys.RootDisk.Pct}}" style="width:{{.Sys.RootDisk.Pct}}%"></i></div>
+    <div class="d">{{.Sys.RootDisk.Used}} of {{.Sys.RootDisk.Total}}</div></div>{{end}}
+  {{if .Sys.BackupDisk.OK}}<div class="stat"><div class="k">Disk space · backup disk</div><div class="v">{{.Sys.BackupDisk.Pct}}% used</div>
+    <div class="meter"><i class="{{meterClass .Sys.BackupDisk.Pct}}" style="width:{{.Sys.BackupDisk.Pct}}%"></i></div>
+    <div class="d">{{.Sys.BackupDisk.Used}} of {{.Sys.BackupDisk.Total}}</div></div>{{end}}
+  <div class="stat"><div class="k">Last backup</div>
+    <div class="v">{{if not .Backup.Known}}<span style="color:var(--muted)">never</span>{{else if .Backup.Stale}}<span style="color:var(--bad)">⚠ {{.Backup.Age}}</span>{{else}}<span style="color:var(--ok)">✔ {{.Backup.Age}}</span>{{end}}</div>
+    <div class="d">{{if .Backup.Stale}}Overdue — run one on the <a href="/admin/backup">Backups</a> page{{else if not .Backup.Known}}None recorded yet — set one up on the <a href="/admin/backup">Backups</a> page{{else}}via the <a href="/admin/backup">Backups</a> page{{end}}</div></div>
   {{range .Sys.Disks}}<div class="stat"><div class="k">Disk health · <code>{{.Path}}</code></div>
     <div class="v">{{if .OK}}<span style="color:var(--ok)">✔ healthy</span>{{else if eq .Status "FAILING"}}<span style="color:var(--bad)">✖ FAILING — back up now</span>{{else}}<span style="color:var(--muted)">unknown</span>{{end}}</div>
     <div class="d">{{if .Model}}{{.Model}} · {{end}}{{.Size}}</div></div>{{end}}

@@ -88,9 +88,12 @@ func TestSmartVerdict(t *testing.T) {
 func TestAdminTmplRenders(t *testing.T) {
 	d := adminData{
 		Cfg: Config{ServerIP: "192.168.1.2", TZ: "UTC"},
+		Backup: backupFreshness{Known: true, Age: "9 days ago", Stale: true},
 		Sys: sysStats{
 			CPUPct: 42, CPUOK: true, Cores: 8, Load1: "0.55",
 			MemUsed: "5.2 GiB", MemTotal: "15.6 GiB", MemPct: 33, MemOK: true,
+			RootDisk:   diskSpace{Used: "40.0 GiB", Total: "119.2 GiB", Pct: 34, OK: true},
+			BackupDisk: diskSpace{Used: "200.0 GiB", Total: "931.5 GiB", Pct: 21, OK: true},
 			Disks: []diskHealth{
 				{Path: "/dev/sda", Model: "Samsung SSD 870", Size: "465.8G", Status: "healthy", OK: true},
 				{Path: "/dev/sdb", Model: "WDC WD40EFRX", Size: "3.6T", Status: "FAILING"},
@@ -108,7 +111,8 @@ func TestAdminTmplRenders(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := sb.String()
-	for _, want := range []string{"42% busy", "33% used", "5.2 GiB", "Samsung SSD 870", "FAILING", "unknown"} {
+	for _, want := range []string{"42% busy", "33% used", "5.2 GiB", "Samsung SSD 870", "FAILING", "unknown",
+		"40.0 GiB", "931.5 GiB", "9 days ago", "Overdue"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered admin page missing %q", want)
 		}

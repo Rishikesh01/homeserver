@@ -303,10 +303,76 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
 		return err
 	}
+	// The snapshot is safely written — record that now, so a later prune failure doesn't
+	// make the dashboard claim the backup itself is overdue.
+	stampLastBackup(repo)
 	if cfg.Retention != "" {
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
 	}
 	return nil
+}
+
+// lastBackupFile records (relative to the repo) when the last successful backup snapshot
+// was written. The dashboard reads it to warn about staleness without opening the restic
+// repo — which may live on a spun-down or unmounted HDD — on every page load. Every
+// backup goes through backupRun (CLI, web, timer), so the stamp tracks them all.
+const lastBackupFile = "backups/.last-backup"
+
+func stampLastBackup(repo string) {
+	path := filepath.Join(repo, lastBackupFile)
+	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	_ = writeFile0644(path, time.Now().Format(time.RFC3339)+"\n")
+}
+
+// backupFreshness is the dashboard's view of how recent the last backup is.
+type backupFreshness struct {
+	Known bool   // a stamp exists
+	Age   string // "3 days ago"
+	Stale bool   // older than backupStaleAfter — time to warn
+}
+
+// backupStaleAfter is when the dashboard starts flagging the backup as overdue. A week
+// matches the default retention's daily-keep window.
+const backupStaleAfter = 7 * 24 * time.Hour
+
+func backupFreshnessFor(repo string) backupFreshness {
+	t, ok := lastBackupTime(repo)
+	return freshness(t, ok, time.Now())
+}
+
+// freshness is the pure core of backupFreshnessFor, split out for tests.
+func freshness(t time.Time, known bool, now time.Time) backupFreshness {
+	if !known {
+		return backupFreshness{}
+	}
+	d := now.Sub(t)
+	return backupFreshness{Known: true, Age: humanAge(d), Stale: d > backupStaleAfter}
+}
+
+func humanAge(d time.Duration) string {
+	switch h := int(d.Hours()); {
+	case h < 1:
+		return "less than an hour ago"
+	case h == 1:
+		return "1 hour ago"
+	case h < 48:
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		return fmt.Sprintf("%d days ago", h/24)
+	}
+}
+
+// lastBackupTime returns the stamp's time, or ok=false when no backup was recorded yet.
+func lastBackupTime(repo string) (time.Time, bool) {
+	b, err := os.ReadFile(filepath.Join(repo, lastBackupFile))
+	if err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // runBackupRestore extracts a snapshot to a directory (default <repo>/restore). It does

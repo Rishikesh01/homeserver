@@ -386,13 +386,14 @@ type adminData struct {
 	DockerErr  string
 	Msg        string
 	Sys        sysStats
+	Backup     backupFreshness
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg")}
+	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo)}
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
-	go func() { sysCh <- gatherSysStats() }()
+	go func() { sysCh <- gatherSysStats(s.repo) }()
 	st, err := s.status()
 	if err != nil {
 		uiLog.Warn("docker unreachable", "err", err)
