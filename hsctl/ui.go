@@ -378,17 +378,22 @@ type adminData struct {
 	Containers []containerStatus
 	DockerErr  string
 	Msg        string
+	Sys        sysStats
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	c := LoadConfig(s.repo)
 	c.Normalize()
 	d := adminData{Cfg: c, Msg: r.URL.Query().Get("msg")}
+	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
+	sysCh := make(chan sysStats, 1)
+	go func() { sysCh <- gatherSysStats() }()
 	st, err := s.status()
 	if err != nil {
 		d.DockerErr = "Docker is not reachable. Is the daemon running, and is this user in the 'docker' group? (sudo usermod -aG docker $USER, then re-login)"
 	}
 	d.Containers = st
+	d.Sys = <-sysCh
 	render(w, adminTmpl, d)
 }
 
@@ -742,10 +747,25 @@ func reversed(in []string) []string {
 
 var tmplFuncs = template.FuncMap{
 	"css": func() template.CSS { return template.CSS(cssText) },
+	// meterClass colours a usage bar by how full it is: green, amber from 70%, red from 90%.
+	"meterClass": func(pct int) string {
+		switch {
+		case pct >= 90:
+			return "hot"
+		case pct >= 70:
+			return "warn"
+		default:
+			return ""
+		}
+	},
+}
+
+func parseTmpl(tmpl string) (*template.Template, error) {
+	return template.New("p").Funcs(tmplFuncs).Parse(tmpl)
 }
 
 func render(w http.ResponseWriter, tmpl string, data any) {
-	t, err := template.New("p").Funcs(tmplFuncs).Parse(tmpl)
+	t, err := parseTmpl(tmpl)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

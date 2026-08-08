@@ -40,6 +40,11 @@ a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}co
 .kv .k{color:var(--muted)}.tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin:8px 0 22px}
 .tool{background:var(--card);border:1px solid #262b34;border-radius:12px;padding:16px;text-decoration:none;color:inherit;text-align:center}
 .tool:hover{border-color:var(--accent)}.tool .ico{font-size:24px}.tool .t{margin-top:6px;font-weight:600}
+.meter{background:#0b0d11;border:1px solid #2a2f3a;border-radius:99px;height:10px;overflow:hidden;margin-top:6px}
+.meter>i{display:block;height:100%;background:var(--ok)}.meter>i.warn{background:#d9a400}.meter>i.hot{background:var(--bad)}
+.stat{background:var(--card);border:1px solid #262b34;border-radius:12px;padding:14px 16px}
+.stat .k{color:var(--muted);font-size:13px}.stat .v{font-size:20px;font-weight:600;margin-top:2px}.stat .d{color:var(--muted);font-size:13px;margin-top:4px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:8px 0 22px}
 `
 
 const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -79,6 +84,21 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
   <a class="tool" href="/admin/terminal"><div class="ico">⌨️</div><div class="t">Terminal</div></a>
 </div>
+
+<h3>System</h3>
+<div class="stats">
+  {{if .Sys.CPUOK}}<div class="stat"><div class="k">CPU</div><div class="v">{{.Sys.CPUPct}}% busy</div>
+    <div class="meter"><i class="{{meterClass .Sys.CPUPct}}" style="width:{{.Sys.CPUPct}}%"></i></div>
+    <div class="d">{{.Sys.Cores}} cores{{if .Sys.Load1}} · load {{.Sys.Load1}}{{end}}</div></div>{{end}}
+  {{if .Sys.MemOK}}<div class="stat"><div class="k">Memory</div><div class="v">{{.Sys.MemPct}}% used</div>
+    <div class="meter"><i class="{{meterClass .Sys.MemPct}}" style="width:{{.Sys.MemPct}}%"></i></div>
+    <div class="d">{{.Sys.MemUsed}} of {{.Sys.MemTotal}}</div></div>{{end}}
+  {{range .Sys.Disks}}<div class="stat"><div class="k">Disk health · <code>{{.Path}}</code></div>
+    <div class="v">{{if .OK}}<span style="color:var(--ok)">✔ healthy</span>{{else if eq .Status "FAILING"}}<span style="color:var(--bad)">✖ FAILING — back up now</span>{{else}}<span style="color:var(--muted)">unknown</span>{{end}}</div>
+    <div class="d">{{if .Model}}{{.Model}} · {{end}}{{.Size}}</div></div>{{end}}
+</div>
+{{if .Sys.SmartMsg}}<div class="note">{{.Sys.SmartMsg}}</div>{{end}}
+{{if .Sys.DisksErr}}<div class="banner">Couldn't check the disks: {{.Sys.DisksErr}}</div>{{end}}
 
 <h3>Services</h3>
 <table><tr><th>Container</th><th>State</th><th>Status</th></tr>
