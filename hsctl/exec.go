@@ -109,6 +109,19 @@ func containerImage(dir, name string) string {
 	return strings.TrimSpace(out)
 }
 
+// volumeMountpoint resolves a docker volume's host mountpoint. Empty output (a volume
+// docker knows but can't place) is as unusable as a failed inspect, so it errors too.
+func volumeMountpoint(repo, name string) (string, error) {
+	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", name)
+	if err != nil {
+		return "", fmt.Errorf("inspect volume %s: %w", name, err)
+	}
+	if mp == "" {
+		return "", fmt.Errorf("inspect volume %s: empty mountpoint", name)
+	}
+	return mp, nil
+}
+
 // containerState returns a container's state ("running", "exited", …), or "" if missing.
 func containerState(dir, name string) string {
 	out, err := dockerOut(dir, "inspect", "-f", "{{.State.Status}}", name)

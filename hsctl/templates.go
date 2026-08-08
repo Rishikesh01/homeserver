@@ -93,6 +93,15 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   {{if .Sys.MemOK}}<div class="stat"><div class="k">Memory</div><div class="v">{{.Sys.MemPct}}% used</div>
     <div class="meter"><i class="{{meterClass .Sys.MemPct}}" style="width:{{.Sys.MemPct}}%"></i></div>
     <div class="d">{{.Sys.MemUsed}} of {{.Sys.MemTotal}}</div></div>{{end}}
+  {{if .Sys.RootDisk.OK}}<div class="stat"><div class="k">Disk space · system</div><div class="v">{{.Sys.RootDisk.Pct}}% used</div>
+    <div class="meter"><i class="{{meterClass .Sys.RootDisk.Pct}}" style="width:{{.Sys.RootDisk.Pct}}%"></i></div>
+    <div class="d">{{.Sys.RootDisk.Used}} of {{.Sys.RootDisk.Total}}</div></div>{{end}}
+  {{if .Sys.BackupDisk.OK}}<div class="stat"><div class="k">Disk space · backup disk</div><div class="v">{{.Sys.BackupDisk.Pct}}% used</div>
+    <div class="meter"><i class="{{meterClass .Sys.BackupDisk.Pct}}" style="width:{{.Sys.BackupDisk.Pct}}%"></i></div>
+    <div class="d">{{.Sys.BackupDisk.Used}} of {{.Sys.BackupDisk.Total}}</div></div>{{end}}
+  <div class="stat"><div class="k">Last backup</div>
+    <div class="v">{{if not .Backup.Known}}<span style="color:var(--muted)">never</span>{{else if .Backup.Stale}}<span style="color:var(--bad)">⚠ {{.Backup.Age}}</span>{{else}}<span style="color:var(--ok)">✔ {{.Backup.Age}}</span>{{end}}</div>
+    <div class="d">{{if .Backup.Stale}}Overdue — run one on the <a href="/admin/backup">Backups</a> page{{else if not .Backup.Known}}None recorded yet — set one up on the <a href="/admin/backup">Backups</a> page{{else}}via the <a href="/admin/backup">Backups</a> page{{end}}</div></div>
   {{range .Sys.Disks}}<div class="stat"><div class="k">Disk health · <code>{{.Path}}</code></div>
     <div class="v">{{if .OK}}<span style="color:var(--ok)">✔ healthy</span>{{else if eq .Status "FAILING"}}<span style="color:var(--bad)">✖ FAILING — back up now</span>{{else}}<span style="color:var(--muted)">unknown</span>{{end}}</div>
     <div class="d">{{if .Model}}{{.Model}} · {{end}}{{.Size}}</div></div>{{end}}
@@ -134,11 +143,9 @@ const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <form method="post" action="/login" style="max-width:360px">
   <input type="hidden" name="next" value="{{.Next}}">
   <p><label>Username<br>
-  <input name="username" autocomplete="username" value="admin"
-   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <input class="in" name="username" autocomplete="username" value="admin"></label></p>
   <p><label>Password<br>
-  <input type="password" name="password" autocomplete="current-password" autofocus
-   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <input class="in" type="password" name="password" autocomplete="current-password" autofocus></label></p>
   <button class="btn">Sign in</button>
 </form>
 <p class="foot"><a href="/">← Home portal</a></p>
@@ -159,6 +166,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <div class="k">Destination</div><div><code>{{.Repo}}</code></div>
   <div class="k">Retention</div><div>{{.Retention}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
+  <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code>{{else}}none — set one below for fire/theft-proof backups{{end}}</div>
   {{if .Stats}}<div class="k">Repo size</div><div><span class="foot">{{.Stats}}</span></div>{{end}}
 </div>
 
@@ -169,6 +177,11 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p class="foot">Examples — external disk: <code>/mnt/backup/restic</code> · another host:
   <code>sftp:user@host:/backups</code> · Backblaze B2: <code>b2:bucket:homeserver</code></p>
   <p>Retention (how many to keep): <input class="in" name="retention" value="{{.Retention}}"></p>
+  <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
+  <input class="in" name="replica" value="{{.Replica}}" placeholder="b2:bucket:homeserver"></p>
+  <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
+  (e.g. <code>B2_ACCOUNT_ID=…</code> and <code>B2_ACCOUNT_KEY=…</code>, one per line). SFTP and local paths don't.
+  Then use <b>Copy off-site</b> below — the first run creates the replica repo.</p>
   <button class="btn gray">Save destination</button>
 </form>
 
@@ -179,6 +192,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
 <button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
 <button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
+<button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
 <div id="out" class="out" style="margin-top:12px">Snapshots and command output appear here.</div>
 
 <h3 style="margin-top:24px">Snapshots</h3>
@@ -213,11 +227,9 @@ when it's done, so you don't need to reload or do anything.</div>
 <form method="post" action="/admin/backup/restore"
   onsubmit="return confirm('Really restore? All services will stop and their data will be overwritten from the backup.')">
   <p>Snapshot to restore (blank = latest):<br>
-  <input name="snapshot" placeholder="latest" autocomplete="off"
-   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <input class="in" name="snapshot" placeholder="latest" autocomplete="off"></p>
   <p>Type <b>RESTORE</b> to confirm:<br>
-  <input name="confirm" autocomplete="off"
-   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <input class="in" name="confirm" autocomplete="off"></p>
   <button class="btn red">♻️ Restore now</button>
 </form>
 <p class="foot"><a href="/admin/backup">← Cancel</a></p>

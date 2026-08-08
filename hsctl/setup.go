@@ -100,9 +100,7 @@ func promptConfig(c Config) Config {
 	// derived defaults follow the IP just entered
 	dnsDef := c.PiholeDNSBind
 	if dnsDef == "" {
-		if dnsDef = "0.0.0.0"; portBusy(53) {
-			dnsDef = c.ServerIP
-		}
+		dnsDef = defaultDNSBind(c.ServerIP)
 	}
 	c.PiholeDNSBind = ask("Pi-hole DNS bind IP", dnsDef)
 	c.VWSignupsAllowed = askYN("Allow open Vaultwarden signups?", c.VWSignupsAllowed)

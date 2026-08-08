@@ -62,14 +62,21 @@ func detectDefaults() Config {
 // after applying setup.conf / .env / flag overrides.
 func (c *Config) Normalize() {
 	if c.PiholeDNSBind == "" {
-		c.PiholeDNSBind = "0.0.0.0"
-		if portBusy(53) {
-			c.PiholeDNSBind = c.ServerIP
-		}
+		c.PiholeDNSBind = defaultDNSBind(c.ServerIP)
 	}
 	if c.UIPort == 0 {
 		c.UIPort = pickPort(8088)
 	}
+}
+
+// defaultDNSBind picks where Pi-hole's DNS should listen: all interfaces, unless the
+// host already has a resolver on :53 — then bind the LAN IP so the two can coexist.
+// Shared by Normalize and the setup prompt so their defaults can't diverge.
+func defaultDNSBind(serverIP string) string {
+	if portBusy(53) {
+		return serverIP
+	}
+	return "0.0.0.0"
 }
 
 // LoadConfig returns Defaults overlaid with the actual deployed .env (so it matches a
@@ -137,19 +144,13 @@ func portFromUpstream(s string) int {
 
 // Save writes setup.conf (0600). Not secrets — just settings.
 func (c Config) Save(repo string) error {
-	tf := func(b bool) string {
-		if b {
-			return "true"
-		}
-		return "false"
-	}
 	var b strings.Builder
 	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). Edit + re-run freely.\n")
 	for _, kv := range [][2]string{
 		{"SERVER_IP", c.ServerIP}, {"TZ_VAL", c.TZ}, {"ACME_EMAIL", c.ACMEEmail},
 		{"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
-		{"VW_SIGNUPS_ALLOWED", tf(c.VWSignupsAllowed)},
+		{"VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}

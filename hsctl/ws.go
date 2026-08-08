@@ -188,11 +188,9 @@ func (c *wsConn) writeFrame(opcode byte, payload []byte) error {
 	case n < 126:
 		head = []byte{b0, byte(n)}
 	case n < 1<<16:
-		head = []byte{b0, 126, byte(n >> 8), byte(n)}
+		head = binary.BigEndian.AppendUint16([]byte{b0, 126}, uint16(n))
 	default:
-		head = []byte{b0, 127,
-			byte(n >> 56), byte(n >> 48), byte(n >> 40), byte(n >> 32),
-			byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
+		head = binary.BigEndian.AppendUint64([]byte{b0, 127}, uint64(n))
 	}
 	if _, err := c.conn.Write(head); err != nil {
 		return err
