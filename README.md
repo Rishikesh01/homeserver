@@ -115,7 +115,7 @@ Full walkthrough: **[docs/setup.md](docs/setup.md)**.
 ## How it works
 
 ```
-                    ┌─────────────────────────── your LAN ───────────────────────────┐
+                    ┌─────────────────────────── your LAN ────────────────────────────┐
                     │                                                                 │
    phone / laptop ──┼──► :443  ┌───────┐                                              │
     (trusts the     │   :8443… │ Caddy │──► homeserver-edge (internal docker network) │
@@ -135,8 +135,9 @@ Full walkthrough: **[docs/setup.md](docs/setup.md)**.
 - **One HTTPS port per app** (`8443`–`8448`, dashboard on `443`), each with a `tls internal`
   certificate carrying the server's IP in its SAN.
 - **The dashboard runs on the host, not in a container** — it manages Docker and offers a root
-  shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, never the LAN.
-  Caddy reaches it through `host.docker.internal`.
+  shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, not the LAN
+  (if the bridge can't be detected it warns and falls back to all interfaces). Caddy reaches
+  it through `host.docker.internal`.
 - **Start order** is fixed in [`hsctl/lifecycle.go`](hsctl/lifecycle.go): apps first, Caddy
   last; `hsctl down` reverses it.
 
@@ -175,7 +176,7 @@ fileset, every data volume, and your config. Vaultwarden pauses for about a seco
 database is captured cleanly; nothing else goes offline.
 
 ```bash
-hsctl backup config --repo /mnt/restic     # off the box: also sftp:, b2:, s3:
+hsctl backup config --repo /mnt/restic     # off the box: also sftp:, s3:
 sudo hsctl backup init && sudo hsctl backup run
 sudo hsctl backup verify                   # prove it restores — five checks, never touches live data
 sudo hsctl backup restore latest --into-volumes    # one-command disaster recovery
@@ -220,8 +221,8 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the details, and
 
 ## Security
 
-This is designed for a **LAN only** — don't port-forward it. To report a vulnerability, see
-**[SECURITY.md](SECURITY.md)**.
+This is designed for a **LAN only** — don't port-forward it. The threat model and hardening
+checklist are in **[docs/security.md](docs/security.md)**.
 
 ## License
 

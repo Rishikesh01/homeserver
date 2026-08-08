@@ -8,9 +8,6 @@ body:
         Thanks for the report. Please don't paste passwords, tokens, or the contents of any
         `.env` file — redact before posting.
 
-        **Security vulnerability?** Don't file it here — see
-        [SECURITY.md](https://github.com/Rishikesh01/homeserver/blob/main/SECURITY.md).
-
   - type: textarea
     id: what-happened
     attributes:

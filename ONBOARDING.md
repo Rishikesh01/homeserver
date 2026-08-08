@@ -87,7 +87,7 @@ connect**.
 ## Backups & restore (server owner)
 
 Encrypted snapshots (restic) of your passwords (Vaultwarden), Nextcloud files + database,
-and the server config. Vaultwarden is paused for a few seconds during each backup so its
+and the server config. Vaultwarden is paused for about a second during each backup so its
 database is captured cleanly — nothing else goes offline.
 
 - **Mount the backup disk first.** Backups go to an external HDD you mount by hand
@@ -113,7 +113,7 @@ database is captured cleanly — nothing else goes offline.
   password — no hsctl, no Docker:
   ```bash
   sudo apt install -y restic                      # use restic >= 0.14 (match backup.conf's version if you can)
-  export RESTIC_REPOSITORY=/mnt/restic            # the mountpoint you used above (or your sftp:/b2:/s3: URL)
+  export RESTIC_REPOSITORY=/mnt/restic            # the mountpoint you used above (or your sftp:/s3: URL)
   export RESTIC_PASSWORD_FILE=/path/to/.restic-password   # the password FILE — keeps the secret out of history
   restic snapshots                                # list backups
   restic restore latest --target ~/restore        # extract everything (~/ , not /tmp, in case /tmp is small)

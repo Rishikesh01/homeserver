@@ -18,8 +18,9 @@ What this design assumes:
 - **Anyone with the disk has everything.** The apps store data unencrypted on disk, so
   full-disk encryption is the control that matters most against a stolen machine.
 - **The dashboard is a root shell.** `/admin/terminal` is a real PTY running as root under
-  systemd. That's why `hsctl ui` binds only loopback + the Docker bridge gateway (never the
-  LAN directly), and why every admin route sits behind a login.
+  systemd. That's why `hsctl ui` binds only loopback + the Docker bridge gateway, not the LAN
+  directly (if the bridge can't be detected it warns and falls back to all interfaces), and
+  why every admin route sits behind a login.
 
 What it does *not* protect against: a hostile device already on your LAN, a compromised
 browser on a trusted device, or someone with physical access to an unlocked, running machine.
@@ -71,7 +72,7 @@ matters:
 | `.ui-password` | `0600` | dashboard admin password |
 | `backup.conf` | `0600` | backup destination + retention |
 | `.restic-password` | `0600` | **the backup encryption password** |
-| `.backup-env` | `0600` | cloud credentials for the off-site replica (B2/S3 keys) |
+| `.backup-env` | `0600` | cloud credentials for the off-site replica (S3 keys) |
 | `WELCOME.txt` | `0644` | the human-readable handout of the same logins |
 
 Two things to act on:
@@ -126,7 +127,3 @@ To rotate **every** secret at once, `hsctl setup --force` regenerates all the `.
 but note this is destructive: existing logins stop working and data tied to old secrets (the
 Postgres password in particular) can become unreadable. It's for a fresh start, not routine
 maintenance.
-
----
-
-Reporting a vulnerability: see [SECURITY.md](../SECURITY.md).

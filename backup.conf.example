@@ -7,7 +7,6 @@
 # restic repository = where backups are stored. Off the server is strongly recommended.
 #   /mnt/restic                   local path / external USB drive
 #   sftp:user@nas:/backups        another machine over SSH
-#   b2:your-bucket:homeserver     Backblaze B2
 #   s3:s3.region.amazonaws.com/your-bucket
 RESTIC_REPO=/mnt/restic
 
@@ -27,6 +26,6 @@ RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
 
 # Optional off-site replica — a second copy for fire/theft, not just disk failure.
 # `hsctl backup replicate` creates it on first run, then copies incrementally with the SAME
-# encryption password, and applies RETENTION to it too. Cloud backends (b2:/s3:) need their
+# encryption password, and applies RETENTION to it too. Cloud backends (s3:) need their
 # credentials in .backup-env, one KEY=VALUE per line; local paths and sftp: don't.
-# REPLICA_REPO=b2:your-bucket:homeserver
+# REPLICA_REPO=sftp:user@nas:/backups

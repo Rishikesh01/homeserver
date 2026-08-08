@@ -80,7 +80,6 @@ local work — use `make` for anything you install. Tags are `vMAJOR.MINOR.PATCH
 ## Reporting things
 
 - **Bugs and features** — open an issue; the templates ask for the few details that matter.
-- **Security vulnerabilities** — please don't open a public issue. See [SECURITY.md](SECURITY.md).
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENSE).

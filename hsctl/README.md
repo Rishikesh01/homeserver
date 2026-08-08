@@ -66,14 +66,13 @@ Three config files (gitignored, in the repo root):
 - **`backup.conf`** — `RESTIC_REPO` (the destination), `RETENTION` (restic forget policy),
   and optionally `REQUIRE_MOUNT`, `RESTIC_VERSION` and `REPLICA_REPO`. Written by
   `backup config`; see [`backup.conf.example`](../backup.conf.example). Destinations: local
-  path / USB (`/mnt/restic`), another host (`sftp:user@host:/path`), Backblaze
-  (`b2:bucket:path`), or S3 (`s3:…`).
+  path / USB (`/mnt/restic`), another host (`sftp:user@host:/path`), or S3 (`s3:…`).
 - **`.restic-password`** — the repo encryption password. Set your own with
   `hsctl backup config --password '…'` (before `init`), or leave it to auto-generate on
   first `init`/`run`. **Back this up separately** — without it the backups are unrecoverable.
   Full details (changing it later, restoring with plain restic) →
   [docs/configuration.md](../docs/configuration.md#backups).
-- **`.backup-env`** — cloud credentials (B2/S3) for a remote repo or replica, one `KEY=VALUE`
+- **`.backup-env`** — cloud credentials (S3) for a remote repo or replica, one `KEY=VALUE`
   per line. Not needed for local paths or `sftp:`.
 
 `init`/`run`/`restore`/`forget` need **restic installed** and **root** (to read the Docker

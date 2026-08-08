@@ -42,7 +42,6 @@ it somewhere **off the box**:
 |-------------|----------------|
 | External USB drive | `/mnt/restic` |
 | Another machine (NAS, Pi) over SSH | `sftp:user@nas:/backups` |
-| Cloud (Backblaze B2) | `b2:your-bucket:homeserver` |
 | Cloud (S3-compatible) | `s3:s3.region.amazonaws.com/your-bucket` |
 
 If the destination is an external disk you mount by hand, also set the **mount guard** so a
@@ -128,7 +127,8 @@ make -C hsctl install-services    # installs the UI service + nightly backup tim
 This installs `hsctl-ui.service`, `hsctl-backup.service` and `hsctl-backup.timer` into
 `/etc/systemd/system/` (filling in `__DIR__` with this repo's path for you) and enables them.
 The timer runs at **03:30 daily**, with `Persistent=true` so a missed run catches up after a
-reboot, and `RequiresMountsFor` on the backup path.
+reboot, and `RequiresMountsFor=/mnt/restic` (edit `hsctl/systemd/hsctl-backup.service` before
+installing if your repo lives elsewhere).
 
 The dashboard shows how long ago the last backup completed, and flags it when it goes stale.
 
@@ -140,8 +140,8 @@ A second copy, somewhere the house isn't — protection against fire and theft, 
 failure.
 
 ```bash
-hsctl backup config --replica b2:your-bucket:homeserver   # or sftp:user@host:/path, s3:…
-sudo hsctl backup replicate                               # copy every snapshot to the replica
+hsctl backup config --replica sftp:user@nas:/backups   # or s3:s3.region.amazonaws.com/bucket
+sudo hsctl backup replicate                            # copy every snapshot to the replica
 ```
 
 - The first `replicate` **creates** the replica repo; later runs are incremental and
@@ -155,12 +155,9 @@ sudo hsctl backup replicate                               # copy every snapshot 
 line, mode `0600` and git-ignored:
 
 ```bash
-# .backup-env — Backblaze B2
-B2_ACCOUNT_ID=…
-B2_ACCOUNT_KEY=…
-# …or S3:
-# AWS_ACCESS_KEY_ID=…
-# AWS_SECRET_ACCESS_KEY=…
+# .backup-env — S3-compatible storage
+AWS_ACCESS_KEY_ID=…
+AWS_SECRET_ACCESS_KEY=…
 ```
 
 Local paths and `sftp:` destinations need no credentials file (SFTP uses your SSH key).

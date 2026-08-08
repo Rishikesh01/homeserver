@@ -99,7 +99,7 @@ hsctl backup config --repo /mnt/restic \
 
 | Key | Meaning | Flag |
 |-----|---------|------|
-| `RESTIC_REPO` | Where backups go: local path / `sftp:user@host:/path` / `b2:bucket:path` / `s3:…` (off-box!) | `--repo` |
+| `RESTIC_REPO` | Where backups go: local path / `sftp:user@host:/path` / `s3:…` (off-box!) | `--repo` |
 | `RETENTION` | restic forget policy applied by `backup run` / `backup forget` | `--retention` |
 | `REQUIRE_MOUNT` | A path that must be a real mount before any backup/restore runs | `--require-mount` |
 | `RESTIC_VERSION` | Pinned restic version; `backup verify` **fails** if the installed one differs | `--pin-restic` |
@@ -121,11 +121,9 @@ Only needed when the repo or replica is a cloud backend; local paths and `sftp:`
 `.restic-password`:
 
 ```bash
-B2_ACCOUNT_ID=…
-B2_ACCOUNT_KEY=…
-# or, for S3-compatible storage:
-# AWS_ACCESS_KEY_ID=…
-# AWS_SECRET_ACCESS_KEY=…
+# S3-compatible storage:
+AWS_ACCESS_KEY_ID=…
+AWS_SECRET_ACCESS_KEY=…
 ```
 
 ### The repo password — `.restic-password`
@@ -164,7 +162,7 @@ extract everything from any machine with the `restic` binary — no Go, no Docke
 You need exactly two things:
 
 1. **The repo location** — wherever you pointed `RESTIC_REPO` (the USB drive, or the
-   `sftp:` / `b2:` / `s3:` URL).
+   `sftp:` / `s3:` URL).
 2. **The password** — the contents of `.restic-password` (this is why you keep a copy off the box).
 
 ```bash
@@ -172,7 +170,7 @@ sudo apt install -y restic          # any machine; the repo format is portable a
                                     # Use restic >= 0.14 (the repo is v2 format); ideally match the
                                     # RESTIC_VERSION in backup.conf — a too-old restic can't open it.
 
-export RESTIC_REPOSITORY=/mnt/restic               # your RESTIC_REPO (or sftp:user@nas:/backups, b2:…, s3:…)
+export RESTIC_REPOSITORY=/mnt/restic               # your RESTIC_REPO (or sftp:user@nas:/backups, s3:…)
 export RESTIC_PASSWORD_FILE=/path/to/.restic-password   # the password FILE — keeps the secret out of shell
                                                         # history. No file handy? `read -rs RESTIC_PASSWORD;
                                                         # export RESTIC_PASSWORD` types it in without echoing.
@@ -183,8 +181,7 @@ restic restore latest --target ~/restore           # ~/restore, not /tmp (often 
 ```
 
 For a **remote** repo, also export the backend's credentials before running restic — e.g.
-`B2_ACCOUNT_ID` / `B2_ACCOUNT_KEY` for Backblaze, or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
-for S3. (An `sftp:` repo just uses your SSH key.)
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` for S3. (An `sftp:` repo just uses your SSH key.)
 
 **What's inside `~/restore`** (the snapshot mirrors the original absolute paths):
 
