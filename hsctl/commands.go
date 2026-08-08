@@ -165,6 +165,7 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this command is destructive — confirmation required", http.StatusForbidden)
 		return
 	}
+	uiLog.Info("command run", "slug", c.Slug, "from", remoteIP(r))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
@@ -184,6 +185,7 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	// stdout/stderr stay coherent without a mutex.
 	cmd.Stdout, cmd.Stderr = fw, fw
 	if err := cmd.Run(); err != nil {
+		uiLog.Warn("command failed", "slug", c.Slug, "err", err)
 		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
 		return
 	}

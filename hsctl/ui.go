@@ -114,10 +114,11 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
 	fmt.Printf("  login     : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
 
+	handler := logRequests(mux)
 	// An explicit --addr is honoured verbatim (dev runs, and the sandbox which forwards a port).
 	if addr != "" {
 		fmt.Printf("  listening : %s   (explicit --addr)\n", addr)
-		return http.ListenAndServe(addr, mux)
+		return http.ListenAndServe(addr, handler)
 	}
 	// Default: the dashboard is plain HTTP and grants a root shell, so keep it OFF the LAN.
 	// Bind loopback (local use) + the docker bridge gateway (so Caddy, which fronts us with
@@ -126,7 +127,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
-	return serveUI(mux, addrs)
+	return serveUI(handler, addrs)
 }
 
 // uiListenAddrs returns the addresses the dashboard binds to by default: always loopback, plus
@@ -261,10 +262,12 @@ func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ok := subtle.ConstantTimeCompare([]byte(u), []byte("admin")) == 1 &&
 			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
 		if !ok {
+			uiLog.Warn("login failed", "user", u, "from", remoteIP(r))
 			w.WriteHeader(http.StatusUnauthorized)
 			render(w, loginTmpl, loginData{Err: "Wrong username or password.", Next: safeNext(r.FormValue("next"))})
 			return
 		}
+		uiLog.Info("login ok", "from", remoteIP(r))
 		tok := genPassword(32)
 		s.mu.Lock()
 		s.sessions[tok] = time.Now().Add(sessionTTL)
@@ -392,6 +395,7 @@ func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	go func() { sysCh <- gatherSysStats() }()
 	st, err := s.status()
 	if err != nil {
+		uiLog.Warn("docker unreachable", "err", err)
 		d.DockerErr = "Docker is not reachable. Is the daemon running, and is this user in the 'docker' group? (sudo usermod -aG docker $USER, then re-login)"
 	}
 	d.Containers = st
@@ -428,6 +432,7 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		msg = "unknown action"
 	}
+	uiLog.Info("admin action", "do", do, "result", msg, "from", remoteIP(r))
 	http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
@@ -468,6 +473,7 @@ func (s *uiServer) runLifecycle(action string) string {
 func (s *uiServer) runShutdown() string {
 	go func() {
 		time.Sleep(2 * time.Second)
+		uiLog.Warn("powering off the machine (dashboard shutdown button)")
 		_ = privCmd("shutdown", "-h", "now").Run()
 	}()
 	return "Shutting down — the server is powering off now. This page will go offline. " +
@@ -538,10 +544,13 @@ func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
+	dev := strings.TrimSpace(r.FormValue("dev"))
 	var msg string
-	if mp, err := mountDeviceAt(strings.TrimSpace(r.FormValue("dev")), target); err != nil {
+	if mp, err := mountDeviceAt(dev, target); err != nil {
+		uiLog.Warn("mount failed", "dev", dev, "target", target, "err", err)
 		msg = "Mount failed: " + err.Error()
 	} else {
+		uiLog.Info("mounted device", "dev", dev, "at", mp, "from", remoteIP(r))
 		msg = "Mounted at " + mp
 	}
 	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
@@ -556,9 +565,12 @@ func (s *uiServer) deviceActionHandler(action func(string) (string, error), errP
 			return
 		}
 		var msg string
-		if res, err := action(strings.TrimSpace(r.FormValue("dev"))); err != nil {
+		dev := strings.TrimSpace(r.FormValue("dev"))
+		if res, err := action(dev); err != nil {
+			uiLog.Warn("device action failed", "dev", dev, "err", err)
 			msg = errPrefix + err.Error()
 		} else {
+			uiLog.Info("device action ok", "dev", dev, "result", res, "from", remoteIP(r))
 			msg = ok(res)
 		}
 		http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
@@ -614,9 +626,13 @@ func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.opMu.Unlock()
+	uiLog.Info("backup started", "from", remoteIP(r))
 	msg := "Backup complete."
 	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
+		uiLog.Error("backup failed", "err", err)
 		msg = "Backup failed: " + err.Error()
+	} else {
+		uiLog.Info("backup complete")
 	}
 	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
@@ -669,22 +685,27 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snap := strings.TrimSpace(r.FormValue("snapshot"))
+		uiLog.Warn("restore started", "snapshot", snap, "from", remoteIP(r))
 		s.setRestore(restoreStatus{Active: true})
 		go func() {
 			defer s.opMu.Unlock()
 			defer func() {
 				if p := recover(); p != nil {
+					uiLog.Error("restore crashed", "panic", fmt.Sprint(p))
 					s.setRestore(restoreStatus{Done: true, Message: fmt.Sprintf("Restore crashed: %v", p)})
 				}
 			}()
 			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
 			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
+				uiLog.Error("restore failed", "err", err)
 				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
 				// Best-effort: make sure Caddy is back even if an earlier service failed to start,
 				// so this failure is actually visible again — the progress page can only reach the
 				// status endpoint through Caddy.
 				_ = ensureEdgeNetwork()
 				_, _ = dockerCombined(filepath.Join(s.repo, "caddy"), "compose", "up", "-d")
+			} else {
+				uiLog.Info("restore complete", "snapshot", snap)
 			}
 			s.setRestore(st)
 		}()
@@ -760,11 +781,13 @@ func parseTmpl(tmpl string) (*template.Template, error) {
 func render(w http.ResponseWriter, tmpl string, data any) {
 	t, err := parseTmpl(tmpl)
 	if err != nil {
+		uiLog.Error("template parse failed", "err", err)
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, data); err != nil {
+		uiLog.Error("template render failed", "err", err)
 		http.Error(w, err.Error(), 500)
 	}
 }

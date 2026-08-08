@@ -65,9 +65,12 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	ptm, err := startPTY(cmd)
 	if err != nil {
+		uiLog.Error("terminal shell failed to start", "shell", shell, "err", err)
 		_ = ws.WriteMessage(opBinary, []byte("failed to start shell: "+err.Error()+"\r\n"))
 		return
 	}
+	uiLog.Info("terminal session started", "shell", shell, "from", remoteIP(r))
+	defer uiLog.Info("terminal session ended", "from", remoteIP(r))
 	// Make sure the shell process is reaped and the master closed no matter how we exit.
 	defer func() {
 		_ = ptm.Close()
