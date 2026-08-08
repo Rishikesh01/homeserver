@@ -75,13 +75,6 @@ type backupCfg struct {
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
 }
 
-// backupRepoDir resolves the homeserver repo and refuses to proceed if we're not
-// actually in it. Without this, repoDir() silently falls back to the cwd, so a
-// `hsctl backup run` from the wrong directory would generate a NEW .restic-password
-// and a phantom repo under <cwd>/backups — making you think you're backed up when
-// the snapshots (and their key) are scattered somewhere unexpected.
-func backupRepoDir() (string, error) { return requireRepoDir() }
-
 // requireBackupMount guards against the classic external-disk failure: when the backup
 // HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
 // restic would create/write a repo THERE — a "successful" backup that silently lives on the
@@ -165,7 +158,7 @@ func backupCmd() *cobra.Command {
 			if err := requireRestic(); err != nil {
 				return err
 			}
-			repo, err := backupRepoDir()
+			repo, err := requireRepoDir()
 			if err != nil {
 				return err
 			}
@@ -217,7 +210,7 @@ func backupCmd() *cobra.Command {
 }
 
 func runBackupConfig(cmd *cobra.Command, _ []string) error {
-	repo, err := backupRepoDir()
+	repo, err := requireRepoDir()
 	if err != nil {
 		return err
 	}
@@ -286,10 +279,9 @@ func backupRun(repo string, cfg backupCfg) error {
 	for _, v := range vols {
 		// A volume we just discovered must resolve. If it doesn't, abort rather than write a
 		// snapshot that's silently missing a service's data (and then prune behind it).
-		mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", v)
-		if err != nil || mp == "" {
-			return fmt.Errorf("resolving volume %s failed — aborting rather than writing an "+
-				"incomplete snapshot: %v", v, err)
+		mp, err := volumeMountpoint(repo, v)
+		if err != nil {
+			return fmt.Errorf("aborting rather than writing an incomplete snapshot: %w", err)
 		}
 		paths = append(paths, mp)
 	}
@@ -324,7 +316,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if err := requireRestic(); err != nil {
 		return err
 	}
-	repo, err := backupRepoDir()
+	repo, err := requireRepoDir()
 	if err != nil {
 		return err
 	}
@@ -473,9 +465,9 @@ func restoreIntoVolumes(repo, target string) error {
 	switch vwInLoop := fileExists(filepath.Join(volsRoot, "vaultwarden_vw-data", "_data")); {
 	case vwInLoop:
 		if fileExists(filepath.Join(vwStaging, "db.sqlite3")) {
-			mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", "vaultwarden_vw-data")
-			if err != nil || mp == "" {
-				return fmt.Errorf("vaultwarden_vw-data volume missing — cannot overlay its DB: %w", err)
+			mp, err := volumeMountpoint(repo, "vaultwarden_vw-data")
+			if err != nil {
+				return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
 			}
 			// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
 			for _, suf := range dbFilesetSuffixes {
@@ -520,9 +512,9 @@ func verifyRestoreIntoVolume(repo string, keep bool) error {
 	if !keep {
 		defer func() { _, _ = dockerOut(repo, "volume", "rm", "-f", vol) }()
 	}
-	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
-	if err != nil || mp == "" {
-		return fmt.Errorf("inspect test volume: %w", err)
+	mp, err := volumeMountpoint(repo, vol)
+	if err != nil {
+		return err
 	}
 	// Seed the live volume with STALE data that must be gone after the restore.
 	if err := os.WriteFile(filepath.Join(mp, "stale.txt"), []byte(genPassword(16)), 0644); err != nil {
@@ -559,9 +551,9 @@ func restoreOneVolume(repo, name, src string) error {
 	if _, err := dockerOut(repo, "volume", "create", name); err != nil { // no-op if it already exists
 		return fmt.Errorf("create volume: %w", err)
 	}
-	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", name)
-	if err != nil || mp == "" {
-		return fmt.Errorf("inspect volume: %w", err)
+	mp, err := volumeMountpoint(repo, name)
+	if err != nil {
+		return err
 	}
 	if err := wipeDirContents(mp); err != nil {
 		return fmt.Errorf("wipe live volume: %w", err)
@@ -586,7 +578,7 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 	if err := requireRestic(); err != nil {
 		return err
 	}
-	repo, err := backupRepoDir()
+	repo, err := requireRepoDir()
 	if err != nil {
 		return err
 	}
@@ -633,7 +625,7 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 		{"restic volume round-trip", func() error { return verifyVolumeRoundTrip(repo, image, keep) }},
 		{"restore --into-volumes put-back (throwaway volume)", func() error { return verifyRestoreIntoVolume(repo, keep) }},
 		{"Vaultwarden — passwords (boots from a restored volume)", func() error { return verifyVaultwarden(repo, keep) }},
-		{"Vaultwarden — WAL not dropped (db+wal+shm fileset)", func() error { return verifyVaultwardenWAL(repo, keep) }},
+		{"Vaultwarden — WAL not dropped (db+wal+shm fileset)", func() error { return verifyVaultwardenWAL(keep) }},
 		{"Nextcloud — database (pg_dump -> restic -> import)", func() error { return verifyNextcloudDB(repo, keep) }},
 	}
 	failed := 0
@@ -699,9 +691,9 @@ func verifyVolumeRoundTrip(repo, image string, keep bool) error {
 		"printf %s "+token+" > /d/proof.txt"); err != nil {
 		return fmt.Errorf("write fixture via container (image %q ok?): %w", image, err)
 	}
-	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
-	if err != nil || mp == "" {
-		return fmt.Errorf("inspect test volume: %w", err)
+	mp, err := volumeMountpoint(repo, vol)
+	if err != nil {
+		return err
 	}
 	if err := restic("init"); err != nil {
 		return err
@@ -777,7 +769,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 	if !keep {
 		defer rm(c1)
 	}
-	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
+	mp, err := volumeMountpoint(repo, vol)
 	if err != nil {
 		return err
 	}
@@ -878,7 +870,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 // with a row that stays UNCHECKPOINTED in db.sqlite3-wal (copying the files via `.shell` while
 // the connection is still open, before any close-checkpoint), then proves: the main file ALONE
 // loses the row, but the full fileset (db + -wal + -shm) preserves it. Needs sqlite3; skips if absent.
-func verifyVaultwardenWAL(repo string, keep bool) error {
+func verifyVaultwardenWAL(keep bool) error {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		fmt.Println("  SKIP: sqlite3 not installed (can't build a WAL fixture)")
 		return nil
@@ -1123,9 +1115,9 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		return "" // stack down: the volume (incl. DB) isn't being written, so the live backup is consistent
 	}
 	vol := svc + "_vw-data" // <compose-project>_<volume>, project = service dir name
-	mp, err := dockerOut(repo, "volume", "inspect", "-f", "{{.Mountpoint}}", vol)
-	if err != nil || mp == "" {
-		fmt.Fprintf(os.Stderr, "vaultwarden: data volume %s not found, backing up live volume as-is: %v\n", vol, err)
+	mp, err := volumeMountpoint(repo, vol)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vaultwarden: data volume not found, backing up live volume as-is: %v\n", err)
 		return ""
 	}
 	dest := filepath.Join(staging, "vaultwarden")
@@ -1211,7 +1203,7 @@ func resticOutput(repo string, cfg backupCfg, args ...string) (string, error) {
 }
 
 func requireRestic() error {
-	if _, err := exec.LookPath("restic"); err != nil {
+	if !resticInstalled() {
 		return fmt.Errorf("restic not installed — install it first:\n" +
 			"  sudo apt-get install -y restic   (or download from https://restic.net)")
 	}

@@ -202,9 +202,6 @@ func findDeviceRow(devPath string) (deviceRow, error) {
 	return deviceRow{}, fmt.Errorf("device %q is not an attached block device", devPath)
 }
 
-// mountDevice mounts the given block device at the per-label default under /mnt.
-func mountDevice(devPath string) (string, error) { return mountDeviceAt(devPath, "") }
-
 // cleanMountTarget validates and normalises an operator-chosen mount directory: it must be an
 // absolute path and not the filesystem root. (The operator picks the directory in the UI, the
 // same as a manual `mount <disk> <dir>`; this just keeps it a sane place to mount.)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -107,11 +108,7 @@ func removeEnvLinesMatching(path string, match func(key, value string) bool) (bo
 
 // removeEnvKeys deletes any KEY=... lines for the given keys, whatever their value.
 func removeEnvKeys(path string, keys ...string) (bool, error) {
-	drop := map[string]bool{}
-	for _, k := range keys {
-		drop[k] = true
-	}
-	return removeEnvLinesMatching(path, func(k, _ string) bool { return drop[k] })
+	return removeEnvLinesMatching(path, func(k, _ string) bool { return slices.Contains(keys, k) })
 }
 
 // writeFileAtomic writes content to path atomically: it writes a temp file in the SAME

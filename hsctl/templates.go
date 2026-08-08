@@ -134,11 +134,9 @@ const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <form method="post" action="/login" style="max-width:360px">
   <input type="hidden" name="next" value="{{.Next}}">
   <p><label>Username<br>
-  <input name="username" autocomplete="username" value="admin"
-   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <input class="in" name="username" autocomplete="username" value="admin"></label></p>
   <p><label>Password<br>
-  <input type="password" name="password" autocomplete="current-password" autofocus
-   style="width:100%;padding:9px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></label></p>
+  <input class="in" type="password" name="password" autocomplete="current-password" autofocus></label></p>
   <button class="btn">Sign in</button>
 </form>
 <p class="foot"><a href="/">← Home portal</a></p>
@@ -213,11 +211,9 @@ when it's done, so you don't need to reload or do anything.</div>
 <form method="post" action="/admin/backup/restore"
   onsubmit="return confirm('Really restore? All services will stop and their data will be overwritten from the backup.')">
   <p>Snapshot to restore (blank = latest):<br>
-  <input name="snapshot" placeholder="latest" autocomplete="off"
-   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <input class="in" name="snapshot" placeholder="latest" autocomplete="off"></p>
   <p>Type <b>RESTORE</b> to confirm:<br>
-  <input name="confirm" autocomplete="off"
-   style="width:100%;padding:8px;background:#0b0d11;color:#e7e9ee;border:1px solid #2a2f3a;border-radius:8px"></p>
+  <input class="in" name="confirm" autocomplete="off"></p>
   <button class="btn red">♻️ Restore now</button>
 </form>
 <p class="foot"><a href="/admin/backup">← Cancel</a></p>

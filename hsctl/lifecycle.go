@@ -120,8 +120,7 @@ func cmdDown(volumes bool) error {
 		down = append(down, "-v")
 		fmt.Println("!! --volumes: data volumes will be DELETED")
 	}
-	for i := len(services) - 1; i >= 0; i-- {
-		s := services[i]
+	for _, s := range reversed(services) {
 		fmt.Printf("== down: %s ==\n", s)
 		if err := dockerRun(filepath.Join(repoDir(), s), down...); err != nil {
 			return fmt.Errorf("%s: %w", s, err)

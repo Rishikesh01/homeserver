@@ -18,8 +18,8 @@ import (
 // sysStats is the display-ready system section of the admin page. Zero-value fields
 // mean "couldn't read it" and the template hides them.
 type sysStats struct {
-	CPUPct   int    // busy % across all cores over the sample window
-	CPUOK    bool   // CPUPct is real (0% is a valid reading, so a flag, not a sentinel)
+	CPUPct   int  // busy % across all cores over the sample window
+	CPUOK    bool // CPUPct is real (0% is a valid reading, so a flag, not a sentinel)
 	Cores    int
 	Load1    string // 1-minute load average, "" if unreadable
 	MemUsed  string // human GiB

@@ -41,8 +41,7 @@ type termControl struct {
 // handleTerminalWS upgrades to a WebSocket and bridges it to a login shell on a PTY.
 // requireAuth has already validated the session cookie before we get here.
 func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
-	c := LoadConfig(s.repo)
-	c.Normalize()
+	c := s.config()
 	if !wsOriginOK(r, c.ServerIP) {
 		http.Error(w, "bad WebSocket origin", http.StatusForbidden)
 		return
@@ -72,9 +71,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Make sure the shell process is reaped and the master closed no matter how we exit.
 	defer func() {
 		_ = ptm.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+		_ = cmd.Process.Kill() // non-nil: startPTY succeeded, so Start() did too
 		_, _ = cmd.Process.Wait()
 	}()
 

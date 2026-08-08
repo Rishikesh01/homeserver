@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -55,6 +54,14 @@ type restoreStatus struct {
 	Message string `json:"message"` // human-facing result
 }
 
+// config returns the live, normalized config — the pair every handler needs together
+// (Normalize fills derived fields, so a bare LoadConfig is never what you want).
+func (s *uiServer) config() Config {
+	c := LoadConfig(s.repo)
+	c.Normalize()
+	return c
+}
+
 func (s *uiServer) setRestore(st restoreStatus) {
 	s.restoreMu.Lock()
 	s.restoreSt = st
@@ -70,8 +77,7 @@ func (s *uiServer) getRestore() restoreStatus {
 func runUI(cmd *cobra.Command, _ []string) error {
 	addr, _ := cmd.Flags().GetString("addr")
 	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
-	c := LoadConfig(s.repo)
-	c.Normalize()
+	c := s.config()
 
 	// Reap expired sessions periodically so the token map can't grow without bound.
 	go func() {
@@ -344,8 +350,7 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	c := LoadConfig(s.repo)
-	c.Normalize()
+	c := s.config()
 	var links []serviceLink
 	for _, svc := range LoadServices(s.repo) {
 		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
@@ -357,8 +362,7 @@ type helpData struct{ Body template.HTML }
 
 // handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide.
 func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
-	c := LoadConfig(s.repo)
-	c.Normalize()
+	c := s.config()
 	md, err := os.ReadFile(filepath.Join(s.repo, "ONBOARDING.md"))
 	if err != nil {
 		http.Error(w, "setup guide not available", http.StatusNotFound)
@@ -382,9 +386,7 @@ type adminData struct {
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	c := LoadConfig(s.repo)
-	c.Normalize()
-	d := adminData{Cfg: c, Msg: r.URL.Query().Get("msg")}
+	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg")}
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats() }()
@@ -466,19 +468,10 @@ func (s *uiServer) runLifecycle(action string) string {
 func (s *uiServer) runShutdown() string {
 	go func() {
 		time.Sleep(2 * time.Second)
-		_ = shutdownCmd().Run()
+		_ = privCmd("shutdown", "-h", "now").Run()
 	}()
 	return "Shutting down — the server is powering off now. This page will go offline. " +
 		"When you switch the machine back on, the apps start again automatically."
-}
-
-// shutdownCmd builds the poweroff command, using sudo when the UI isn't running as root
-// (under systemd it runs as root; a local dev run may not).
-func shutdownCmd() *exec.Cmd {
-	if os.Geteuid() == 0 {
-		return exec.Command("shutdown", "-h", "now")
-	}
-	return exec.Command("sudo", "shutdown", "-h", "now")
 }
 
 // ---- Command Center ---------------------------------------------------------
