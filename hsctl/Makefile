@@ -1,4 +1,5 @@
-# Build/install hsctl. Go lives at ~/sdk/go on this box; override with GO=...
+# Build/install hsctl. Uses `go` from PATH, falling back to ~/sdk/go for a hand-unpacked
+# toolchain; override either with GO=/path/to/go.
 GO     ?= $(shell command -v go || echo $(HOME)/sdk/go/bin/go)
 PREFIX ?= /usr/local
 
@@ -13,6 +14,11 @@ build:
 
 vet:
 	$(GO) vet ./...
+
+# Unit tests — no Docker needed. The restic replica round-trip in replica_test.go skips
+# itself if restic isn't installed, so install restic to exercise that path too.
+test:
+	$(GO) test ./...
 
 # Install the binary system-wide (so systemd + everyone can run `hsctl`). The web UI
 # runs the binary as a long-lived process, so a new binary on disk doesn't take effect
@@ -44,4 +50,4 @@ install-services:
 	sudo systemctl enable --now hsctl-ui.service hsctl-backup.timer
 	@echo "enabled hsctl-ui.service and hsctl-backup.timer"
 
-.PHONY: build vet install install-services
+.PHONY: build vet test install install-services

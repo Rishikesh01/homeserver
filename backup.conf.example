@@ -1,15 +1,14 @@
 # Example hsctl backup config. Normally written for you by:
-#   hsctl backup config --repo <dest> [--retention "..."]
+#   hsctl backup config --repo <dest> [--retention "..."] [--replica <dest>]
 # Copy to backup.conf only to pre-seed it by hand. backup.conf is gitignored (it's
 # host-specific). The repo PASSWORD is separate, in .restic-password (auto-generated;
 # back it up elsewhere — without it the backups are unrecoverable).
 
 # restic repository = where backups are stored. Off the server is strongly recommended.
-#   /mnt/usb/restic               local path / external USB drive
+#   /mnt/restic                   local path / external USB drive
 #   sftp:user@nas:/backups        another machine over SSH
-#   b2:your-bucket:homeserver     Backblaze B2
 #   s3:s3.region.amazonaws.com/your-bucket
-RESTIC_REPO=/mnt/usb/restic
+RESTIC_REPO=/mnt/restic
 
 # restic retention policy, applied by `hsctl backup run` and `hsctl backup forget`.
 RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
@@ -19,3 +18,14 @@ RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
 # disk when an external HDD isn't mounted. Set it to the mountpoint your repo lives on; leave
 # unset to disable. Set/clear it via:  hsctl backup config --require-mount /mnt/restic
 # REQUIRE_MOUNT=/mnt/restic
+
+# Optional restic version pin, recorded by:  hsctl backup config --pin-restic
+# `hsctl backup verify` FAILS if the installed restic differs from this, so a system upgrade
+# that swaps restic out is caught instead of silently changing your backup tool.
+# RESTIC_VERSION=0.16.4
+
+# Optional off-site replica — a second copy for fire/theft, not just disk failure.
+# `hsctl backup replicate` creates it on first run, then copies incrementally with the SAME
+# encryption password, and applies RETENTION to it too. Cloud backends (s3:) need their
+# credentials in .backup-env, one KEY=VALUE per line; local paths and sftp: don't.
+# REPLICA_REPO=sftp:user@nas:/backups

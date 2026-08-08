@@ -1,9 +1,47 @@
-# Homeserver
+<div align="center">
 
-A self-hosted stack for your home network — a password manager, cloud file storage, an
-ad-blocker, and a few web tools — managed by **`hsctl`**, a small command-line tool with a
-web dashboard. Everything runs in Docker on one always-on Linux machine and is reached over
-HTTPS at that machine's IP address. `HOST` below = your server's LAN IP (e.g. `192.168.0.150`).
+# 🏠 Homeserver
+
+**Your passwords, files and photos — on a machine you own, in a room you're standing in.**
+
+A self-hosted stack for a home network: a password manager, cloud storage, a network
+ad-blocker and a few web tools, all behind HTTPS. One Go binary — **`hsctl`** — sets it up,
+runs it, backs it up, and serves a web dashboard, so the people you share it with never have
+to touch a terminal.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/Rishikesh01/homeserver/actions/workflows/ci.yml/badge.svg)](https://github.com/Rishikesh01/homeserver/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/Rishikesh01/homeserver?label=release&sort=semver)](https://github.com/Rishikesh01/homeserver/tags)
+[![Go](https://img.shields.io/github/go-mod/go-version/Rishikesh01/homeserver?filename=hsctl%2Fgo.mod)](hsctl/go.mod)
+
+<img src="docs/screenshots/portal.png" alt="The homeserver dashboard — tiles for every app" width="820">
+
+</div>
+
+---
+
+## Why
+
+Most self-hosting guides leave you with a pile of `docker-compose.yml` files and no answer for
+the parts that actually matter: how does a family member get on it, is HTTPS real, and *does
+the backup actually restore?*
+
+This project answers those three:
+
+- **Everything is HTTPS, on your LAN, with no public domain.** Caddy runs a private CA and
+  issues real certificates for the server's IP. Install the root cert once per device and the
+  browser padlock is genuine — which is what makes the Bitwarden and Nextcloud mobile apps
+  agree to connect at all.
+- **Non-technical users get a dashboard, not a shell.** Tiles for each app, a rendered
+  setup guide they can follow themselves, and an admin area with system health, drives,
+  backups, a command center and a real terminal.
+- **The backups are tested, not hoped for.** `hsctl backup verify` runs a five-check drill —
+  including booting a real Vaultwarden image and proving a byte-identical SQLite round-trip,
+  plus a WAL-loss regression test — against throwaway volumes, never your live data.
+
+---
+
+## What you get
 
 | Tile | What it is | Folder | URL |
 |------|-----------|--------|-----|
@@ -16,35 +54,38 @@ HTTPS at that machine's IP address. `HOST` below = your server's LAN IP (e.g. `1
 | 🖼️ Image tool | Resize / compress-to-KB / convert (in your browser) | `imagetools/` | https://HOST:8448 |
 | Caddy | The HTTPS front door — one cert per app | `caddy/` | — |
 
-The dashboard at **https://HOST** is the home page; it's built from `services.json`, so
-adding or removing an app updates it automatically.
+`HOST` = your server's LAN IP. The dashboard is built from
+[`services.json`](services.json), so adding or removing an app updates it automatically.
+
+<details>
+<summary><b>📸 More screenshots</b> — admin, command center, backups, drives, terminal, setup guide</summary>
+
+<br>
+
+| | |
+|---|---|
+| **Admin** — CPU/RAM/disk, SMART health, backup freshness, container control | **Command Center** — every `hsctl` command as an explained card |
+| <img src="docs/screenshots/admin.png" alt="Admin dashboard"> | <img src="docs/screenshots/commands.png" alt="Command Center"> |
+| **Backups** — destination, retention, off-site replica, snapshots | **Drives** — attached disks, one-click mount for backups |
+| <img src="docs/screenshots/backups.png" alt="Backups page"> | <img src="docs/screenshots/drives.png" alt="Drives page"> |
+| **Terminal** — a real shell on the server, admin-gated | **Setup guide** — the onboarding page you hand to a new user |
+| <img src="docs/screenshots/terminal.png" alt="Terminal"> | <img src="docs/screenshots/setup-guide.png" alt="Setup guide"> |
+
+</details>
 
 ---
 
-## Prerequisites
+## Quick start
 
-You need, on the machine that will be the server:
-
-1. **A Linux machine that stays on** (a spare PC, mini-PC, or NUC). These steps assume
-   Ubuntu/Debian; adjust package commands for other distros.
-2. **A user account with `sudo`.**
-3. **Docker Engine + Docker Compose v2:**
-   ```bash
-   curl -fsSL https://get.docker.com | sh
-   docker --version && docker compose version    # both should print a version
-   ```
-4. **Go** (to build `hsctl` once). Either `sudo apt install golang-go`, or download from
-   <https://go.dev/dl/> and unpack into `~/sdk/go` (then use `~/sdk/go/bin/go`).
-5. **A fixed LAN IP for the server.** In your router, give the server a **DHCP reservation**
-   (a.k.a. static lease) so its IP never changes. Note that IP — it's `HOST` everywhere below.
-
----
-
-## Setup — step by step
+**You'll need:** a Linux machine that stays on (Ubuntu/Debian assumed) · a user with `sudo` ·
+**Docker Engine + Compose v2** (`curl -fsSL https://get.docker.com | sh`) · **Go** to build
+`hsctl` once (see [`hsctl/go.mod`](hsctl/go.mod) for the version) · a **fixed LAN IP** for the
+server (a DHCP reservation in your router). Optional: `restic` for backups,
+`docker-buildx-plugin` for `hsctl updates`, `smartmontools` for disk health.
 
 ```bash
-# 1. Get the code onto the server, then enter the folder
-git clone <this-repo> homeserver && cd homeserver
+# 1. Get the code onto the server
+git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
 
 # 2. Build hsctl (version stamped from the git tag) and install it system-wide
 make -C hsctl install
@@ -52,7 +93,7 @@ make -C hsctl install
 # 3. Let your user run Docker without sudo (log out + back in afterwards)
 sudo usermod -aG docker $USER
 
-# 4. Configure (press Enter to accept each suggested default)
+# 4. Configure — press Enter to accept each autodetected default
 hsctl setup
 
 # 5. Start everything
@@ -62,323 +103,130 @@ hsctl up
 hsctl install
 ```
 
-**What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, and the dashboard
-port — all pre-filled with sensible autodetected values, so you can usually just press Enter
-through it. (The apps themselves aren't published on the LAN — Caddy reaches them over an
-internal network — so there are no per-app ports to set.) It writes the configuration to
-`setup.conf` and generates each service's secrets.
+Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
+certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
+per-OS steps live in [ONBOARDING.md](ONBOARDING.md), which the dashboard also serves at
+`https://HOST/help` so you can just send someone the link.
 
-**Your generated logins** are printed once at the end of `setup`. You can see them again
-anytime — `hsctl secrets show` reads them straight from the `.env` files:
+Full walkthrough: **[docs/setup.md](docs/setup.md)**.
 
-```bash
-hsctl secrets show     # Nextcloud / Pi-hole / dashboard passwords
-# ... save those into Vaultwarden ...
-# (The Vaultwarden /admin token is stored Argon2-hashed, so it can't be shown here —
-#  rotate it with `hsctl secrets rotate-vw-admin` if you forget it.)
+---
+
+## How it works
+
+```
+                    ┌─────────────────────────── your LAN ────────────────────────────┐
+                    │                                                                 │
+   phone / laptop ──┼──► :443  ┌───────┐                                              │
+    (trusts the     │   :8443… │ Caddy │──► homeserver-edge (internal docker network) │
+     private CA)    │          └───────┘        │                                     │
+                    │              │            ├─ vaultwarden  ├─ stirling-pdf       │
+                    │              │            ├─ nextcloud-app├─ it-tools           │
+                    │              │            ├─ pihole       └─ imagetools         │
+                    │              ▼                                                  │
+                    │      host.docker.internal ──► hsctl ui  (host process, root)    │
+                    └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **These secrets are plaintext on disk** (in each service's `.env` — the stack needs them
-> there). There's no extra copy to clean up, and **full-disk encryption is what protects
-> them at rest** — see [Security](#security).
+- **No app is published on the LAN.** Every service joins the external `homeserver-edge`
+  Docker network and Caddy reaches it by container name, so Caddy's HTTPS is the only way in
+  and nothing serves plaintext HTTP. The exceptions are deliberate: Pi-hole's `:53` (that's
+  the point of Pi-hole) and port `:80`, which serves the CA certificate download only.
+- **One HTTPS port per app** (`8443`–`8448`, dashboard on `443`), each with a `tls internal`
+  certificate carrying the server's IP in its SAN.
+- **The dashboard runs on the host, not in a container** — it manages Docker and offers a root
+  shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, not the LAN
+  (if the bridge can't be detected it warns and falls back to all interfaces). Caddy reaches
+  it through `host.docker.internal`.
+- **Start order** is fixed in [`hsctl/lifecycle.go`](hsctl/lifecycle.go): apps first, Caddy
+  last; `hsctl down` reverses it.
 
-After `hsctl up`, check everything is running with `hsctl status`.
+More on the security posture: **[docs/security.md](docs/security.md)**.
+
+---
+
+## `hsctl`
+
+```
+hsctl setup                       Configure and generate each service's .env (interactive)
+hsctl up | down | status          Start / stop / inspect the stack
+hsctl updates                     Check whether newer app images are available (read-only)
+hsctl get-ca                      Write caddy-root-ca.crt to install on devices
+hsctl install                     Run the dashboard as a systemd service (auto-start on boot)
+hsctl ui                          Serve the web dashboard
+hsctl secrets show                Print the generated logins (read from the .env files)
+hsctl secrets rotate-vw-admin     Generate a new Vaultwarden /admin token
+hsctl backup config | init | run  Configure / create / write to the encrypted repo
+hsctl backup list | forget        List snapshots / apply retention and prune
+hsctl backup verify               Self-test backup+restore on throwaway volumes
+hsctl backup replicate            Copy every snapshot to the off-site replica
+hsctl backup restore [snapshot]   Extract a snapshot (--into-volumes = one-command DR)
+```
+
+Every one of these is also a card in the dashboard's Command Center, with an explanation and a
+Run button. Full reference: **[hsctl/README.md](hsctl/README.md)**.
 
 ---
 
-## Accessing the apps — install the certificate (once per device)
+## Backups
 
-The server makes its own HTTPS certificate (there's no public domain). Each phone/laptop
-must **trust that certificate once**, or browsers show a warning and the Bitwarden/Nextcloud
-apps refuse to connect.
+Encrypted, deduplicated [restic](https://restic.net) snapshots — the destination only ever
+sees ciphertext. A snapshot holds a consistent Postgres dump, a consistent Vaultwarden SQLite
+fileset, every data volume, and your config. Vaultwarden pauses for about a second so its
+database is captured cleanly; nothing else goes offline.
 
-1. On the device, open **http://HOST/** in a browser and download **`root.crt`**.
-2. Install it as a *trusted certificate authority*. Step-by-step per OS (Android, iPhone,
-   Windows, Mac), plus the whole "add a family member" flow, is in
-   **[ONBOARDING.md](ONBOARDING.md)**.
+```bash
+hsctl backup config --repo /mnt/restic     # off the box: also sftp:, s3:
+sudo hsctl backup init && sudo hsctl backup run
+sudo hsctl backup verify                   # prove it restores — five checks, never touches live data
+sudo hsctl backup restore latest --into-volumes    # one-command disaster recovery
+```
 
-Then open **https://HOST** — that's your dashboard, linking to every app.
+`make -C hsctl install-services` adds a nightly timer. The repo is a **vanilla restic
+repository**, so you can recover from any machine with the `restic` binary and the password —
+no hsctl, no Docker, no this repo.
+
+Details: **[docs/backup-restore.md](docs/backup-restore.md)**.
 
 ---
+
+## Documentation
+
+| Doc | What's in it |
+|-----|--------------|
+| [docs/setup.md](docs/setup.md) | Prerequisites, install, certificates, day-to-day, Pi-hole DNS |
+| [docs/security.md](docs/security.md) | Threat model, hardening, where secrets live, rotating passwords |
+| [docs/backup-restore.md](docs/backup-restore.md) | Backups, the verify drill, off-site replica, disaster recovery |
+| [docs/configuration.md](docs/configuration.md) | Every configurable value, in one place |
+| [docs/adding-an-app.md](docs/adding-an-app.md) | Add your own service to the stack and dashboard |
+| [ONBOARDING.md](ONBOARDING.md) | The page you hand to a new person or device |
+| [hsctl/README.md](hsctl/README.md) | `hsctl` command reference and the web admin pages |
+| [sandbox/README.md](sandbox/README.md) | The throwaway test sandbox (try updates and restores safely) |
+
+---
+
+## Contributing
+
+Contributions are welcome. The short version:
+
+```bash
+make -C hsctl build     # build
+make -C hsctl vet       # go vet
+make -C hsctl test      # go test ./...
+make sandbox            # try changes in an isolated copy of the whole stack
+```
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the details, and
+[docs/adding-an-app.md](docs/adding-an-app.md) if you're adding a service.
 
 ## Security
 
-This stack stores your passwords and files, so treat the server like a safe.
+This is designed for a **LAN only** — don't port-forward it. The threat model and hardening
+checklist are in **[docs/security.md](docs/security.md)**.
 
-- **Encrypt the server's disk (most important).** The apps store data *unencrypted on disk*
-  — anyone who takes the drive can read your passwords and files. Use **full-disk encryption
-  (LUKS)**: the easiest way is to tick **"Encrypt the new installation"** when installing
-  Ubuntu. Without it, none of the rest matters if the machine is stolen.
-- **Keep it on your LAN only — do not expose it to the internet.** Don't port-forward any of
-  these ports on your router. The stack is designed for home-network access; there's no
-  remote access by design (a home box you can't guarantee is online shouldn't be a VPN
-  endpoint).
-- **Firewall (optional but nice).** If you run `ufw`, allow only what's needed:
-  ```bash
-  sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp
-  ```
-- **Protect the secret files.** `.env`, `.secrets.txt`, `.ui-password`, `.restic-password`
-  are all `chmod 600` and git-ignored — never commit them, and back up `.restic-password`
-  separately (see below). The **certificate authority's private key** lives in the
-  `caddy-data` volume; anyone with it could impersonate your sites, so it's backed up and
-  shouldn't leak.
-- **Use strong, unique passwords and turn on 2FA.** Especially the Vaultwarden master
-  password (nobody can reset it for you) and the Nextcloud/Pi-hole admin logins.
-- **Keep things updated.** All images are pinned to specific versions (reproducible). To
-  update one, bump the tag in that service's `docker-compose.yml`, then `cd <service> &&
-  docker compose pull && docker compose up -d`. Keep the OS patched too (`sudo apt update
-  && sudo apt upgrade`). Want to try a new image (or restic) **before** touching the live
-  box? Test it in a throwaway sandbox first — see [Testing changes safely](#testing-changes-safely-the-sandbox).
-- **Encrypt Nextcloud (optional).** Server-side encryption is off by default; enable it in
-  *Nextcloud → Admin → Settings → Security* if you want it on top of disk encryption.
+## License
 
----
+[MIT](LICENSE) © Rishikesh
 
-## Changing & rotating passwords
-
-After first setup it's good practice to set your real passwords *inside each app*. For the
-human logins, the value in `.env` is only used to bootstrap the account — once you change
-it in the app, the `.env` value is stale (and for Nextcloud you can blank it).
-
-- **Vaultwarden** — your **master password** isn't in `.env` at all; you set it when you
-  create your account and change it in the web vault (*Account settings → Master password*).
-  The only `.env` value is the `/admin` panel token (`VW_ADMIN_TOKEN`), which hsctl stores as
-  an irreversible **Argon2id hash** (never plaintext). Rotate it any time with
-  `hsctl secrets rotate-vw-admin` — it generates a new token, prints it once for you to save,
-  stores the hash, and recreates the container.
-- **Nextcloud** — `NC_ADMIN_PASSWORD` is used **only on first install** to create the admin
-  user. Change the password in the web UI (*Personal → Security*) or:
-  ```bash
-  docker compose -f nextcloud/docker-compose.yml exec -u www-data app php occ user:resetpassword admin
-  ```
-  After that the `.env` value does nothing — you can blank it.
-- **Pi-hole** — the admin password is re-applied from the env on each start, so edit
-  `PIHOLE_PASSWORD` in `pihole/.env` then `cd pihole && docker compose up -d --force-recreate`.
-- **Postgres / Redis** (the machine passwords) — these are never typed by a human, so leave
-  them as the long random values `hsctl` generated. Rotating them is a **coordinated** change
-  (and note `POSTGRES_PASSWORD` only sets the password on the *first* DB init — changing it in
-  `.env` later does nothing). To actually rotate the DB password:
-  ```bash
-  docker exec -it nextcloud-db psql -U nextcloud -c "ALTER USER nextcloud PASSWORD 'NEW';"
-  # then set the same value in nextcloud/.env (POSTGRES_PASSWORD) and recreate the app:
-  cd nextcloud && docker compose up -d --force-recreate
-  ```
-
-See your current generated logins anytime with `hsctl secrets show`.
-
----
-
-## Backup & restore
-
-Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
-ciphertext) and cover a **consistent Postgres dump + a consistent Vaultwarden DB snapshot +
-every data volume + your config**. Vaultwarden uses SQLite (WAL mode), so its DB can't be
-copied safely while live — `backup run` briefly stops Vaultwarden (~1s) to copy its **SQLite
-fileset (`db.sqlite3` + `-wal` + `-shm`)** into `backups/staging/vaultwarden/`, then restarts it;
-its attachments and keys are backed up **live** with the volume. So the stop stays ~1s no matter
-how large attachments grow. (The `-wal` is essential — `docker stop` may not checkpoint it, and
-dropping it would lose recent writes.) Nextcloud is never stopped (its DB is dumped online with
-`pg_dump`).
-
-### Choose a destination — off the server
-
-A backup on the same disk only protects against mistakes, not disk failure or theft. Point
-it somewhere **off the box**:
-
-| Destination | `--repo` value |
-|-------------|----------------|
-| External USB drive | `/mnt/usb/restic` |
-| Another machine (NAS, Pi) over SSH | `sftp:user@nas:/backups` |
-| Cloud (Backblaze B2) | `b2:your-bucket:homeserver` |
-| Cloud (S3-compatible) | `s3:s3.region.amazonaws.com/your-bucket` |
-
-### Set it up and run
-
-```bash
-sudo apt install -y restic                       # one-time (tested with 0.16.x)
-sudo apt-mark hold restic                        # pin it — apt upgrade won't change it
-                                                 #   (undo later with: sudo apt-mark unhold restic)
-hsctl backup config --repo /mnt/usb/restic       # set the destination
-hsctl backup config --password 'StrongPassword'  # OPTIONAL: set your own repo password
-                                                 #   (omit and one is auto-generated)
-sudo hsctl backup init                           # create the encrypted repo (first time only)
-sudo hsctl backup run                             # take a snapshot
-sudo hsctl backup list                            # see snapshots (repo is root-owned, so sudo)
-```
-
-The repo password lives in **`.restic-password`** (set via `--password`, or auto-generated
-on first init). Full details — including changing it later and restoring with plain restic
-(no hsctl) — are in **[CONFIG.md → Backups](CONFIG.md#backups)**.
-
-> **Back up `.restic-password` somewhere else** (e.g. write it down, or store it in
-> Vaultwarden). It encrypts your backups — **without it, the backups are unrecoverable.**
-
-`backup run` needs `sudo` because it reads the Docker volume files (owned by root).
-
-### Check it actually works
-
-```bash
-sudo hsctl backup config --pin-restic   # once: record the known-good restic version
-sudo hsctl backup verify                 # aliases: selftest, test
-```
-
-A self-contained drill that **never touches your live stack or repo** — it spins up throwaway
-Docker volumes/containers and an isolated temp repo. It runs five checks:
-
-1. **restic round-trip** — token into a volume → backup → wipe → restore → read it back.
-2. **`restore --into-volumes` put-back** — seeds a throwaway volume with stale data, runs the
-   real put-back primitive, and confirms the stale data is **gone** and the snapshot's data is
-   in place (so the destructive one-command restore can't silently leave old data behind).
-3. **Vaultwarden (passwords)** — boots the real Vaultwarden image so it writes its SQLite DB,
-   seeds a fake attachment, then runs the real path: stages the DB **fileset**, backs the volume up
-   **live excluding the DB**, restores + overlays the fileset, confirms the DB is **byte-identical**,
-   the **attachment survived** the live-volume path, and a fresh Vaultwarden **boots** and stays up.
-4. **Vaultwarden WAL** — builds a SQLite DB with a row left **uncheckpointed in `-wal`** and proves
-   the main file alone loses it but the `db.sqlite3` + `-wal` + `-shm` fileset preserves it
-   (regression test for a real data-loss bug).
-5. **Nextcloud database** — seeds a row in a throwaway Postgres, dumps it with the same
-   `pg_dump` the backup uses, pushes it through restic, then imports into a **brand-new**
-   Postgres and checks the row is back.
-
-It also enforces the **restic version pin**: `verify` fails if the installed restic differs
-from the one recorded by `--pin-restic`, so a system upgrade that swaps restic out is caught
-instead of silently changing your backup tool. Safe to run anytime.
-
-To instead **see your real data come back** — restore an actual snapshot and log into the
-apps — without risking the live stack, use the [sandbox](#testing-changes-safely-the-sandbox)
-(`make sandbox-restore`).
-
-### Schedule it nightly
-
-```bash
-make -C hsctl install-services    # installs the UI service + nightly backup timer (fills in __DIR__ for you)
-```
-
-### Restore (disaster recovery)
-
-**One command** restores the whole stack: it stops everything, repopulates every volume
-from the snapshot — including Vaultwarden, whose data comes from its consistent staged copy
-(not a volume dir) — and brings the stack back up.
-
-```bash
-sudo hsctl backup restore latest --into-volumes   # add --yes to skip the confirm prompt
-```
-
-It's destructive (it **wipes** each volume before restoring), so it confirms first, and it
-refuses to run unless the backup disk is mounted (the `REQUIRE_MOUNT` guard). When it
-finishes, check `hsctl status` and log into each app to confirm your data is back.
-
-<details>
-<summary>Manual restore — if you'd rather inspect the files first or restore selectively</summary>
-
-```bash
-# 1. Extract a snapshot to a folder (latest, or a specific id from `backup list`)
-sudo hsctl backup restore latest --target /tmp/restore
-
-# 2. Stop the stack
-hsctl down
-
-# 3. Put each volume's files back (the restored tree mirrors the original paths).
-for d in /tmp/restore/var/lib/docker/volumes/*/; do
-  v=$(basename "$d")
-  sudo cp -a "$d/_data/." "/var/lib/docker/volumes/$v/_data/"
-done
-
-# 3b. IMPORTANT: step 3 restored Vaultwarden's volume (attachments/keys) but NOT its db.sqlite3
-#     (it's excluded from the volume backup). Overlay the consistent DB from staging, or you
-#     lose your passwords:
-sudo cp -a /tmp/restore/<repo>/backups/staging/vaultwarden/db.sqlite3* \
-           /var/lib/docker/volumes/vaultwarden_vw-data/_data/   # <repo> = abs path, e.g. /home/you/homeserver
-
-# 4. Start everything
-hsctl up
-```
-</details>
-
-> The snapshot also holds a consistent SQL dump at `backups/staging/nextcloud-db.sql`. You
-> only need it as a **fallback**: if the restored DB volume won't start (e.g. it was captured
-> mid-write), wipe `nextcloud_db-data`, bring up a fresh `nextcloud-db`, and import the dump
-> with `docker exec -i nextcloud-db psql -U nextcloud -d nextcloud < …/nextcloud-db.sql`.
-> Don't do both — importing onto an already-restored DB volume just errors on existing tables.
-
-On a brand-new machine, restore the config files too (the restored `<repo>/*/.env` and
-`<repo>/setup.conf`) before `hsctl up`. The restic repo password must be the same one you
-saved.
-
----
-
-## Testing changes safely (the sandbox)
-
-Before you change the live box — a new service image, a newer restic, an `hsctl` change, or
-just to **see a backup actually restore** — try it in a throwaway sandbox. It runs a complete
-copy of the stack inside its **own nested Docker daemon** (docker-in-docker), so nothing it
-does can reach your real Docker, containers, or volumes. Stop it and it's gone.
-
-```bash
-make sandbox            # build your current hsctl + boot the isolated sandbox
-                        #   -> http://localhost:18088/admin   (admin / test)
-make sandbox-restore    # restore your REAL backup into it (repo read-only), bring the stack up
-make sandbox-down       # stop + clean up
-```
-
-- **Try an image update:** bump a tag in `sandbox/images.env`, `make sandbox`, click
-  *Commands → Start all services*, log in and look around. Only then change the live
-  `docker-compose.yml`.
-- **Try a restic upgrade:** bump the base tag in `sandbox/Dockerfile`, `make sandbox`, then
-  `make sandbox-restore` to confirm it still restores your repo.
-- **See your data restored:** `make sandbox REPO=/mnt/backup/restic && make sandbox-restore`,
-  then open the apps via the sandbox. The real repo is mounted **read-only** (`restic
-  --no-lock`) — your live backup is never written.
-
-This is the *human* companion to `hsctl backup verify` (the automated pass/fail self-test).
-Full details: **[sandbox/README.md](sandbox/README.md)**.
-
----
-
-## Pi-hole / ad-blocking
-
-Pi-hole is a network-wide ad-blocker. To ad-block **every** device automatically, point your
-router's DHCP **Primary DNS** at the server's IP (leave Secondary blank) and keep the server's
-DHCP reservation.
-
-> **Tradeoff:** Pi-hole then becomes the only DNS on the LAN — if the server is down, the LAN
-> loses DNS until you clear that field (~30-second revert). Don't add a public "secondary"
-> (devices query both at random, so blocking leaks). Or set it per device, or skip it.
-
-**Port 53:** if another resolver already holds it (`systemd-resolved`'s loopback stub, or
-libvirt/LXC dnsmasq), `hsctl setup` binds Pi-hole to the LAN IP so they don't clash. Check
-with `sudo ss -tulpn | grep ':53 '`. If the server is on **WiFi**, disable "client/AP
-isolation" on the router or other devices can't reach it.
-
----
-
-## Day-to-day
-
-```bash
-hsctl up | down | status        # start / stop / show the stack
-hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
-hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
-hsctl backup run | list | restore         # restore latest --into-volumes = one-command DR
-```
-
-The app containers restart automatically on reboot (`restart: unless-stopped`); `hsctl
-install` does the same for the dashboard.
-
-## Adding an app to the dashboard
-
-1. Create `myapp/docker-compose.yml` with `container_name: myapp` and `networks: [edge]`
-   (declare the external `homeserver-edge` network the same way the other services do). Do
-   **not** publish its HTTP port — Caddy reaches it by container name over that network, so it
-   never touches the LAN.
-2. In `caddy/Caddyfile` add an HTTPS block on a new port; add its upstream default
-   (`MYAPP_UPSTREAM: ${MYAPP_UPSTREAM:-myapp:80}`) to `caddy/docker-compose.yml`, and the new
-   `*_HTTPS` port to `caddy/.env` (and `hsctl/env.go`, so a fresh `setup` writes it).
-3. Add a tile to **`services.json`** with that `https_port`.
-4. `hsctl up`. The tile appears on the dashboard.
-
-## More docs
-
-- **[CONFIG.md](CONFIG.md)** — every configurable value, in one place (incl. the restic password).
-- **[hsctl/README.md](hsctl/README.md)** — the `hsctl` command reference + the web admin pages.
-- **[sandbox/README.md](sandbox/README.md)** — the `make` test sandbox (try updates / restores safely).
-- **[ONBOARDING.md](ONBOARDING.md)** — per-device setup for family members.
+The applications this stack runs (Vaultwarden, Nextcloud, Pi-hole, Stirling-PDF, IT-Tools,
+Caddy) are separate projects under their own licenses.
