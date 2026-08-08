@@ -386,13 +386,14 @@ type adminData struct {
 	DockerErr  string
 	Msg        string
 	Sys        sysStats
+	Backup     backupFreshness
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg")}
+	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo)}
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
-	go func() { sysCh <- gatherSysStats() }()
+	go func() { sysCh <- gatherSysStats(s.repo) }()
 	st, err := s.status()
 	if err != nil {
 		uiLog.Warn("docker unreachable", "err", err)
@@ -585,6 +586,7 @@ func (s *uiServer) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 
 type backupData struct {
 	Repo, Retention, Snapshots, Msg string
+	Replica                         string // off-site replica repo, "" if unset
 	ResticOK                        bool
 	ResticVersion                   string
 	GuardPath                       string // REQUIRE_MOUNT path, "" if unset
@@ -594,8 +596,8 @@ type backupData struct {
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
-	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, ResticOK: resticInstalled(),
-		Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount}
+	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
+		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount}
 	if cfg.RequireMount != "" {
 		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk actually mounted now?
 	}
@@ -649,6 +651,9 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
 		cfg.Retention = v
+	}
+	if v := strings.TrimSpace(r.FormValue("replica")); v != "" {
+		cfg.ReplicaRepo = v // clear it via: hsctl backup config --replica ""
 	}
 	if err := cfg.save(s.repo); err != nil {
 		msg = "Save failed: " + err.Error()

@@ -47,6 +47,9 @@ var webCmds = []webCmd{
 	{Slug: "up", Title: "Start all services", Category: "Stack",
 		Desc: "Start every app and tool (Vaultwarden, Nextcloud, Pi-hole, …) and then Caddy. Safe to run anytime; already-running services are left as they are.",
 		Args: []string{"up"}, Danger: dangerNone},
+	{Slug: "updates", Title: "Check for app updates", Category: "Stack",
+		Desc: "Compare every app's installed image against its registry — see which apps have a newer version available. Read-only; nothing is downloaded or restarted.",
+		Args: []string{"updates"}, Danger: dangerNone, Slow: true},
 	{Slug: "status", Title: "Show status", Category: "Stack",
 		Desc: "List each container and whether it's running. Read-only.",
 		Args: []string{"status"}, Danger: dangerNone},
@@ -89,6 +92,9 @@ var webCmds = []webCmd{
 	{Slug: "backup-verify", Title: "Self-test backups", Category: "Backups",
 		Desc: "Prove backups actually work end-to-end: back up and restore throwaway data (incl. a real Vaultwarden + Postgres round-trip). Never touches your live data. Takes a minute or two.",
 		Args: []string{"backup", "verify"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
+	{Slug: "backup-replicate", Title: "Copy backups off-site", Category: "Backups",
+		Desc: "Copy every snapshot to the off-site replica (set it on the Backups page). Incremental and encrypted with the same password; first run creates the replica repo. Needs the primary repo reachable.",
+		Args: []string{"backup", "replicate"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
 
 	// ---- Secrets -------------------------------------------------------------
 	{Slug: "secrets-show", Title: "Show logins", Category: "Secrets",

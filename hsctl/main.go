@@ -65,6 +65,9 @@ func rootCmd() *cobra.Command {
 	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: runUI}
 	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, backupCmd(), secretsCmd())
+	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only)", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return cmdUpdates() }}
+
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, backupCmd(), secretsCmd())
 	return root
 }

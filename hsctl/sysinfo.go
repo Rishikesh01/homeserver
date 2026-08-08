@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,17 +19,41 @@ import (
 // sysStats is the display-ready system section of the admin page. Zero-value fields
 // mean "couldn't read it" and the template hides them.
 type sysStats struct {
-	CPUPct   int  // busy % across all cores over the sample window
-	CPUOK    bool // CPUPct is real (0% is a valid reading, so a flag, not a sentinel)
-	Cores    int
-	Load1    string // 1-minute load average, "" if unreadable
-	MemUsed  string // human GiB
-	MemTotal string
-	MemPct   int
-	MemOK    bool
-	Disks    []diskHealth
-	DisksErr string // listing disks failed entirely
-	SmartMsg string // hint when smartctl isn't installed
+	CPUPct     int  // busy % across all cores over the sample window
+	CPUOK      bool // CPUPct is real (0% is a valid reading, so a flag, not a sentinel)
+	Cores      int
+	Load1      string // 1-minute load average, "" if unreadable
+	MemUsed    string // human GiB
+	MemTotal   string
+	MemPct     int
+	MemOK      bool
+	Disks      []diskHealth
+	DisksErr   string // listing disks failed entirely
+	SmartMsg   string // hint when smartctl isn't installed
+	RootDisk   diskSpace
+	BackupDisk diskSpace // the REQUIRE_MOUNT disk, when configured and mounted
+}
+
+// diskSpace is one filesystem's usage for the UI. OK=false hides the card.
+type diskSpace struct {
+	Used, Total string // human GiB
+	Pct         int
+	OK          bool
+}
+
+// statDiskSpace reads a filesystem's size and usage via statfs. Usage counts the
+// root-reserved blocks as used (Blocks-Bavail), matching what `df` reports.
+func statDiskSpace(path string) diskSpace {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil || st.Blocks == 0 {
+		return diskSpace{}
+	}
+	bs := uint64(st.Bsize)
+	total, avail := st.Blocks*bs, st.Bavail*bs
+	return diskSpace{
+		Used: humanGiB((total - avail) / 1024), Total: humanGiB(total / 1024),
+		Pct: int((total - avail) * 100 / total), OK: true,
+	}
 }
 
 // cpuSample is one reading of the aggregate "cpu" line of /proc/stat.
@@ -159,10 +184,15 @@ func diskHealthList() (rows []diskHealth, smartMsg, listErr string) {
 }
 
 // gatherSysStats collects the whole system section. It blocks for the CPU sample
-// window (~300ms), so callers run it concurrently with their other work.
-func gatherSysStats() sysStats {
+// window (~300ms), so callers run it concurrently with their other work. repo locates
+// the backup config, so the backup disk's space shows alongside the system disk's.
+func gatherSysStats(repo string) sysStats {
 	var st sysStats
 	st.Cores = runtime.NumCPU()
+	st.RootDisk = statDiskSpace("/")
+	if cfg := loadBackupCfg(repo); cfg.RequireMount != "" && requireBackupMount(cfg) == nil {
+		st.BackupDisk = statDiskSpace(cfg.RequireMount)
+	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		if f := strings.Fields(string(b)); len(f) > 0 {
 			st.Load1 = f[0]

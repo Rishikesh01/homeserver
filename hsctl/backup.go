@@ -73,7 +73,14 @@ type backupCfg struct {
 	Retention     string
 	ResticVersion string // pinned restic version; `backup verify` fails if the installed one differs
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
+	ReplicaRepo   string // optional second restic repo (off-site) that `backup replicate` copies to
 }
+
+// backupEnvFile holds cloud-backend credentials restic needs for remote repos —
+// B2_ACCOUNT_ID / B2_ACCOUNT_KEY for Backblaze, AWS_ACCESS_KEY_ID / ... for S3 —
+// one KEY=VALUE per line. Optional: local and SFTP destinations don't need it.
+// Lives next to .restic-password, 0600, and is gitignored like it.
+const backupEnvFile = ".backup-env"
 
 // requireBackupMount guards against the classic external-disk failure: when the backup
 // HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
@@ -119,6 +126,7 @@ func loadBackupCfg(repo string) backupCfg {
 		}
 		c.ResticVersion = kv["RESTIC_VERSION"] // empty = no version pinned yet
 		c.RequireMount = kv["REQUIRE_MOUNT"]   // empty = no mount guard (e.g. default repo on root disk)
+		c.ReplicaRepo = kv["REPLICA_REPO"]     // empty = no off-site replica configured
 	}
 	return c
 }
@@ -137,6 +145,11 @@ func (c backupCfg) save(repo string) error {
 			"# so a backup never lands on the root disk when the external HDD isn't mounted.\n" +
 			"REQUIRE_MOUNT=" + c.RequireMount + "\n"
 	}
+	if c.ReplicaRepo != "" {
+		s += "# Off-site replica: `backup replicate` copies every snapshot here (same encryption\n" +
+			"# password). Cloud credentials go in " + backupEnvFile + " (KEY=VALUE per line).\n" +
+			"REPLICA_REPO=" + c.ReplicaRepo + "\n"
+	}
 	return writeFile0600(filepath.Join(repo, backupConfFile), s)
 }
 
@@ -151,6 +164,7 @@ func backupCmd() *cobra.Command {
 	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
+	cfgCmd.Flags().String("replica", "", "off-site replica repository for `backup replicate` (empty string disables)")
 
 	// withRestic wraps a run that needs restic + a loaded config.
 	withRestic := func(run func(repo string, cfg backupCfg) error) func(*cobra.Command, []string) error {
@@ -205,7 +219,10 @@ func backupCmd() *cobra.Command {
 	verifyCmd.Flags().String("image", "", "container image for the test fixture (default: a local image)")
 	verifyCmd.Flags().Bool("keep", false, "keep the test volume + temp repo afterwards (for debugging)")
 
-	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, forgetCmd)
+	replicateCmd := &cobra.Command{Use: "replicate", Short: "Copy all snapshots to the off-site replica repo",
+		Args: cobra.NoArgs, RunE: withRestic(runBackupReplicate)}
+
+	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, forgetCmd, replicateCmd)
 	return b
 }
 
@@ -224,6 +241,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	}
 	if f.Changed("require-mount") {
 		cfg.RequireMount, _ = f.GetString("require-mount") // empty string clears the guard
+	}
+	if f.Changed("replica") {
+		cfg.ReplicaRepo, _ = f.GetString("replica") // empty string clears the replica
 	}
 	if pw, _ := f.GetString("password"); pw != "" {
 		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
@@ -303,10 +323,115 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
 		return err
 	}
+	// The snapshot is safely written — record that now, so a later prune failure doesn't
+	// make the dashboard claim the backup itself is overdue.
+	stampLastBackup(repo)
 	if cfg.Retention != "" {
 		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
 	}
 	return nil
+}
+
+// runBackupReplicate copies every snapshot the off-site replica doesn't have yet from
+// the primary repo (`restic copy` — incremental and deduplicated), creating the replica
+// repo on first run, then applies the same retention there. Combined with the primary
+// this gives 3-2-1 coverage: the replica survives fire/theft/disk death at home.
+func runBackupReplicate(repo string, cfg backupCfg) error {
+	if cfg.ReplicaRepo == "" {
+		return fmt.Errorf("no off-site replica configured. Set one first:\n"+
+			"  hsctl backup config --replica b2:bucket:homeserver   (or sftp:user@host:/path, s3:...)\n"+
+			"Cloud credentials (e.g. B2_ACCOUNT_ID / B2_ACCOUNT_KEY) go in %s, one KEY=VALUE per line.",
+			backupEnvFile)
+	}
+	pass := filepath.Join(repo, resticPassFile)
+	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe.
+	if err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
+		fmt.Println("replica repo not initialized yet — creating it...")
+		if err := resticAt(repo, cfg.ReplicaRepo, "init"); err != nil {
+			return fmt.Errorf("initialize replica %s: %w", cfg.ReplicaRepo, err)
+		}
+	}
+	fmt.Printf("copying snapshots to the replica: %s\n", cfg.ReplicaRepo)
+	if err := resticAt(repo, cfg.ReplicaRepo, "copy",
+		"--from-repo", cfg.Repo, "--from-password-file", pass); err != nil {
+		return fmt.Errorf("copy to replica: %w", err)
+	}
+	if cfg.Retention != "" {
+		return resticAt(repo, cfg.ReplicaRepo,
+			append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+	}
+	return nil
+}
+
+// resticQuiet runs restic against the given repository, discarding output — for probes
+// whose failure is expected (does the replica exist yet?).
+func resticQuiet(repo, repository string, args ...string) error {
+	c := exec.Command("restic", args...)
+	c.Env = backupEnv(repo, repository)
+	return c.Run()
+}
+
+// lastBackupFile records (relative to the repo) when the last successful backup snapshot
+// was written. The dashboard reads it to warn about staleness without opening the restic
+// repo — which may live on a spun-down or unmounted HDD — on every page load. Every
+// backup goes through backupRun (CLI, web, timer), so the stamp tracks them all.
+const lastBackupFile = "backups/.last-backup"
+
+func stampLastBackup(repo string) {
+	path := filepath.Join(repo, lastBackupFile)
+	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	_ = writeFile0644(path, time.Now().Format(time.RFC3339)+"\n")
+}
+
+// backupFreshness is the dashboard's view of how recent the last backup is.
+type backupFreshness struct {
+	Known bool   // a stamp exists
+	Age   string // "3 days ago"
+	Stale bool   // older than backupStaleAfter — time to warn
+}
+
+// backupStaleAfter is when the dashboard starts flagging the backup as overdue. A week
+// matches the default retention's daily-keep window.
+const backupStaleAfter = 7 * 24 * time.Hour
+
+func backupFreshnessFor(repo string) backupFreshness {
+	t, ok := lastBackupTime(repo)
+	return freshness(t, ok, time.Now())
+}
+
+// freshness is the pure core of backupFreshnessFor, split out for tests.
+func freshness(t time.Time, known bool, now time.Time) backupFreshness {
+	if !known {
+		return backupFreshness{}
+	}
+	d := now.Sub(t)
+	return backupFreshness{Known: true, Age: humanAge(d), Stale: d > backupStaleAfter}
+}
+
+func humanAge(d time.Duration) string {
+	switch h := int(d.Hours()); {
+	case h < 1:
+		return "less than an hour ago"
+	case h == 1:
+		return "1 hour ago"
+	case h < 48:
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		return fmt.Sprintf("%d days ago", h/24)
+	}
+}
+
+// lastBackupTime returns the stamp's time, or ok=false when no backup was recorded yet.
+func lastBackupTime(repo string) (time.Time, bool) {
+	b, err := os.ReadFile(filepath.Join(repo, lastBackupFile))
+	if err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // runBackupRestore extracts a snapshot to a directory (default <repo>/restore). It does
@@ -1185,9 +1310,27 @@ func resticEnv(repository, passFile string) []string {
 		"RESTIC_PASSWORD_FILE="+passFile)
 }
 
+// backupEnv is restic's environment for the stack's repos: repository + password file,
+// plus any cloud-backend credentials from .backup-env. The primary and the replica use
+// the SAME password file, so one .restic-password restores from either.
+func backupEnv(repo, repository string) []string {
+	env := resticEnv(repository, filepath.Join(repo, resticPassFile))
+	if kv, err := readKV(filepath.Join(repo, backupEnvFile)); err == nil {
+		for k, v := range kv {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
 func resticRun(repo string, cfg backupCfg, args ...string) error {
+	return resticAt(repo, cfg.Repo, args...)
+}
+
+// resticAt is resticRun pointed at an arbitrary repository (used for the replica).
+func resticAt(repo, repository string, args ...string) error {
 	c := exec.Command("restic", args...)
-	c.Env = resticEnv(cfg.Repo, filepath.Join(repo, resticPassFile))
+	c.Env = backupEnv(repo, repository)
 	c.Stdout, c.Stderr, c.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return c.Run()
 }
@@ -1197,7 +1340,7 @@ func resticInstalled() bool { _, err := exec.LookPath("restic"); return err == n
 // resticOutput captures combined output (for the UI to display snapshots).
 func resticOutput(repo string, cfg backupCfg, args ...string) (string, error) {
 	c := exec.Command("restic", args...)
-	c.Env = resticEnv(cfg.Repo, filepath.Join(repo, resticPassFile))
+	c.Env = backupEnv(repo, cfg.Repo)
 	out, err := c.CombinedOutput()
 	return string(out), err
 }
