@@ -90,18 +90,16 @@ git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
 # 2. Build hsctl (version stamped from the git tag) and install it system-wide
 make -C hsctl install
 
-# 3. Let your user run Docker without sudo (log out + back in afterwards)
-sudo usermod -aG docker $USER
-
-# 4. Configure — press Enter to accept each autodetected default
-hsctl setup
-
-# 5. Start everything
-hsctl up
-
-# 6. Keep the dashboard running + auto-start it on every boot
+# 3. Start the dashboard as a service — it prints the URL and your admin password
 hsctl install
 ```
+
+That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS front door)
+and the dashboard, then tells you to open **`https://HOST/`** from any device on your
+network. The first visit lands in a **setup wizard**: confirm the autodetected IP and
+timezone, it generates every app's logins (shown once — save them), press **Start
+everything**, and it walks you through installing the certificate. Prefer the terminal? The
+same steps are `hsctl setup` → `hsctl up` ([docs/setup.md](docs/setup.md)).
 
 Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
 certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
@@ -152,7 +150,7 @@ hsctl setup                       Configure and generate each service's .env (in
 hsctl up | down | status          Start / stop / inspect the stack
 hsctl updates                     Check whether newer app images are available (read-only)
 hsctl get-ca                      Write caddy-root-ca.crt to install on devices
-hsctl install                     Run the dashboard as a systemd service (auto-start on boot)
+hsctl install                     Dashboard as a systemd service (+ first-install bootstrap → setup wizard)
 hsctl ui                          Serve the web dashboard
 hsctl secrets show                Print the generated logins (read from the .env files)
 hsctl secrets rotate-vw-admin     Generate a new Vaultwarden /admin token

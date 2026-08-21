@@ -5,20 +5,66 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 const uiUnit = "/etc/systemd/system/hsctl-ui.service"
 
-// cmdInstall installs + enables the systemd service for the dashboard, so it runs
-// persistently and auto-starts on boot (the containers already do, via
-// restart: unless-stopped). Uses sudo for the /etc/systemd writes.
+// cmdInstall is the one terminal command a first install needs after building hsctl. It
+// leaves the box in a state where EVERYTHING else happens in the browser:
+//
+//   - saves setup.conf from autodetected values (so the dashboard port is fixed before the
+//     service starts — Caddy must point at the same port),
+//   - creates the dashboard admin password (as the invoking user, so it's printable here),
+//   - on a first install, brings up Caddy alone so https://<ip>/ already answers — the
+//     dashboard's setup wizard then configures + starts the rest,
+//   - installs + enables the systemd service for the dashboard, so it runs persistently and
+//     auto-starts on boot (the containers already do, via restart: unless-stopped).
+//
+// Safe to re-run on an existing install: it only (re)installs the service. Uses sudo for the
+// /etc/systemd writes.
 func cmdInstall() error {
-	repo := repoDir()
+	repo, err := requireRepoDir()
+	if err != nil {
+		return err
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("can't locate hsctl binary: %w", err)
 	}
+	if err := dockerCmd(repo, "info").Run(); err != nil {
+		return fmt.Errorf("Docker isn't reachable (is it installed and running? `curl -fsSL https://get.docker.com | sh`)")
+	}
+
+	c := LoadConfig(repo)
+	c.Normalize()
+	if !fileExists(filepath.Join(repo, confFile)) {
+		if err := c.Save(repo); err != nil {
+			return err
+		}
+		fmt.Printf("Saved %s (autodetected: IP %s, timezone %s) — you can change these in the dashboard.\n", confFile, c.ServerIP, c.TZ)
+	}
+	pass := uiPassword(repo)
+
+	firstRun := len(missingEnv()) > 0
+	if firstRun {
+		// Caddy only needs its own .env (no secrets) — start it now so the dashboard is
+		// reachable over HTTPS from any device on the LAN, before the apps exist.
+		if !fileExists(filepath.Join(repo, "caddy/.env")) {
+			if err := writeFile0600(filepath.Join(repo, "caddy/.env"), c.caddyEnv()); err != nil {
+				return err
+			}
+		}
+		if err := ensureEdgeNetwork(); err != nil {
+			return err
+		}
+		fmt.Println("== starting Caddy (the HTTPS front door) ==")
+		if err := dockerRun(filepath.Join(repo, "caddy"), "compose", "up", "-d"); err != nil {
+			return fmt.Errorf("caddy: %w", err)
+		}
+	}
+
 	unit := fmt.Sprintf(`[Unit]
 Description=hsctl homeserver web UI (dashboard)
 After=docker.service
@@ -48,8 +94,18 @@ WantedBy=multi-user.target
 			return fmt.Errorf("sudo %s: %w", strings.Join(c, " "), err)
 		}
 	}
-	fmt.Printf("\nDone — the dashboard now runs as a service and auto-starts on boot.\n")
-	fmt.Printf("Open https://%s\n", LoadConfig(repo).ServerIP)
+	fmt.Printf("\nDone — the dashboard now runs as a service and auto-starts on boot.\n\n")
+	if firstRun {
+		fmt.Printf("Finish setting up in your browser (from any device on this network):\n\n")
+		fmt.Printf("    https://%s/\n\n", c.ServerIP)
+		fmt.Printf("    username  admin\n")
+		fmt.Printf("    password  %s\n\n", pass)
+		fmt.Printf("Your browser will warn about the certificate the first time — that's expected\n")
+		fmt.Printf("(the server made its own). Click through once; the wizard shows how to install\n")
+		fmt.Printf("it so the warning goes away for good. The password is also in %s.\n", filepath.Join(repo, ".ui-password"))
+	} else {
+		fmt.Printf("Open https://%s\n", c.ServerIP)
+	}
 	return nil
 }
 

@@ -79,10 +79,14 @@ var coreServices = []string{"vaultwarden", "nextcloud", "pihole"}
 // container names belonging to the stack (for status filtering).
 var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "stirling-pdf", "it-tools", "imagetools"}
 
-func missingEnv() []string {
+func missingEnv() []string { return missingEnvIn(repoDir()) }
+
+// missingEnvIn lists the core services under repo that have no .env yet (i.e. setup hasn't
+// been run for them). Empty means the stack is configured.
+func missingEnvIn(repo string) []string {
 	var miss []string
 	for _, s := range coreServices {
-		if _, err := os.Stat(filepath.Join(repoDir(), s, ".env")); err != nil {
+		if _, err := os.Stat(filepath.Join(repo, s, ".env")); err != nil {
 			miss = append(miss, s)
 		}
 	}
