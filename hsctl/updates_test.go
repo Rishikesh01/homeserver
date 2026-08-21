@@ -135,8 +135,8 @@ func TestIsMajorJump(t *testing.T) {
 		cur, next string
 		want      bool
 	}{
-		{"16-alpine", "18-alpine", true},    // postgres generation
-		{"30-apache", "34-apache", true},    // nextcloud majors are stepwise
+		{"16-alpine", "18-alpine", true}, // postgres generation
+		{"30-apache", "34-apache", true}, // nextcloud majors are stepwise
 		{"2.8-alpine", "2.11-alpine", false},
 		{"1.37.0", "1.37.1", false},
 		{"2025.04.0", "2026.07.2", false}, // calendar versions roll routinely

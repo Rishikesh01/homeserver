@@ -138,7 +138,9 @@ func bearerToken(wwwAuth string) string {
 		return ""
 	}
 	defer resp.Body.Close()
-	var body struct{ Token string `json:"token"` }
+	var body struct {
+		Token string `json:"token"`
+	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&body) != nil {
 		return ""
 	}
@@ -176,7 +178,9 @@ func registryTags(base, repo string) ([]string, error) {
 			resp.Body.Close()
 			return nil, fmt.Errorf("registry returned %s for %s", resp.Status, repo)
 		}
-		var body struct{ Tags []string `json:"tags"` }
+		var body struct {
+			Tags []string `json:"tags"`
+		}
 		err = json.NewDecoder(resp.Body).Decode(&body)
 		link := resp.Header.Get("Link")
 		resp.Body.Close()
