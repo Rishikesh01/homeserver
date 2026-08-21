@@ -250,6 +250,6 @@ const appsTmpl = `<!doctype html><html><head><meta charset="utf-8">
     {{else}}<input type="hidden" name="action" value="enable"><button class="btn green">Switch on</button>{{end}}
   </form>
 </div>{{end}}
-<p class="note" style="font-size:14px">An app that's off still has its HTTPS port reserved by Caddy (it answers with an error until the app is back). To remove an app for good, including its data, use the terminal: <code>hsctl apps disable NAME</code> then <code>docker compose -f NAME/docker-compose.yml down -v</code>.</p>
+<p class="foot">Anyone who opens a switched-off app's address sees a “this app isn't running” page that points back here. Caddy (the HTTPS front door) and this dashboard can't be switched off. To remove an app for good, including its data, use the terminal: <code>hsctl apps disable NAME</code> then <code>docker compose -f NAME/docker-compose.yml down -v</code>.</p>
 <p class="foot"><a href="/admin">← Admin</a></p>
 </div></body></html>`

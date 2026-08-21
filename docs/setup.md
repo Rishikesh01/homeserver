@@ -138,8 +138,10 @@ On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy 
 Don't need the PDF tools, or want to pause Nextcloud? **Admin → Apps** has a switch per app;
 the same from a shell is `hsctl apps disable stirling` / `hsctl apps enable stirling`. Off
 means the app's containers are stopped, `hsctl up` skips it and its tile leaves the home page
-— its data volumes and `.env` are kept, so switching it back on is lossless. (Caddy keeps the
-app's HTTPS port and answers with an error while it's off.) The choice is saved as
+— its data volumes and `.env` are kept, so switching it back on is lossless. Anyone opening
+the app's address meanwhile gets a "this app isn't running" page linking back to the
+dashboard (served by Caddy, which — like the dashboard — can't be switched off). The choice
+is saved as
 `DISABLED_APPS` in `setup.conf`, and you can make it at first setup too (wizard checkboxes,
 or `hsctl setup --disable-apps stirling,it-tools`).
 
