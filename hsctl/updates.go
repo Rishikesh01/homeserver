@@ -343,37 +343,52 @@ func bumpImageTag(text, oldRef, newRef string) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-// cmdUpdates checks every stack container's image against its registry tag and
-// prints a report. Read-only unless apply names containers (or "all") to update.
-func cmdUpdates(apply []string, yes bool) error {
-	repo := repoDir()
+// checkAllUpdates runs both probes for every stack container and returns the
+// statuses. progress, when non-nil, gets each status as it lands — the check
+// talks to registries and takes seconds per image, so callers show rows live.
+func checkAllUpdates(repo string, progress func(imageStatus)) ([]imageStatus, error) {
 	if _, err := dockerOut(repo, "buildx", "version"); err != nil {
-		return fmt.Errorf("docker buildx is needed to read registry digests — install it:\n" +
+		return nil, fmt.Errorf("docker buildx is needed to read registry digests — install it:\n" +
 			"  sudo apt-get install -y docker-buildx-plugin")
 	}
 	targets, err := updateTargets(repo)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var stale int
 	var statuses []imageStatus
-	fmt.Printf("checking %d containers against their registries...\n\n", len(targets))
 	for _, name := range targets {
-		image := containerImage(repo, name)
-		if image == "" {
-			fmt.Printf("%-16s (container not created — skipped)\n", name)
-			continue
+		var st imageStatus
+		if image := containerImage(repo, name); image == "" {
+			st = imageStatus{Container: name, Image: "—", State: "container not created — skipped"}
+		} else {
+			localJoined, _ := dockerOut(repo, "image", "inspect", "--format", "{{join .RepoDigests \",\"}}", image)
+			remoteOut, _ := dockerOut(repo, "buildx", "imagetools", "inspect", image)
+			st = checkImage(name, image, localJoined, remoteOut, newerRelease(image))
 		}
-		localJoined, _ := dockerOut(repo, "image", "inspect", "--format", "{{join .RepoDigests \",\"}}", image)
-		remoteOut, _ := dockerOut(repo, "buildx", "imagetools", "inspect", image)
-		st := checkImage(name, image, localJoined, remoteOut, newerRelease(image))
 		statuses = append(statuses, st)
+		if progress != nil {
+			progress(st)
+		}
+	}
+	return statuses, nil
+}
+
+// cmdUpdates checks every stack container's image against its registry tag and
+// prints a report. Read-only unless apply names containers (or "all") to update.
+func cmdUpdates(apply []string, yes bool) error {
+	repo := repoDir()
+	fmt.Printf("checking the stack's containers against their registries...\n\n")
+	var stale int
+	statuses, err := checkAllUpdates(repo, func(st imageStatus) {
 		mark := "  "
 		if st.Stale {
 			mark = "! "
 			stale++
 		}
 		fmt.Printf("%s%-16s %-42s %s\n", mark, st.Container, st.Image, st.State)
+	})
+	if err != nil {
+		return err
 	}
 	if len(apply) > 0 {
 		return applyUpdates(repo, statuses, apply, yes)

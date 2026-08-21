@@ -80,6 +80,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 <div class="tools">
   <a class="tool" href="/admin/commands"><div class="ico">🧰</div><div class="t">Commands</div></a>
+  <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
   <a class="tool" href="/admin/terminal"><div class="ico">⌨️</div><div class="t">Terminal</div></a>
@@ -330,6 +331,67 @@ const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <div id="out" class="out">Pick a command above and click Run — its output appears here as it runs.</div>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/admin/terminal">Open a full terminal →</a></p>
 <script>` + runJS + `</script>
+</div></body></html>`
+
+const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Updates</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>⬆️ Updates</h1>
+<p class="sub">See which apps have a newer version, and apply updates with a click.</p>
+
+{{if .Checked}}
+<table>
+<tr><th>App</th><th>Installed</th><th>Status</th><th></th></tr>
+{{range .Rows}}<tr>
+  <td>{{.Container}}</td>
+  <td><code>{{.Image}}</code></td>
+  <td>{{if .Stale}}<span class="tag bad">{{.State}}</span>{{if .Major}} <span class="badge caution">major upgrade</span>{{end}}{{else if eq .State "up to date"}}<span class="tag ok">up to date</span>{{else}}<span class="foot">{{.State}}</span>{{end}}</td>
+  <td>{{if .Stale}}{{if .Major}}<button class="btn gray" data-act="apply" data-name="{{.Container}}" data-confirm="{{.Container}} is a MAJOR upgrade ({{.State}}). These can need manual migration steps and are skipped by &quot;apply all&quot; on purpose. Only continue if you have tried it in the sandbox and have a fresh backup. Apply now?">Update…</button>{{else}}<button class="btn green" data-act="apply" data-name="{{.Container}}" data-confirm="Update {{.Container}} now? It will restart briefly.">Update</button>{{end}}{{end}}</td>
+</tr>{{end}}
+</table>
+<p class="foot">Checked {{.Age}} · registries are re-checked at apply time.</p>
+
+{{if .RoutineN}}<p><button class="btn green" data-act="apply" data-name="all" data-confirm="Apply all routine updates now? The updated apps will restart briefly. (Major upgrades are skipped.)">Apply all routine updates ({{.RoutineN}})</button></p>{{end}}
+{{if .StaleN}}<div class="note"><b>Routine vs major:</b> routine updates (new minor/patch versions) are safe to apply from here. <b>Major upgrades</b> — a new Nextcloud or database generation — can need manual steps, so they're never included in "apply all": try them in the sandbox first (see the README), make a fresh <a href="/admin/backup">backup</a>, then use their own Update button.</div>{{end}}
+{{else}}
+<div class="note">No check has run yet — click the button to compare every app against its registry (takes half a minute or so).</div>
+{{end}}
+
+<p><button class="btn" data-act="check">Check for updates</button></p>
+
+<h3>Output</h3>
+<div id="out" class="out">Output appears here as a check or update runs.</div>
+<p class="foot"><a href="/admin">← Admin</a></p>
+<script>
+async function stream(url, body, reload){
+  const out=document.getElementById('out');
+  out.textContent='Working…\n';
+  document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=true);
+  var ok=false;
+  try{
+    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
+    if(!res.ok){ out.textContent='error '+res.status+': '+(await res.text()); return; }
+    out.textContent='';
+    const reader=res.body.getReader(), dec=new TextDecoder();
+    for(;;){
+      const step=await reader.read();
+      if(step.done) break;
+      out.textContent+=dec.decode(step.value,{stream:true});
+      out.scrollTop=out.scrollHeight;
+    }
+    ok=out.textContent.trimEnd().endsWith('[done]');
+  }catch(e){ out.textContent+='\nrequest failed: '+e; }
+  finally{ document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=false); }
+  if(ok && reload){ setTimeout(function(){ location.reload(); }, 1200); }
+}
+document.querySelectorAll('button[data-act]').forEach(function(b){
+  b.addEventListener('click',function(){
+    if(b.dataset.confirm && !window.confirm(b.dataset.confirm)) return;
+    if(b.dataset.act==='check') stream('/admin/updates/check','',true);
+    else stream('/admin/updates/apply','name='+encodeURIComponent(b.dataset.name),true);
+  });
+});
+</script>
 </div></body></html>`
 
 const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
