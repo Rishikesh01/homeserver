@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +114,69 @@ func TestNewerVersionTag(t *testing.T) {
 	}
 	if got := newerVersionTag("latest", vwTags); got != "" {
 		t.Errorf("non-version pin must report nothing, got %q", got)
+	}
+}
+
+func TestRetag(t *testing.T) {
+	for _, tc := range []struct{ image, tag, want string }{
+		{"vaultwarden/server:1.36.0", "1.37.0", "vaultwarden/server:1.37.0"},
+		{"nginx", "1.29-alpine", "nginx:1.29-alpine"},
+		{"localhost:5000/thing:1.0", "2.0", "localhost:5000/thing:2.0"},
+		{"redis:7-alpine@sha256:abc", "8-alpine", "redis:8-alpine"},
+	} {
+		if got := retag(tc.image, tc.tag); got != tc.want {
+			t.Errorf("retag(%s, %s) = %s, want %s", tc.image, tc.tag, got, tc.want)
+		}
+	}
+}
+
+func TestIsMajorJump(t *testing.T) {
+	for _, tc := range []struct {
+		cur, next string
+		want      bool
+	}{
+		{"16-alpine", "18-alpine", true},    // postgres generation
+		{"30-apache", "34-apache", true},    // nextcloud majors are stepwise
+		{"2.8-alpine", "2.11-alpine", false},
+		{"1.37.0", "1.37.1", false},
+		{"2025.04.0", "2026.07.2", false}, // calendar versions roll routinely
+	} {
+		if got := isMajorJump(tc.cur, tc.next); got != tc.want {
+			t.Errorf("isMajorJump(%s, %s) = %v, want %v", tc.cur, tc.next, got, tc.want)
+		}
+	}
+}
+
+func TestServiceDirFor(t *testing.T) {
+	for in, want := range map[string]string{
+		"nextcloud-db": "nextcloud", "nextcloud-app": "nextcloud", "nextcloud-redis": "nextcloud",
+		"stirling-pdf": "stirling", "vaultwarden": "vaultwarden", "caddy": "caddy", "it-tools": "it-tools",
+	} {
+		if got := serviceDirFor(in); got != want {
+			t.Errorf("serviceDirFor(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestBumpImageTag(t *testing.T) {
+	compose := "services:\n  vaultwarden:\n    image: vaultwarden/server:1.36.0\n    restart: unless-stopped\n"
+	got, err := bumpImageTag(compose, "vaultwarden/server:1.36.0", "vaultwarden/server:1.37.0")
+	if err != nil {
+		t.Fatalf("bumpImageTag: %v", err)
+	}
+	want := "services:\n  vaultwarden:\n    image: vaultwarden/server:1.37.0\n    restart: unless-stopped\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	// Only the matching service's line changes in a multi-image file.
+	multi := "  db:\n    image: postgres:16-alpine\n  app:\n    image: nextcloud:30-apache\n"
+	got, err = bumpImageTag(multi, "postgres:16-alpine", "postgres:17-alpine")
+	if err != nil || !strings.Contains(got, "postgres:17-alpine") || !strings.Contains(got, "nextcloud:30-apache") {
+		t.Errorf("multi-image edit wrong (err %v):\n%s", err, got)
+	}
+	// A drifted compose file must refuse the edit, not guess.
+	if _, err := bumpImageTag(compose, "vaultwarden/server:1.35.0", "vaultwarden/server:1.37.0"); err == nil {
+		t.Error("drifted file should error")
 	}
 }
 

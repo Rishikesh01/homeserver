@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,8 +26,9 @@ import (
 type imageStatus struct {
 	Container string
 	Image     string
-	State     string // "up to date", "UPDATE available", or an error note
+	State     string // "up to date", "UPDATE available", "NEWER RELEASE ...", or an error note
 	Stale     bool
+	Newer     string // release-probe result: a newer registry tag, or ""
 }
 
 // parseRemoteDigest pulls the manifest digest out of `docker buildx imagetools
@@ -55,7 +58,7 @@ func parseLocalDigests(joined string) []string {
 // tag; newer is the release-probe result (a newer registry tag, or ""), which
 // outranks the digest verdict because a rebuilt old pin is still an old pin.
 func checkImage(container, image, localJoined, remoteOut, newer string) imageStatus {
-	st := imageStatus{Container: container, Image: image}
+	st := imageStatus{Container: container, Image: image, Newer: newer}
 	if newer != "" {
 		_, _, tag := splitImageRef(image)
 		st.State = fmt.Sprintf("NEWER RELEASE %s (pinned to %s)", newer, tag)
@@ -283,9 +286,62 @@ func updateTargets(repo string) ([]string, error) {
 	return strings.Fields(out), nil
 }
 
+// serviceDirFor maps a container name to its compose service directory
+// (nextcloud-db -> nextcloud, stirling-pdf -> stirling; the rest match).
+func serviceDirFor(container string) string {
+	switch {
+	case strings.HasPrefix(container, "nextcloud"):
+		return "nextcloud"
+	case container == "stirling-pdf":
+		return "stirling"
+	}
+	return container
+}
+
+// retag swaps an image reference's tag: retag("vaultwarden/server:1.36.0",
+// "1.37.0") -> "vaultwarden/server:1.37.0". Any digest suffix is dropped.
+func retag(image, newTag string) string {
+	if ref, _, ok := strings.Cut(image, "@"); ok {
+		image = ref
+	}
+	if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+		image = image[:i]
+	}
+	return image + ":" + newTag
+}
+
+// isMajorJump reports whether moving cur -> next changes the leading version
+// number — postgres 16 -> 18 or nextcloud 30 -> 34, which need their own
+// upgrade paths, unlike caddy 2.8 -> 2.11. Calendar versions (pihole 2025.x ->
+// 2026.x) roll the leading number routinely, so they're exempt.
+func isMajorJump(cur, next string) bool {
+	a, _, okA := parseTagVersion(cur)
+	b, _, okB := parseTagVersion(next)
+	return okA && okB && a[0] != b[0] && a[0] < 2000
+}
+
+// bumpImageTag rewrites the compose file's `image: oldRef` line(s) to newRef.
+// Errors if no line matches — the file drifted from the running container, and
+// guessing which line to edit could repin the wrong service.
+func bumpImageTag(text, oldRef, newRef string) (string, error) {
+	lines := strings.Split(text, "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "image:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")) == oldRef {
+			lines[i] = strings.Replace(line, oldRef, newRef, 1)
+			found = true
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("no `image: %s` line found — the compose file has drifted from the running container; edit it by hand", oldRef)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
 // cmdUpdates checks every stack container's image against its registry tag and
-// prints a report. Read-only: it never pulls or restarts anything.
-func cmdUpdates() error {
+// prints a report. Read-only unless apply names containers (or "all") to update.
+func cmdUpdates(apply []string, yes bool) error {
 	repo := repoDir()
 	if _, err := dockerOut(repo, "buildx", "version"); err != nil {
 		return fmt.Errorf("docker buildx is needed to read registry digests — install it:\n" +
@@ -296,6 +352,7 @@ func cmdUpdates() error {
 		return err
 	}
 	var stale int
+	var statuses []imageStatus
 	fmt.Printf("checking %d containers against their registries...\n\n", len(targets))
 	for _, name := range targets {
 		image := containerImage(repo, name)
@@ -306,6 +363,7 @@ func cmdUpdates() error {
 		localJoined, _ := dockerOut(repo, "image", "inspect", "--format", "{{join .RepoDigests \",\"}}", image)
 		remoteOut, _ := dockerOut(repo, "buildx", "imagetools", "inspect", image)
 		st := checkImage(name, image, localJoined, remoteOut, newerRelease(image))
+		statuses = append(statuses, st)
 		mark := "  "
 		if st.Stale {
 			mark = "! "
@@ -313,12 +371,122 @@ func cmdUpdates() error {
 		}
 		fmt.Printf("%s%-16s %-42s %s\n", mark, st.Container, st.Image, st.State)
 	}
+	if len(apply) > 0 {
+		return applyUpdates(repo, statuses, apply, yes)
+	}
 	if stale == 0 {
 		fmt.Println("\neverything is up to date.")
 		return nil
 	}
-	fmt.Printf("\n%d image(s) have an update. To apply one (after trying it in the sandbox — see README):\n", stale)
-	fmt.Println("  NEWER RELEASE:    edit the image tag in <service>/docker-compose.yml, then")
-	fmt.Println("  UPDATE available: cd <service> && docker compose pull && docker compose up -d")
+	fmt.Printf("\n%d image(s) have an update. To apply (after trying it in the sandbox — see README):\n", stale)
+	fmt.Println("  hsctl updates --apply all            # routine updates only")
+	fmt.Println("  hsctl updates --apply <container>    # one app, majors included")
 	return nil
+}
+
+// applyUpdates performs the chosen updates. For a NEWER RELEASE it rewrites the
+// pin in the service's docker-compose.yml first; either way the service is then
+// compose pull + up -d. "all" selects every stale image but skips major jumps —
+// postgres or Nextcloud majors need their own upgrade paths, so those must be
+// named explicitly (and confirmed) one at a time.
+func applyUpdates(repo string, statuses []imageStatus, targets []string, yes bool) error {
+	var chosen []imageStatus
+	if len(targets) == 1 && targets[0] == "all" {
+		for _, st := range statuses {
+			if !st.Stale {
+				continue
+			}
+			if tag := imageTag(st.Image); st.Newer != "" && isMajorJump(tag, st.Newer) {
+				fmt.Printf("\nskipping %s: %s -> %s is a major upgrade — test it in the sandbox, then run:\n  hsctl updates --apply %s\n",
+					st.Container, tag, st.Newer, st.Container)
+				continue
+			}
+			chosen = append(chosen, st)
+		}
+	} else {
+		byName := map[string]imageStatus{}
+		for _, st := range statuses {
+			byName[st.Container] = st
+		}
+		for _, t := range targets {
+			st, ok := byName[t]
+			if !ok {
+				return fmt.Errorf("no stack container named %q (see the list above)", t)
+			}
+			if !st.Stale {
+				fmt.Printf("nothing to apply for %s (%s)\n", t, st.State)
+				continue
+			}
+			chosen = append(chosen, st)
+		}
+	}
+	if len(chosen) == 0 {
+		fmt.Println("\nnothing to apply.")
+		return nil
+	}
+
+	fmt.Println("\nwill apply:")
+	for _, st := range chosen {
+		if st.Newer == "" {
+			fmt.Printf("  %-16s repull %s (its tag was rebuilt upstream)\n", st.Container, st.Image)
+			continue
+		}
+		tag := imageTag(st.Image)
+		fmt.Printf("  %-16s %s -> %s (edits %s/docker-compose.yml)\n", st.Container, tag, st.Newer, serviceDirFor(st.Container))
+		if isMajorJump(tag, st.Newer) {
+			fmt.Printf("  %-16s ^ MAJOR upgrade — make sure you've tested it in the sandbox and have a fresh backup\n", "")
+		}
+	}
+	if !yes {
+		if !isTTY() {
+			return fmt.Errorf("no terminal to confirm on — re-run with --yes")
+		}
+		if !askYN("apply now?", false) {
+			return fmt.Errorf("aborted — nothing was changed")
+		}
+	}
+
+	for _, st := range chosen {
+		if st.Newer == "" {
+			continue
+		}
+		path := filepath.Join(repo, serviceDirFor(st.Container), "docker-compose.yml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		edited, err := bumpImageTag(string(data), st.Image, retag(st.Image, st.Newer))
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if err := os.WriteFile(path, []byte(edited), 0644); err != nil {
+			return err
+		}
+		fmt.Printf("pinned %s to %s\n", path, retag(st.Image, st.Newer))
+	}
+
+	done := map[string]bool{}
+	for _, st := range chosen {
+		svc := serviceDirFor(st.Container)
+		if done[svc] {
+			continue
+		}
+		done[svc] = true
+		fmt.Printf("\n== updating %s ==\n", svc)
+		dir := filepath.Join(repo, svc)
+		if err := dockerRun(dir, "compose", "pull"); err != nil {
+			return fmt.Errorf("%s: pull: %w", svc, err)
+		}
+		if err := dockerRun(dir, "compose", "up", "-d"); err != nil {
+			return fmt.Errorf("%s: up: %w", svc, err)
+		}
+	}
+	fmt.Println("\ndone — open the apps to confirm they still work (a Check will now show them up to date).")
+	return nil
+}
+
+// imageTag returns just the tag of an image reference.
+func imageTag(image string) string {
+	_, _, tag := splitImageRef(image)
+	return tag
 }
