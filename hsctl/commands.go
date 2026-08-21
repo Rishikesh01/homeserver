@@ -50,6 +50,10 @@ var webCmds = []webCmd{
 	{Slug: "updates", Title: "Check for app updates", Category: "Stack",
 		Desc: "Compare every app's installed image against its registry — see which apps have a newer version available. Read-only; nothing is downloaded or restarted.",
 		Args: []string{"updates"}, Danger: dangerNone, Slow: true},
+	{Slug: "updates-apply", Title: "Apply routine updates", Category: "Stack",
+		Desc: "Download and switch to the newer version of every app that has a routine update, restarting those apps briefly. Major upgrades (e.g. a new Nextcloud or database generation) are skipped and listed — those are applied one at a time from the terminal after a sandbox test.",
+		Args: []string{"updates", "--apply", "all", "--yes"}, Danger: dangerCaution, Slow: true,
+		Confirm: "Apply all routine app updates now? The updated apps will restart briefly."},
 	{Slug: "status", Title: "Show status", Category: "Stack",
 		Desc: "List each container and whether it's running. Read-only.",
 		Args: []string{"status"}, Danger: dangerNone},
@@ -172,26 +176,32 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uiLog.Info("command run", "slug", c.Slug, "from", remoteIP(r))
+	s.streamHsctl(w, c.Args...)
+}
+
+// streamHsctl re-execs this binary with args and streams the combined output to
+// the browser live, ending with "[done]" on success (the page JS keys off it).
+func (s *uiServer) streamHsctl(w http.ResponseWriter, args ...string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	fl, _ := w.(http.Flusher)
 	fw := flushWriter{w: w, f: fl}
 
-	fmt.Fprintf(fw, "$ hsctl %s\n\n", strings.Join(c.Args, " "))
+	fmt.Fprintf(fw, "$ hsctl %s\n\n", strings.Join(args, " "))
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(fw, "cannot locate hsctl binary: %v\n", err)
 		return
 	}
-	cmd := exec.Command(exe, c.Args...)
+	cmd := exec.Command(exe, args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+s.repo)
 	// Same writer for both streams: os/exec then serialises the two, so interleaved
 	// stdout/stderr stay coherent without a mutex.
 	cmd.Stdout, cmd.Stderr = fw, fw
 	if err := cmd.Run(); err != nil {
-		uiLog.Warn("command failed", "slug", c.Slug, "err", err)
+		uiLog.Warn("command failed", "args", strings.Join(args, " "), "err", err)
 		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
 		return
 	}

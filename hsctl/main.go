@@ -65,8 +65,15 @@ func rootCmd() *cobra.Command {
 	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: runUI}
 	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
 
-	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdUpdates() }}
+	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only unless --apply)", Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			apply, _ := c.Flags().GetStringSlice("apply")
+			yes, _ := c.Flags().GetBool("yes")
+			return cmdUpdates(apply, yes)
+		}}
+	updates.Flags().StringSlice("apply", nil,
+		"apply updates: a container name (repeatable), or \"all\" for every routine (non-major) update")
+	updates.Flags().Bool("yes", false, "skip the confirmation prompt")
 
 	root.AddCommand(setup, up, down, status, getca, install, ui, updates, backupCmd(), secretsCmd())
 	return root

@@ -44,6 +44,12 @@ type uiServer struct {
 	// while Caddy (and thus normal dashboard access) is down mid-restore.
 	restoreMu sync.Mutex
 	restoreSt restoreStatus
+
+	// updSt caches the last update-check results for the Updates page (nil = not
+	// checked since the dashboard started; cleared again after an apply).
+	updMu sync.Mutex
+	updSt []imageStatus
+	updAt time.Time
 }
 
 // restoreStatus is the live state of the background web restore, polled by its progress page.
@@ -97,6 +103,9 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/updates", s.requireAuth(s.handleUpdatesPage))
+	mux.HandleFunc("/admin/updates/check", s.requireAuth(s.handleUpdatesCheck))
+	mux.HandleFunc("/admin/updates/apply", s.requireAuth(s.handleUpdatesApply))
 	mux.HandleFunc("/admin/devices", s.requireAuth(s.handleDevices))
 	mux.HandleFunc("/admin/devices/mount", s.requireAuth(s.handleDeviceMount))
 	mux.HandleFunc("/admin/devices/unmount", s.requireAuth(s.deviceActionHandler(

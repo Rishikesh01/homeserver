@@ -31,7 +31,13 @@
 {$SERVER_IP}:{$VAULT_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	reverse_proxy {$VAULT_UPSTREAM}
+	reverse_proxy {$VAULT_UPSTREAM} {
+		# Vaultwarden reads the client IP from X-Real-IP (not X-Forwarded-For),
+		# and 1.37.0+ rate-limits unauthenticated endpoints per client IP. Without
+		# this, every device shares Caddy's container IP and one member's failed
+		# logins can 429 the whole household.
+		header_up X-Real-IP {remote_host}
+	}
 }
 
 {$SERVER_IP}:{$CLOUD_HTTPS} {
