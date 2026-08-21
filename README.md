@@ -98,8 +98,16 @@ That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS fro
 and the dashboard, then tells you to open **`https://HOST/`** from any device on your
 network. The first visit lands in a **setup wizard**: confirm the autodetected IP and
 timezone, it generates every app's logins (shown once — save them), press **Start
-everything**, and it walks you through installing the certificate. Prefer the terminal? The
-same steps are `hsctl setup` → `hsctl up` ([docs/setup.md](docs/setup.md)).
+everything**, and it walks you through installing the certificate.
+
+**Prefer the terminal?** Skip the wizard and do the same from the shell:
+
+```bash
+sudo usermod -aG docker $USER   # run Docker without sudo (log out + back in afterwards)
+hsctl setup                     # configure — press Enter to accept each autodetected default
+hsctl up                        # start everything
+hsctl install                   # keep the dashboard running + auto-start it on every boot
+```
 
 Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
 certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
