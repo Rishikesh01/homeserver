@@ -100,14 +100,7 @@ network. The first visit lands in a **setup wizard**: confirm the autodetected I
 timezone, it generates every app's logins (shown once — save them), press **Start
 everything**, and it walks you through installing the certificate.
 
-**Prefer the terminal?** Skip the wizard and do the same from the shell:
-
-```bash
-sudo usermod -aG docker $USER   # run Docker without sudo (log out + back in afterwards)
-hsctl setup                     # configure — press Enter to accept each autodetected default
-hsctl up                        # start everything
-hsctl install                   # keep the dashboard running + auto-start it on every boot
-```
+(Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).)
 
 Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
 certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
