@@ -101,7 +101,11 @@ func cmdUp() error {
 	if err := ensureEdgeNetwork(); err != nil {
 		return err
 	}
-	for _, s := range services {
+	cfg := LoadConfig(repoDir())
+	if len(cfg.DisabledApps) > 0 {
+		fmt.Printf("(skipping disabled apps: %s — `hsctl apps enable <name>` to turn one on)\n", strings.Join(cfg.DisabledApps, ", "))
+	}
+	for _, s := range enabledServices(cfg) {
 		fmt.Printf("== up: %s ==\n", s)
 		if err := dockerRun(filepath.Join(repoDir(), s), "compose", "up", "-d"); err != nil {
 			return fmt.Errorf("%s: %w", s, err)

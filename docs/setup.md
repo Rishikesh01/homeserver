@@ -64,8 +64,9 @@ Then open **`https://HOST/`** from any phone or laptop on the network. Your brow
 about the certificate the first time (the server made its own CA) — click through once.
 Log in as `admin` with the printed password and the dashboard opens the **setup wizard**:
 
-1. **Settings** — the LAN IP, timezone, admin email, Pi-hole DNS bind and whether
-   Vaultwarden allows open signups, all pre-filled. Usually just press *Continue*.
+1. **Settings** — the LAN IP, timezone, admin email, Pi-hole DNS bind, which apps to run
+   (untick any you don't want) and whether Vaultwarden allows open signups, all pre-filled.
+   Usually just press *Continue*.
 2. **Your logins** — it writes `setup.conf` and every service's `.env` and shows the
    generated admin logins **once**. Save them (the Vaultwarden admin token is stored
    hashed and can't be shown again; the rest are in *Command Center → Show logins*).
@@ -132,6 +133,16 @@ On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy 
 
 ---
 
+## Switching apps on and off
+
+Don't need the PDF tools, or want to pause Nextcloud? **Admin → Apps** has a switch per app;
+the same from a shell is `hsctl apps disable stirling` / `hsctl apps enable stirling`. Off
+means the app's containers are stopped, `hsctl up` skips it and its tile leaves the home page
+— its data volumes and `.env` are kept, so switching it back on is lossless. (Caddy keeps the
+app's HTTPS port and answers with an error while it's off.) The choice is saved as
+`DISABLED_APPS` in `setup.conf`, and you can make it at first setup too (wizard checkboxes,
+or `hsctl setup --disable-apps stirling,it-tools`).
+
 ## Day-to-day
 
 ```bash
@@ -140,6 +151,7 @@ hsctl updates                   # check whether newer app images are available (
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
 hsctl secrets show              # print the generated logins
+hsctl apps                      # list apps; hsctl apps disable stirling switches one off (data kept)
 hsctl backup run | list         # see docs/backup-restore.md
 ```
 

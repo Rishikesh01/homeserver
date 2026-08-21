@@ -105,6 +105,8 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/apps", s.requireAuth(s.handleApps))
+	mux.HandleFunc("/admin/apps/toggle", s.requireAuth(s.handleAppsToggle))
 	mux.HandleFunc("/admin/updates", s.requireAuth(s.handleUpdatesPage))
 	mux.HandleFunc("/admin/updates/check", s.requireAuth(s.handleUpdatesCheck))
 	mux.HandleFunc("/admin/updates/apply", s.requireAuth(s.handleUpdatesApply))
@@ -373,6 +375,9 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 	c := s.config()
 	var links []serviceLink
 	for _, svc := range LoadServices(s.repo) {
+		if svc.Dir != "" && c.IsDisabled(svc.Dir) {
+			continue
+		}
 		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
@@ -457,7 +462,7 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 
 // runLifecycle performs up/down across all services and returns a short summary.
 func (s *uiServer) runLifecycle(action string) string {
-	order := services
+	order := enabledServices(s.config())
 	cargs := []string{"compose", "up", "-d"}
 	if action == "down" {
 		cargs = []string{"compose", "down"}

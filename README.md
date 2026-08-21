@@ -154,6 +154,7 @@ hsctl get-ca                      Write caddy-root-ca.crt to install on devices
 hsctl install                     Dashboard as a systemd service (+ first-install bootstrap → setup wizard)
 hsctl ui                          Serve the web dashboard
 hsctl secrets show                Print the generated logins (read from the .env files)
+hsctl apps [enable|disable NAME]  List apps / switch one on or off (data kept; also Admin → Apps)
 hsctl secrets rotate-vw-admin     Generate a new Vaultwarden /admin token
 hsctl backup config | init | run  Configure / create / write to the encrypted repo
 hsctl backup list | forget        List snapshots / apply retention and prune

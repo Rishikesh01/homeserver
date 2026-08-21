@@ -80,6 +80,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
 
 <div class="tools">
+  <a class="tool" href="/admin/apps"><div class="ico">🧩</div><div class="t">Apps</div></a>
   <a class="tool" href="/admin/commands"><div class="ico">🧰</div><div class="t">Commands</div></a>
   <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>

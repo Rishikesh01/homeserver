@@ -24,6 +24,7 @@ func (s *uiServer) setupDone() bool {
 }
 
 type setupData struct {
+	Apps    []appInfo
 	Cfg     Config
 	Err     string
 	Secrets []Secret
@@ -39,13 +40,13 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		c := s.config()
 		c.Normalize()
-		render(w, setupTmpl, setupData{Cfg: c, Step: 1})
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Step: 1})
 		return
 	}
 	c, err := parseSetupForm(s.config(), r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		render(w, setupTmpl, setupData{Cfg: c, Err: err.Error(), Step: 1})
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Err: err.Error(), Step: 1})
 		return
 	}
 	c.Normalize()
@@ -87,7 +88,23 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	c.ACMEEmail = strings.TrimSpace(r.FormValue("email"))
 	c.PiholeDNSBind = strings.TrimSpace(r.FormValue("pihole_dns_bind"))
 	c.VWSignupsAllowed = r.FormValue("vw_signups") == "on"
+	// Apps: every checked box is on; anything unchecked is switched off (browsers omit
+	// unchecked boxes, so compute the complement against the registry).
+	_ = r.ParseForm()
+	on := map[string]bool{}
+	for _, a := range r.Form["apps"] {
+		on[a] = true
+	}
+	c.DisabledApps = nil
+	for _, d := range appDirs() {
+		if !on[d] {
+			c.DisabledApps = append(c.DisabledApps, d)
+		}
+	}
 
+	if len(c.DisabledApps) == len(appDirs()) {
+		return c, fmt.Errorf("tick at least one app to run")
+	}
 	if ip := net.ParseIP(c.ServerIP); ip == nil || ip.To4() == nil {
 		return c, fmt.Errorf("%q isn't a valid IPv4 address — use the server's LAN IP, e.g. 192.168.1.10", c.ServerIP)
 	}
@@ -138,6 +155,10 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
   <label for="pihole_dns_bind">Pi-hole DNS listen address</label>
   <input class="in" id="pihole_dns_bind" name="pihole_dns_bind" value="{{.Cfg.PiholeDNSBind}}">
   <p class="hint">Leave as is. <code>0.0.0.0</code> = all interfaces; the server IP is suggested when something on this machine already uses port 53.</p>
+
+  <label>Apps to run</label>
+  {{range .Apps}}<label style="font-weight:400;margin:4px 0"><input type="checkbox" name="apps" value="{{.Dir}}" {{if .Enabled}}checked{{end}}> {{.Icon}} <b>{{.Name}}</b> <span class="hint" style="display:inline">— {{.Desc}}</span></label>
+  {{end}}<p class="hint">Untick anything you don't want. You can switch apps on or off later from Admin → Apps; nothing is deleted.</p>
 
   <label><input type="checkbox" name="vw_signups" {{if .Cfg.VWSignupsAllowed}}checked{{end}}> Let anyone on the network create a Vaultwarden (password manager) account</label>
   <p class="hint">Handy while your family signs up. You can switch it off later for invitation-only.</p>
