@@ -23,6 +23,20 @@
 	}
 }
 
+# --- When an app isn't running ---
+# An app can be switched off (Admin → Apps / `hsctl apps disable`) or simply still be starting.
+# Its port stays ours either way; rather than a bare "502 Bad Gateway", explain and point
+# back to the dashboard. Imported by every app block below.
+(app_offline) {
+	handle_errors {
+		@down expression `{err.status_code} == 502`
+		handle @down {
+			header Content-Type "text/html; charset=utf-8"
+			respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Not running</title><body style="font:16px/1.5 system-ui,sans-serif;background:#0f1115;color:#e7e9ee;margin:0;padding:40px 20px;text-align:center"><h1 style="font-size:24px">This app isn't running right now</h1><p style="color:#9aa3b2;max-width:36em;margin:0 auto 22px">It may have been switched off by your admin, or it's still starting up — try again in a minute.</p><p><a href="https://{$SERVER_IP}/" style="color:#4f8cff">Back to the dashboard</a></p></body>` 503
+		}
+	}
+}
+
 # --- Each app over HTTPS at the server IP + its own port ---
 # The site address is <ip>:<port> so "tls internal" mints a cert with the server IP
 # in the SAN (trusted once the CA above is installed). `bind 0.0.0.0` makes Caddy
@@ -31,6 +45,7 @@
 {$SERVER_IP}:{$VAULT_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	reverse_proxy {$VAULT_UPSTREAM} {
 		# Vaultwarden reads the client IP from X-Real-IP (not X-Forwarded-For),
 		# and 1.37.0+ rate-limits unauthenticated endpoints per client IP. Without
@@ -43,6 +58,7 @@
 {$SERVER_IP}:{$CLOUD_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	reverse_proxy {$CLOUD_UPSTREAM}
 	redir /.well-known/carddav /remote.php/dav 301
 	redir /.well-known/caldav /remote.php/dav 301
@@ -56,6 +72,7 @@
 {$SERVER_IP}:{$PIHOLE_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	redir / /admin/ 302
 	reverse_proxy {$PIHOLE_UPSTREAM}
 }
@@ -71,17 +88,20 @@
 {$SERVER_IP}:{$STIRLING_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	reverse_proxy {$STIRLING_UPSTREAM}
 }
 
 {$SERVER_IP}:{$ITTOOLS_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	reverse_proxy {$ITTOOLS_UPSTREAM}
 }
 
 {$SERVER_IP}:{$IMAGETOOLS_HTTPS} {
 	bind 0.0.0.0
 	tls internal
+	import app_offline
 	reverse_proxy {$IMAGETOOLS_UPSTREAM}
 }

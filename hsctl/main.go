@@ -45,6 +45,7 @@ func rootCmd() *cobra.Command {
 	setup.Flags().String("email", "", "admin email")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
 	setup.Flags().Bool("vw-signups", true, "allow open Vaultwarden signups")
+	setup.Flags().String("disable-apps", "", "comma-separated apps to switch off (e.g. stirling,it-tools)")
 
 	up := &cobra.Command{Use: "up", Short: "Start the stack (apps + tools, then caddy)", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return cmdUp() }}
@@ -75,6 +76,6 @@ func rootCmd() *cobra.Command {
 		"apply updates: a container name (repeatable), or \"all\" for every routine (non-major) update")
 	updates.Flags().Bool("yes", false, "skip the confirmation prompt")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, appsCmd(), backupCmd(), secretsCmd())
 	return root
 }

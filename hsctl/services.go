@@ -17,13 +17,16 @@ type Service struct {
 	Desc      string `json:"desc"`
 	HTTPSPort int    `json:"https_port"`
 	Path      string `json:"path,omitempty"`
+	// Dir is the app's compose directory (vaultwarden, nextcloud, …) — what the enable/disable
+	// switch operates on. A tile whose Dir is disabled is hidden from the home page.
+	Dir string `json:"dir,omitempty"`
 }
 
 func defaultServices() []Service {
 	return []Service{
-		{"vault", "Passwords", "🔑", "Vaultwarden — save & sync passwords (Bitwarden-compatible)", 8443, ""},
-		{"cloud", "Files", "☁️", "Nextcloud — files, photos, calendar", 8444, ""},
-		{"pihole", "Ad blocker", "🛡️", "Pi-hole — network-wide ad-blocking admin", 8445, "/admin"},
+		{"vault", "Passwords", "🔑", "Vaultwarden — save & sync passwords (Bitwarden-compatible)", 8443, "", "vaultwarden"},
+		{"cloud", "Files", "☁️", "Nextcloud — files, photos, calendar", 8444, "", "nextcloud"},
+		{"pihole", "Ad blocker", "🛡️", "Pi-hole — network-wide ad-blocking admin", 8445, "/admin", "pihole"},
 	}
 }
 

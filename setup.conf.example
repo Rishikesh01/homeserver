@@ -14,3 +14,4 @@ ACME_EMAIL=you@example.com      # only used if you ever switch to a real domain 
 UI_PORT=8088                    # hsctl dashboard port (Caddy proxies it at https://SERVER_IP)
 PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver already holds :53
 VW_SIGNUPS_ALLOWED=true         # false = invitation-only
+DISABLED_APPS=                  # apps switched off, e.g. stirling,it-tools (data is kept)

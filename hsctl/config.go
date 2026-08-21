@@ -23,6 +23,9 @@ type Config struct {
 	UIPort           int
 	PiholeDNSBind    string
 	VWSignupsAllowed bool
+	// DisabledApps are compose dir names (see apps.go) the admin switched off: `hsctl up`
+	// skips them and the dashboard hides their tiles. Their data volumes are kept.
+	DisabledApps []string
 }
 
 const confFile = "setup.conf"
@@ -105,6 +108,7 @@ func overlayFromConf(c *Config, repo string) {
 	c.UIPort = atoiDef(get("UI_PORT", ""), c.UIPort)
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
+	c.DisabledApps = splitCSV(get("DISABLED_APPS", ""))
 }
 
 // overlayFromEnv reflects the actual deployed .env files into c (so config matches a
@@ -151,6 +155,7 @@ func (c Config) Save(repo string) error {
 		{"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
+		{"DISABLED_APPS", strings.Join(c.DisabledApps, ",")},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}
@@ -188,6 +193,17 @@ func unquote(s string) string {
 		}
 	}
 	return s
+}
+
+// splitCSV parses "a, b,c" into ["a","b","c"], dropping blanks.
+func splitCSV(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func atoiDef(s string, def int) int {

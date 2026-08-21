@@ -68,15 +68,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	}
 
 	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP).
-	if _, err := writeEnv("caddy/.env", fmt.Sprintf(
-		"SERVER_IP=%s\nACME_EMAIL=%s\n"+
-			"# App upstreams are the container names on the shared \"edge\" network — set as\n"+
-			"# defaults in caddy/docker-compose.yml, so they're intentionally NOT listed here.\n"+
-			"# The dashboard runs on the host, so Caddy reaches it via the docker host gateway:\n"+
-			"HOME_UPSTREAM=host.docker.internal:%d\n"+
-			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=443\n"+
-			"STIRLING_HTTPS=8446\nITTOOLS_HTTPS=8447\nIMAGETOOLS_HTTPS=8448\n",
-		c.ServerIP, c.ACMEEmail, c.UIPort)); err != nil {
+	if _, err := writeEnv("caddy/.env", c.caddyEnv()); err != nil {
 		return nil, err
 	}
 
@@ -95,6 +87,40 @@ Step-by-step per device: see ONBOARDING.md
 	}
 
 	return secrets, nil
+}
+
+// caddyEnv is the content of caddy/.env for this config. It holds no secrets — just the
+// server IP (cert SAN), the ACME contact and where the host-side dashboard listens.
+func (c Config) caddyEnv() string {
+	return fmt.Sprintf(
+		"SERVER_IP=%s\nACME_EMAIL=%s\n"+
+			"# App upstreams are the container names on the shared \"edge\" network — set as\n"+
+			"# defaults in caddy/docker-compose.yml, so they're intentionally NOT listed here.\n"+
+			"# The dashboard runs on the host, so Caddy reaches it via the docker host gateway:\n"+
+			"HOME_UPSTREAM=host.docker.internal:%d\n"+
+			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=443\n"+
+			"STIRLING_HTTPS=8446\nITTOOLS_HTTPS=8447\nIMAGETOOLS_HTTPS=8448\n",
+		c.ServerIP, c.ACMEEmail, c.UIPort)
+}
+
+// reconcileCaddyEnv updates the three config-derived keys in an EXISTING caddy/.env so Caddy
+// follows a changed IP / email / dashboard port. Everything else in the file (a user's
+// upstream override, comments) is preserved. Used by the setup wizard: the bootstrap writes
+// caddy/.env from autodetected values before the admin has confirmed them.
+func reconcileCaddyEnv(repo string, c Config) error {
+	path := filepath.Join(repo, "caddy/.env")
+	if !fileExists(path) {
+		return writeFile0600(path, c.caddyEnv())
+	}
+	for _, kv := range [][2]string{
+		{"SERVER_IP", c.ServerIP}, {"ACME_EMAIL", c.ACMEEmail},
+		{"HOME_UPSTREAM", fmt.Sprintf("host.docker.internal:%d", c.UIPort)},
+	} {
+		if err := setEnvKey(path, kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func boolStr(b bool, t, f string) string {

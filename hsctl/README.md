@@ -31,9 +31,10 @@ hsctl up                # start the stack (apps + tools -> caddy)
 hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
 hsctl updates           # check whether newer app images are available (read-only)
-hsctl install           # run the dashboard as a systemd service (auto-start on boot)
+hsctl install           # dashboard as a systemd service; on a fresh box also starts Caddy + opens the setup wizard
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
+hsctl apps              # list apps; `apps enable|disable NAME` switches one on/off (data kept)
 hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
 ```
 
@@ -128,7 +129,7 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
 **Make it permanent (auto-start on boot):**
 
 ```bash
-hsctl install        # installs + enables the dashboard systemd service (uses sudo)
+hsctl install        # installs + enables the dashboard systemd service (uses sudo); first run also starts Caddy so the setup wizard is reachable
 ```
 
 The app **containers** already come back on reboot (`restart: unless-stopped`); `hsctl

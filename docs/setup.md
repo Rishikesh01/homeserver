@@ -49,17 +49,41 @@ git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
 # 2. Build hsctl (version stamped from the git tag) and install it system-wide
 make -C hsctl install
 
-# 3. Let your user run Docker without sudo (log out + back in afterwards)
-sudo usermod -aG docker $USER
-
-# 4. Configure (press Enter to accept each suggested default)
-hsctl setup
-
-# 5. Start everything
-hsctl up
-
-# 6. Keep the dashboard running + auto-start it on every boot
+# 3. Start the dashboard as a service (auto-starts on every boot)
 hsctl install
+```
+
+`hsctl install` is the last thing you type. It:
+
+- saves `setup.conf` with autodetected values (LAN IP, timezone, a free dashboard port),
+- creates the dashboard admin password (`.ui-password`) and prints it,
+- starts **Caddy** on its own, so `https://HOST/` already answers,
+- installs and starts the `hsctl-ui` systemd service.
+
+Then open **`https://HOST/`** from any phone or laptop on the network. Your browser warns
+about the certificate the first time (the server made its own CA) — click through once.
+Log in as `admin` with the printed password and the dashboard opens the **setup wizard**:
+
+1. **Settings** — the LAN IP, timezone, admin email, Pi-hole DNS bind, which apps to run
+   (untick any you don't want) and whether Vaultwarden allows open signups, all pre-filled.
+   Usually just press *Continue*.
+2. **Your logins** — it writes `setup.conf` and every service's `.env` and shows the
+   generated admin logins **once**. Save them (the Vaultwarden admin token is stored
+   hashed and can't be shown again; the rest are in *Command Center → Show logins*).
+3. **Start** — one button runs `hsctl up` and streams the progress live. The first start
+   downloads the app images, so give it a few minutes.
+4. **Certificate** — download `root.crt` and follow the per-device guide.
+
+The wizard only appears while the apps are unconfigured; afterwards `https://HOST/` is the
+normal dashboard. (If you'd rather not use a browser, the equivalent is `hsctl setup` then
+`hsctl up` — see below.)
+
+### The terminal route
+
+```bash
+sudo usermod -aG docker $USER   # run Docker without sudo (log out + back in afterwards)
+hsctl setup                     # configure (press Enter to accept each suggested default)
+hsctl up                        # start everything
 ```
 
 **What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, the dashboard
@@ -109,6 +133,18 @@ On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy 
 
 ---
 
+## Switching apps on and off
+
+Don't need the PDF tools, or want to pause Nextcloud? **Admin → Apps** has a switch per app;
+the same from a shell is `hsctl apps disable stirling` / `hsctl apps enable stirling`. Off
+means the app's containers are stopped, `hsctl up` skips it and its tile leaves the home page
+— its data volumes and `.env` are kept, so switching it back on is lossless. Anyone opening
+the app's address meanwhile gets a "this app isn't running" page linking back to the
+dashboard (served by Caddy, which — like the dashboard — can't be switched off). The choice
+is saved as
+`DISABLED_APPS` in `setup.conf`, and you can make it at first setup too (wizard checkboxes,
+or `hsctl setup --disable-apps stirling,it-tools`).
+
 ## Day-to-day
 
 ```bash
@@ -117,6 +153,7 @@ hsctl updates                   # check whether newer app images are available (
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
 hsctl secrets show              # print the generated logins
+hsctl apps                      # list apps; hsctl apps disable stirling switches one off (data kept)
 hsctl backup run | list         # see docs/backup-restore.md
 ```
 

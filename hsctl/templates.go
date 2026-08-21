@@ -76,9 +76,11 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="sub">Server {{.Cfg.ServerIP}} · timezone {{.Cfg.TZ}}</p>
 
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{if not .SetupDone}}<div class="note"><b>Setup isn't finished</b> — the apps aren't configured yet. <a href="/setup">Continue the setup wizard →</a></div>{{end}}
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
 
 <div class="tools">
+  <a class="tool" href="/admin/apps"><div class="ico">🧩</div><div class="t">Apps</div></a>
   <a class="tool" href="/admin/commands"><div class="ico">🧰</div><div class="t">Commands</div></a>
   <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>

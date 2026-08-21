@@ -32,6 +32,7 @@ copying `setup.conf.example` → `setup.conf`.
 | `UI_PORT` | Dashboard (hsctl ui) port — the one app still on a host port, since it runs on the host | — |
 | `PIHOLE_DNS_BIND` | Pi-hole `:53` bind IP (`0.0.0.0` or the LAN IP) | `--pihole-dns-bind` |
 | `VW_SIGNUPS_ALLOWED` | Open Vaultwarden signups (`true`/`false`) | `--vw-signups` |
+| `DISABLED_APPS` | Comma-separated apps switched off (compose dir names, e.g. `stirling,it-tools`). `hsctl up` skips them, their tiles are hidden; data volumes are kept. Toggle from Admin → Apps or `hsctl apps enable|disable` | `--disable-apps` |
 
 Changing a value: edit `setup.conf` (or re-run `hsctl setup`), then `hsctl up`. Note that
 `hsctl setup` never overwrites an existing service `.env` (use `--force` to regenerate, which

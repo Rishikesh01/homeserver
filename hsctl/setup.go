@@ -33,6 +33,16 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if f.Changed("vw-signups") {
 		c.VWSignupsAllowed, _ = f.GetBool("vw-signups")
 	}
+	if f.Changed("disable-apps") {
+		v, _ := f.GetString("disable-apps")
+		c.DisabledApps = nil
+		for _, d := range splitCSV(v) {
+			if !validApp(d) {
+				return fmt.Errorf("--disable-apps: unknown app %q — one of: %s", d, strings.Join(appDirs(), ", "))
+			}
+			c.setDisabled(d, true)
+		}
+	}
 
 	if !yes && isTTY() {
 		c = promptConfig(c)
@@ -104,5 +114,30 @@ func promptConfig(c Config) Config {
 	}
 	c.PiholeDNSBind = ask("Pi-hole DNS bind IP", dnsDef)
 	c.VWSignupsAllowed = askYN("Allow open Vaultwarden signups?", c.VWSignupsAllowed)
+	fmt.Printf("  Apps: %s\n", strings.Join(appDirs(), ", "))
+	for {
+		cur := strings.Join(c.DisabledApps, ",")
+		if cur == "" {
+			cur = "none"
+		}
+		ans := ask("Apps to switch OFF (comma-separated, or none)", cur)
+		if ans == "none" {
+			c.DisabledApps = nil
+			break
+		}
+		c.DisabledApps = nil
+		bad := ""
+		for _, d := range splitCSV(ans) {
+			if !validApp(d) {
+				bad = d
+				break
+			}
+			c.setDisabled(d, true)
+		}
+		if bad == "" {
+			break
+		}
+		fmt.Printf("  unknown app %q\n", bad)
+	}
 	return c
 }

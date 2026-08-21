@@ -99,10 +99,14 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/root.crt", s.handleCert)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
+	mux.HandleFunc("/setup", s.requireAuth(s.handleSetup))
+	mux.HandleFunc("/setup/up", s.requireAuth(s.handleSetupUp))
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/apps", s.requireAuth(s.handleApps))
+	mux.HandleFunc("/admin/apps/toggle", s.requireAuth(s.handleAppsToggle))
 	mux.HandleFunc("/admin/updates", s.requireAuth(s.handleUpdatesPage))
 	mux.HandleFunc("/admin/updates/check", s.requireAuth(s.handleUpdatesCheck))
 	mux.HandleFunc("/admin/updates/apply", s.requireAuth(s.handleUpdatesApply))
@@ -362,9 +366,18 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Fresh install (hsctl install ran, nothing configured yet): the home page has nothing to
+	// show, so take the admin straight into the wizard.
+	if !s.setupDone() {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	c := s.config()
 	var links []serviceLink
 	for _, svc := range LoadServices(s.repo) {
+		if svc.Dir != "" && c.IsDisabled(svc.Dir) {
+			continue
+		}
 		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
@@ -396,10 +409,11 @@ type adminData struct {
 	Msg        string
 	Sys        sysStats
 	Backup     backupFreshness
+	SetupDone  bool
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo)}
+	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats(s.repo) }()
@@ -448,7 +462,7 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 
 // runLifecycle performs up/down across all services and returns a short summary.
 func (s *uiServer) runLifecycle(action string) string {
-	order := services
+	order := enabledServices(s.config())
 	cargs := []string{"compose", "up", "-d"}
 	if action == "down" {
 		cargs = []string{"compose", "down"}

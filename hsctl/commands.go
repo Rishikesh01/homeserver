@@ -77,7 +77,7 @@ var webCmds = []webCmd{
 		Desc: "Write caddy-root-ca.crt — the certificate you install on each phone/laptop so the apps load over HTTPS without warnings. Read-only on the stack.",
 		Args: []string{"get-ca"}, Danger: dangerNone},
 	{Slug: "install", Title: "Run dashboard on boot", Category: "Setup",
-		Desc: "Install this dashboard as a systemd service so it auto-starts when the server boots. Writes a system service file (needs root).",
+		Desc: "Install this dashboard as a systemd service so it auto-starts when the server boots. Writes a system service file (needs root). On a brand-new install this is also what starts Caddy and opens the setup wizard.",
 		Args: []string{"install"}, Danger: dangerCaution, NeedsRoot: true},
 
 	// ---- Backups (the dedicated Backups page has more detail + Restore) -------

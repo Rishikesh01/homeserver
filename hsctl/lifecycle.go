@@ -79,10 +79,14 @@ var coreServices = []string{"vaultwarden", "nextcloud", "pihole"}
 // container names belonging to the stack (for status filtering).
 var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "stirling-pdf", "it-tools", "imagetools"}
 
-func missingEnv() []string {
+func missingEnv() []string { return missingEnvIn(repoDir()) }
+
+// missingEnvIn lists the core services under repo that have no .env yet (i.e. setup hasn't
+// been run for them). Empty means the stack is configured.
+func missingEnvIn(repo string) []string {
 	var miss []string
 	for _, s := range coreServices {
-		if _, err := os.Stat(filepath.Join(repoDir(), s, ".env")); err != nil {
+		if _, err := os.Stat(filepath.Join(repo, s, ".env")); err != nil {
 			miss = append(miss, s)
 		}
 	}
@@ -97,7 +101,11 @@ func cmdUp() error {
 	if err := ensureEdgeNetwork(); err != nil {
 		return err
 	}
-	for _, s := range services {
+	cfg := LoadConfig(repoDir())
+	if len(cfg.DisabledApps) > 0 {
+		fmt.Printf("(skipping disabled apps: %s — `hsctl apps enable <name>` to turn one on)\n", strings.Join(cfg.DisabledApps, ", "))
+	}
+	for _, s := range enabledServices(cfg) {
 		fmt.Printf("== up: %s ==\n", s)
 		if err := dockerRun(filepath.Join(repoDir(), s), "compose", "up", "-d"); err != nil {
 			return fmt.Errorf("%s: %w", s, err)
