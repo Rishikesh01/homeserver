@@ -12,8 +12,8 @@ Homeserver is deliberately **LAN-only, single-machine, and boring**. Things that
 - making the dashboard clearer for non-technical users,
 - anything that makes backups more trustworthy.
 
-Things that don't: remote access / VPN / tunnels, multi-node orchestration, and cloud
-control planes. If you want one of those, this probably isn't the base to build on.
+Things that don't: multi-node orchestration and cloud control planes. If you want one of
+those, this probably isn't the base to build on.
 
 ## Getting set up
 

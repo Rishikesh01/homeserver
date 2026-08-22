@@ -34,9 +34,8 @@ browser on a trusted device, or someone with physical access to an unlocked, run
   (LUKS)**: the easiest way is to tick **"Encrypt the new installation"** when installing
   Ubuntu. Without it, none of the rest matters if the machine is stolen.
 - **Keep it on your LAN only — do not expose it to the internet.** Don't port-forward any of
-  these ports on your router. The stack is designed for home-network access; there's no
-  remote access by design (a home box you can't guarantee is online shouldn't be a VPN
-  endpoint).
+  these ports on your router. The stack is designed for home-network access; if you need
+  it from outside, reach the LAN over a VPN rather than exposing any service directly.
 - **Firewall (optional but nice).** If you run `ufw`, allow only what's needed:
   ```bash
   sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp
