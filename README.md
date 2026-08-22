@@ -64,16 +64,16 @@ This project answers those three:
 
 | | |
 |---|---|
+| **Install** — `hsctl install` starts the HTTPS dashboard and prints the first-login details | **Settings** — review the automatically detected server configuration |
+| <img src="docs/screenshots/install.png" alt="hsctl install output"> | <img src="docs/screenshots/setup-settings.png" alt="Setup wizard settings"> |
+| **Your logins** — save the generated app credentials before starting | **Ready** — live startup progress, then install the certificate on each device |
+| <img src="docs/screenshots/setup-logins.png" alt="Generated app logins"> | <img src="docs/screenshots/setup-complete.png" alt="Setup complete and certificate step"> |
 | **Admin** — CPU/RAM/disk, SMART health, backup freshness, container control | **Command Center** — every `hsctl` command as an explained card |
 | <img src="docs/screenshots/admin.png" alt="Admin dashboard"> | <img src="docs/screenshots/commands.png" alt="Command Center"> |
 | **Backups** — destination, retention, off-site replica, snapshots | **Drives** — attached disks, one-click mount for backups |
 | <img src="docs/screenshots/backups.png" alt="Backups page"> | <img src="docs/screenshots/drives.png" alt="Drives page"> |
 | **Terminal** — a real shell on the server, admin-gated | **Setup guide** — the onboarding page you hand to a new user |
 | <img src="docs/screenshots/terminal.png" alt="Terminal"> | <img src="docs/screenshots/setup-guide.png" alt="Setup guide"> |
-| **Install** — `hsctl install` starts the HTTPS dashboard and prints the first-login details | **Settings** — review the automatically detected server configuration |
-| <img src="docs/screenshots/install.png" alt="hsctl install output"> | <img src="docs/screenshots/setup-settings.png" alt="Setup wizard settings"> |
-| **Your logins** — save the generated app credentials before starting | **Ready** — live startup progress, then install the certificate on each device |
-| <img src="docs/screenshots/setup-logins.png" alt="Generated app logins"> | <img src="docs/screenshots/setup-complete.png" alt="Setup complete and certificate step"> |
 
 </details>
 
