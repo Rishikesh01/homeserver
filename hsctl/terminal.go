@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // WebSocket keepalive: ping the browser periodically; if it's gone (laptop slept, Wi-Fi
@@ -46,7 +48,12 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad WebSocket origin", http.StatusForbidden)
 		return
 	}
-	ws, err := wsUpgrade(w, r)
+	ws, err := (&websocket.Upgrader{
+		ReadBufferSize:  32 * 1024,
+		WriteBufferSize: 32 * 1024,
+		// Origin validation is performed above with the configured server IP.
+		CheckOrigin: func(*http.Request) bool { return true },
+	}).Upgrade(w, r, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -66,7 +73,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	ptm, err := startPTY(cmd)
 	if err != nil {
 		uiLog.Error("terminal shell failed to start", "shell", shell, "err", err)
-		_ = ws.WriteMessage(opBinary, []byte("failed to start shell: "+err.Error()+"\r\n"))
+		_ = ws.WriteMessage(websocket.BinaryMessage, []byte("failed to start shell: "+err.Error()+"\r\n"))
 		return
 	}
 	uiLog.Info("terminal session started", "shell", shell, "from", remoteIP(r))
@@ -78,9 +85,13 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		_, _ = cmd.Process.Wait()
 	}()
 
-	// Detect a vanished client: a read deadline (refreshed on every frame, including the
-	// pong replies to the pings below) tears the read loop down if nothing arrives in time.
-	ws.readTimeout = wsPongWait
+	// Detect a vanished client: pong replies refresh this deadline; a silent peer makes the
+	// read loop fail and its deferred teardown kills the shell.
+	_ = ws.SetReadDeadline(time.Now().Add(wsPongWait))
+	ws.SetReadLimit(16 << 20)
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 	pingStop := make(chan struct{})
 	defer close(pingStop)
 	go func() {
@@ -91,7 +102,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 			case <-pingStop:
 				return
 			case <-t.C:
-				if err := ws.WriteMessage(opPing, nil); err != nil {
+				if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}
 			}
@@ -105,7 +116,7 @@ func (s *uiServer) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, err := ptm.Read(buf)
 			if n > 0 {
-				if werr := ws.WriteMessage(opBinary, buf[:n]); werr != nil {
+				if werr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
 					break
 				}
 			}
@@ -124,7 +135,7 @@ readLoop:
 			break
 		}
 		switch op {
-		case opText:
+		case websocket.TextMessage:
 			var ctl termControl
 			if json.Unmarshal(data, &ctl) == nil && ctl.Resize != nil {
 				_ = setPTYSize(ptm, ctl.Resize.Rows, ctl.Resize.Cols)
