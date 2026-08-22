@@ -133,7 +133,6 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <input type="hidden" name="do" value="shutdown"><button class="btn red">⏻ Shut down server</button></form>
 </p>
 
-<p style="margin-top:18px"><a href="/admin/backup">💾 Backups →</a></p>
 <p class="foot"><a href="/">← Home portal</a> · <a href="/logout">Log out</a></p>
 </div></body></html>`
 

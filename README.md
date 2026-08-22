@@ -58,14 +58,20 @@ This project answers those three:
 [`services.json`](services.json), so adding or removing an app updates it automatically.
 
 <details>
-<summary><b>📸 More screenshots</b> — admin, command center, backups, drives, terminal, setup guide</summary>
+<summary><b>📸 More screenshots</b> — install, setup wizard, logins, admin, apps, updates, commands, backups, drives, terminal</summary>
 
 <br>
 
 | | |
 |---|---|
+| **Install** — `hsctl install` starts the HTTPS dashboard and prints the first-login details | **Settings** — review the automatically detected server configuration |
+| <img src="docs/screenshots/install.png" alt="hsctl install output"> | <img src="docs/screenshots/setup-settings.png" alt="Setup wizard settings"> |
+| **Your logins** — save the generated app credentials before starting | **Ready** — live startup progress, then install the certificate on each device |
+| <img src="docs/screenshots/setup-logins.png" alt="Generated app logins"> | <img src="docs/screenshots/setup-complete.png" alt="Setup complete and certificate step"> |
 | **Admin** — CPU/RAM/disk, SMART health, backup freshness, container control | **Command Center** — every `hsctl` command as an explained card |
 | <img src="docs/screenshots/admin.png" alt="Admin dashboard"> | <img src="docs/screenshots/commands.png" alt="Command Center"> |
+| **Apps** — switch any app on or off; its data is kept, so switching back on is instant | **Updates** — newer app versions at a glance, routine ones applied in one click |
+| <img src="docs/screenshots/apps-enable-disable.png" alt="Apps page"> | <img src="docs/screenshots/updates.png" alt="Updates page"> |
 | **Backups** — destination, retention, off-site replica, snapshots | **Drives** — attached disks, one-click mount for backups |
 | <img src="docs/screenshots/backups.png" alt="Backups page"> | <img src="docs/screenshots/drives.png" alt="Drives page"> |
 | **Terminal** — a real shell on the server, admin-gated | **Setup guide** — the onboarding page you hand to a new user |
@@ -96,9 +102,11 @@ hsctl install
 
 That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS front door)
 and the dashboard, then tells you to open **`https://HOST/`** from any device on your
-network. The first visit lands in a **setup wizard**: confirm the autodetected IP and
-timezone, it generates every app's logins (shown once — save them), press **Start
-everything**, and it walks you through installing the certificate.
+network. The first visit lands in a **setup wizard**: confirm the autodetected IP,
+timezone, Pi-hole DNS address, and enabled apps; it generates every app's logins (shown
+once — save them), then press **Start everything**. Startup progress remains available if
+the browser briefly reconnects while images download, and the wizard finishes by walking
+you through installing the certificate.
 
 (Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).)
 

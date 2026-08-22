@@ -50,6 +50,10 @@ type uiServer struct {
 	updMu sync.Mutex
 	updSt []imageStatus
 	updAt time.Time
+
+	// setupRun lets the setup page resume its progress after a browser or proxy reconnect.
+	setupMu sync.Mutex
+	setupSt setupRunStatus
 }
 
 // restoreStatus is the live state of the background web restore, polled by its progress page.
@@ -101,6 +105,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/setup", s.requireAuth(s.handleSetup))
 	mux.HandleFunc("/setup/up", s.requireAuth(s.handleSetupUp))
+	mux.HandleFunc("/setup/up/status", s.requireAuth(s.handleSetupUpStatus))
 	mux.HandleFunc("/admin", s.requireAuth(s.handleAdmin))
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))

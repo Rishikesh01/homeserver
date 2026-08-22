@@ -64,7 +64,7 @@ Then open **`https://HOST/`** from any phone or laptop on the network. Your brow
 about the certificate the first time (the server made its own CA) — click through once.
 Log in as `admin` with the printed password and the dashboard opens the **setup wizard**:
 
-1. **Settings** — the LAN IP, timezone, admin email, Pi-hole DNS bind, which apps to run
+1. **Settings** — the LAN IP, timezone, Pi-hole DNS bind, which apps to run
    (untick any you don't want) and whether Vaultwarden allows open signups, all pre-filled.
    Usually just press *Continue*.
 2. **Your logins** — it writes `setup.conf` and every service's `.env` and shows the
@@ -86,13 +86,13 @@ hsctl setup                     # configure (press Enter to accept each suggeste
 hsctl up                        # start everything
 ```
 
-**What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, the dashboard
+**What `hsctl setup` asks:** your server's LAN IP, timezone, the dashboard
 port, the Pi-hole DNS bind address, and whether Vaultwarden allows open signups — all
 pre-filled with sensible autodetected values, so you can usually just press Enter through it.
 (The apps themselves aren't published on the LAN — Caddy reaches them over an internal
 network — so there are no per-app ports to set.) It writes the configuration to `setup.conf`
 and generates each service's secrets. Run it non-interactively with `--yes` plus flags like
-`--server-ip` / `--tz` / `--email`.
+`--server-ip` / `--tz`.
 
 **Your generated logins** are printed once at the end of `setup` (and saved to `WELCOME.txt`).
 You can see them again anytime — `hsctl secrets show` reads them straight from the `.env` files:

@@ -47,7 +47,7 @@ Every command above is also a card in the dashboard's Command Center (`/admin/co
 `setup` autodetects the LAN IP/timezone, picks a free dashboard port (the apps aren't
 published on the LAN — Caddy reaches them over an internal network — so there are no per-app
 host ports), reads any existing `.env` so it stays consistent with a running stack, and saves
-answers to `setup.conf` (re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
+answers to `setup.conf` (re-run non-interactively with `--yes`, or pass `--server-ip`, `--tz`, etc.).
 
 ## Backups & restore
 

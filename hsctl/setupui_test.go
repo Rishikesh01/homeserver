@@ -21,35 +21,34 @@ func setupTestRepo(t *testing.T) string {
 }
 
 func TestParseSetupFormValidation(t *testing.T) {
-	base := Config{UIPort: 8088}
+	base := Config{ACMEEmail: "existing@example.com", UIPort: 8088}
 	form := func(vals url.Values) (Config, error) {
 		r := httptest.NewRequest("POST", "/setup", strings.NewReader(vals.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		return parseSetupForm(base, r)
 	}
-	good := url.Values{"server_ip": {"192.168.1.20"}, "tz": {"Asia/Kolkata"}, "email": {"me@example.com"},
+	good := url.Values{"server_ip": {"192.168.1.20"}, "tz": {"Asia/Kolkata"},
 		"pihole_dns_bind": {"0.0.0.0"}, "vw_signups": {"on"}, "apps": {"vaultwarden", "nextcloud", "pihole", "imagetools"}}
 	c, err := form(good)
 	if err != nil {
 		t.Fatalf("valid form rejected: %v", err)
 	}
-	if c.ServerIP != "192.168.1.20" || c.TZ != "Asia/Kolkata" || !c.VWSignupsAllowed || c.UIPort != 8088 {
+	if c.ServerIP != "192.168.1.20" || c.TZ != "Asia/Kolkata" || c.ACMEEmail != "existing@example.com" || !c.VWSignupsAllowed || c.UIPort != 8088 {
 		t.Errorf("fields not applied: %+v", c)
 	}
 	// Unticked apps become the disabled list, in start order.
 	if got := strings.Join(c.DisabledApps, ","); got != "stirling,it-tools" {
 		t.Errorf("disabled apps = %q, want stirling,it-tools", got)
 	}
-	noApps := url.Values{"server_ip": {"10.0.0.2"}, "tz": {"UTC"}, "email": {"a@b"}}
+	noApps := url.Values{"server_ip": {"10.0.0.2"}, "tz": {"UTC"}}
 	if _, err := form(noApps); err == nil {
 		t.Error("a submit with every app unticked must be rejected")
 	}
 	bad := map[string]url.Values{
-		"ip":   {"server_ip": {"not-an-ip"}, "tz": {"UTC"}, "email": {"a@b"}},
-		"ipv6": {"server_ip": {"fe80::1"}, "tz": {"UTC"}, "email": {"a@b"}},
-		"tz":   {"server_ip": {"10.0.0.2"}, "tz": {"Europe Brussels"}, "email": {"a@b"}},
-		"mail": {"server_ip": {"10.0.0.2"}, "tz": {"UTC"}, "email": {"nope"}},
-		"dns":  {"server_ip": {"10.0.0.2"}, "tz": {"UTC"}, "email": {"a@b"}, "pihole_dns_bind": {"x"}},
+		"ip":   {"server_ip": {"not-an-ip"}, "tz": {"UTC"}},
+		"ipv6": {"server_ip": {"fe80::1"}, "tz": {"UTC"}},
+		"tz":   {"server_ip": {"10.0.0.2"}, "tz": {"Europe Brussels"}},
+		"dns":  {"server_ip": {"10.0.0.2"}, "tz": {"UTC"}, "pihole_dns_bind": {"x"}},
 	}
 	for name, v := range bad {
 		if _, err := form(v); err == nil {
@@ -82,11 +81,11 @@ func TestSetupWizardFlow(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	s.handleSetup(w, httptest.NewRequest("GET", "/setup", nil))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `name="server_ip"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `name="server_ip"`) || strings.Contains(w.Body.String(), `name="email"`) {
 		t.Fatalf("GET /setup should render the form, got %d", w.Code)
 	}
 
-	vals := url.Values{"server_ip": {"10.1.2.3"}, "tz": {"Asia/Kolkata"}, "email": {"me@example.com"}, "vw_signups": {"on"},
+	vals := url.Values{"server_ip": {"10.1.2.3"}, "tz": {"Asia/Kolkata"}, "vw_signups": {"on"},
 		"apps": {"vaultwarden", "nextcloud", "pihole", "stirling", "imagetools"}}
 	r := httptest.NewRequest("POST", "/setup", strings.NewReader(vals.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -106,7 +105,7 @@ func TestSetupWizardFlow(t *testing.T) {
 			t.Errorf("%s not written", f)
 		}
 	}
-	if kv, _ := readKV(filepath.Join(repo, "caddy/.env")); kv["SERVER_IP"] != "10.1.2.3" || kv["ACME_EMAIL"] != "me@example.com" || kv["VAULT_HTTPS"] != "8443" {
+	if kv, _ := readKV(filepath.Join(repo, "caddy/.env")); kv["SERVER_IP"] != "10.1.2.3" || kv["ACME_EMAIL"] != "you@example.com" || kv["VAULT_HTTPS"] != "8443" {
 		t.Errorf("caddy/.env not reconciled (or clobbered): %v", kv)
 	}
 	if kv, _ := readKV(filepath.Join(repo, "nextcloud/.env")); kv["NC_TRUSTED_DOMAINS"] != "10.1.2.3" {
@@ -149,6 +148,11 @@ func TestSetupWizardFlow(t *testing.T) {
 	s.handleSetupUp(w, httptest.NewRequest("GET", "/setup/up", nil))
 	if w.Code != 405 {
 		t.Errorf("GET /setup/up must be rejected, got %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	s.handleSetupUpStatus(w, httptest.NewRequest("POST", "/setup/up/status", nil))
+	if w.Code != 405 {
+		t.Errorf("POST /setup/up/status must be rejected, got %d", w.Code)
 	}
 }
 

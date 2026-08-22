@@ -42,7 +42,6 @@ func rootCmd() *cobra.Command {
 	setup.Flags().Bool("force", false, "regenerate ALL secrets (DESTRUCTIVE for live data)")
 	setup.Flags().String("server-ip", "", "server LAN IP")
 	setup.Flags().String("tz", "", "timezone")
-	setup.Flags().String("email", "", "admin email")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
 	setup.Flags().Bool("vw-signups", true, "allow open Vaultwarden signups")
 	setup.Flags().String("disable-apps", "", "comma-separated apps to switch off (e.g. stirling,it-tools)")

@@ -24,9 +24,6 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if f.Changed("tz") {
 		c.TZ, _ = f.GetString("tz")
 	}
-	if f.Changed("email") {
-		c.ACMEEmail, _ = f.GetString("email")
-	}
 	if f.Changed("pihole-dns-bind") {
 		c.PiholeDNSBind, _ = f.GetString("pihole-dns-bind")
 	}
@@ -105,7 +102,6 @@ func promptConfig(c Config) Config {
 	fmt.Println("== Configure (Enter accepts each [default]) ==")
 	c.ServerIP = ask("Server LAN IP", c.ServerIP)
 	c.TZ = ask("Timezone", c.TZ)
-	c.ACMEEmail = ask("Admin email (Let's Encrypt contact, if you ever use a domain)", c.ACMEEmail)
 	c.UIPort = atoiDef(ask("Dashboard (web UI) port", strconv.Itoa(c.UIPort)), c.UIPort)
 	// derived defaults follow the IP just entered
 	dnsDef := c.PiholeDNSBind
