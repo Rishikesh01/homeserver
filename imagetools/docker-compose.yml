@@ -2,7 +2,7 @@ services:
   imagetools:
     # Tiny static server for the client-side image tool (resize / compress-to-KB /
     # convert). All processing happens in the browser — nothing is uploaded.
-    image: nginx:1.27-alpine
+    image: nginx:1.31-alpine
     container_name: imagetools
     restart: unless-stopped
     # No published port: Caddy reaches it over the shared "edge" network as imagetools:80.
