@@ -21,14 +21,14 @@ root unless noted; everything with secrets is `chmod 600` and git-ignored (only 
 ## Main settings — `setup.conf`
 
 Written by `hsctl setup` (interactive — press Enter to accept each autodetected default),
-or non-interactively with flags (`hsctl setup --yes --server-ip … --email …`). Pre-seed by
+or non-interactively with flags (`hsctl setup --yes --server-ip … --tz …`). Pre-seed by
 copying `setup.conf.example` → `setup.conf`.
 
 | Key | Meaning | Flag |
 |-----|---------|------|
 | `SERVER_IP` | Server LAN IP (cert SAN, DNS, upstreams) | `--server-ip` |
 | `TZ_VAL` | Timezone (e.g. `Asia/Kolkata`) | `--tz` |
-| `ACME_EMAIL` | Admin email (only used if you move to a real domain) | `--email` |
+| `ACME_EMAIL` | Certificate contact email (only used if you move to a real domain; edit `setup.conf` manually) | — |
 | `UI_PORT` | Dashboard (hsctl ui) port — the one app still on a host port, since it runs on the host | — |
 | `PIHOLE_DNS_BIND` | Pi-hole `:53` bind IP (`0.0.0.0` or the LAN IP) | `--pihole-dns-bind` |
 | `VW_SIGNUPS_ALLOWED` | Open Vaultwarden signups (`true`/`false`) | `--vw-signups` |

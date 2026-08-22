@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -188,22 +189,27 @@ func (s *uiServer) streamHsctl(w http.ResponseWriter, args ...string) {
 	fl, _ := w.(http.Flusher)
 	fw := flushWriter{w: w, f: fl}
 
-	fmt.Fprintf(fw, "$ hsctl %s\n\n", strings.Join(args, " "))
+	if err := s.runHsctl(fw, args...); err != nil {
+		uiLog.Warn("command failed", "args", strings.Join(args, " "), "err", err)
+		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
+		return
+	}
+	fmt.Fprintf(fw, "\n[done]\n")
+}
+
+// runHsctl re-execs this binary and writes its combined output to out. It is shared by
+// live command streaming and setup's reconnectable background run.
+func (s *uiServer) runHsctl(out io.Writer, args ...string) error {
+	fmt.Fprintf(out, "$ hsctl %s\n\n", strings.Join(args, " "))
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(fw, "cannot locate hsctl binary: %v\n", err)
-		return
+		return fmt.Errorf("cannot locate hsctl binary: %w", err)
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+s.repo)
 	// Same writer for both streams: os/exec then serialises the two, so interleaved
 	// stdout/stderr stay coherent without a mutex.
-	cmd.Stdout, cmd.Stderr = fw, fw
-	if err := cmd.Run(); err != nil {
-		uiLog.Warn("command failed", "args", strings.Join(args, " "), "err", err)
-		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
-		return
-	}
-	fmt.Fprintf(fw, "\n[done]\n")
+	cmd.Stdout, cmd.Stderr = out, out
+	return cmd.Run()
 }

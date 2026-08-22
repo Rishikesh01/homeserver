@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -68,15 +69,65 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	render(w, setupTmpl, setupData{Cfg: c, Secrets: secrets, Step: 2})
 }
 
-// handleSetupUp streams `hsctl up` for the wizard's final step. It deliberately reuses the
-// fixed-argument exec path (no user input reaches the command line).
+// setupRunStatus is kept in memory so setup progress survives a dropped browser stream.
+type setupRunStatus struct {
+	Active bool   `json:"active"`
+	Done   bool   `json:"done"`
+	OK     bool   `json:"ok"`
+	Output string `json:"output"`
+}
+
+type setupRunWriter struct{ s *uiServer }
+
+func (w setupRunWriter) Write(p []byte) (int, error) {
+	w.s.setupMu.Lock()
+	w.s.setupSt.Output += string(p)
+	w.s.setupMu.Unlock()
+	return len(p), nil
+}
+
+// handleSetupUp starts `hsctl up` independently of the browser connection. The status endpoint
+// below makes it safe for the page to reconnect while images are downloading.
 func (s *uiServer) handleSetupUp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
 	uiLog.Info("setup wizard: starting stack", "from", remoteIP(r))
-	s.streamHsctl(w, "up")
+	s.setupMu.Lock()
+	if s.setupSt.Active {
+		s.setupMu.Unlock()
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
+	s.setupSt = setupRunStatus{Active: true}
+	s.setupMu.Unlock()
+	go func() {
+		err := s.runHsctl(setupRunWriter{s: s}, "up")
+		s.setupMu.Lock()
+		s.setupSt.Active = false
+		s.setupSt.Done = true
+		s.setupSt.OK = err == nil
+		if err != nil {
+			s.setupSt.Output += fmt.Sprintf("\n[command exited with error: %v]\n", err)
+		} else {
+			s.setupSt.Output += "\n[done]\n"
+		}
+		s.setupMu.Unlock()
+	}()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *uiServer) handleSetupUpStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	s.setupMu.Lock()
+	st := s.setupSt
+	s.setupMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 // parseSetupForm applies the wizard's fields over base, validating the ones a typo would
@@ -85,7 +136,6 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	c := base
 	c.ServerIP = strings.TrimSpace(r.FormValue("server_ip"))
 	c.TZ = strings.TrimSpace(r.FormValue("tz"))
-	c.ACMEEmail = strings.TrimSpace(r.FormValue("email"))
 	c.PiholeDNSBind = strings.TrimSpace(r.FormValue("pihole_dns_bind"))
 	c.VWSignupsAllowed = r.FormValue("vw_signups") == "on"
 	// Apps: every checked box is on; anything unchecked is switched off (browsers omit
@@ -110,9 +160,6 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	}
 	if c.TZ == "" || strings.ContainsAny(c.TZ, " \t\n") {
 		return c, fmt.Errorf("timezone must look like Europe/Brussels or Asia/Kolkata")
-	}
-	if c.ACMEEmail == "" || !strings.Contains(c.ACMEEmail, "@") {
-		return c, fmt.Errorf("enter an email address (it's only a contact for certificates)")
 	}
 	if c.PiholeDNSBind != "" && net.ParseIP(c.PiholeDNSBind) == nil {
 		return c, fmt.Errorf("%q isn't a valid IP for Pi-hole to listen on (use 0.0.0.0 or the server IP)", c.PiholeDNSBind)
@@ -147,10 +194,6 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
   <label for="tz">Timezone</label>
   <input class="in" id="tz" name="tz" value="{{.Cfg.TZ}}" required>
   <p class="hint">Used for Pi-hole's statistics and backup times, e.g. <code>Europe/Brussels</code>.</p>
-
-  <label for="email">Admin email</label>
-  <input class="in" id="email" name="email" value="{{.Cfg.ACMEEmail}}" required>
-  <p class="hint">Only a contact address for certificates. Nothing is sent anywhere.</p>
 
   <label for="pihole_dns_bind">Pi-hole DNS listen address</label>
   <input class="in" id="pihole_dns_bind" name="pihole_dns_bind" value="{{.Cfg.PiholeDNSBind}}">
@@ -198,22 +241,24 @@ saved.addEventListener('change',function(){ start.disabled=!saved.checked; });
 start.addEventListener('click',async function(){
   var out=document.getElementById('out');
   start.disabled=true; saved.disabled=true; out.textContent='Starting…\n';
-  var ok=false;
+  var shown=false;
+  function poll(){
+    fetch('/setup/up/status').then(function(res){
+      if(!res.ok) throw new Error('status '+res.status);
+      return res.json();
+    }).then(function(st){
+      out.textContent=st.output; out.scrollTop=out.scrollHeight;
+      if(st.active){ setTimeout(poll,1000); return; }
+      if(st.done && st.ok){ document.getElementById('done').style.display='block'; document.getElementById('done').scrollIntoView({behavior:'smooth'}); return; }
+      start.disabled=false; saved.disabled=false;
+      if(!shown){ out.textContent+='\n\nSomething went wrong — fix the problem above and press Start again (safe to repeat).'; shown=true; }
+    }).catch(function(){ setTimeout(poll,1500); });
+  }
   try{
     const res=await fetch('/setup/up',{method:'POST'});
-    if(!res.ok){ out.textContent='error '+res.status+': '+(await res.text()); return; }
-    out.textContent='';
-    const reader=res.body.getReader(), dec=new TextDecoder();
-    for(;;){
-      const step=await reader.read();
-      if(step.done) break;
-      out.textContent+=dec.decode(step.value,{stream:true});
-      out.scrollTop=out.scrollHeight;
-    }
-    ok=out.textContent.trimEnd().endsWith('[done]');
-  }catch(e){ out.textContent+='\nrequest failed: '+e; }
-  if(ok){ document.getElementById('done').style.display='block'; document.getElementById('done').scrollIntoView({behavior:'smooth'}); }
-  else { start.disabled=false; out.textContent+='\n\nSomething went wrong — fix the problem above and press Start again (safe to repeat).'; }
+    if(!res.ok && res.status!==409) throw new Error('start '+res.status);
+  }catch(e){ out.textContent+='\nConnection interrupted; checking whether the server started the job…\n'; }
+  poll();
 });
 </script>
 {{end}}
