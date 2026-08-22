@@ -9,6 +9,13 @@
 #   make sandbox-logs      follow the sandbox logs
 #   make sandbox-down      stop + clean up everything
 #
+#   make uninstall CONFIRM=yes   remove the whole homeserver install from this machine:
+#                                dashboard service + timer, /usr/local/bin/hsctl, every app's
+#                                containers, volumes (ALL APP DATA), images, the shared docker
+#                                network, and the generated secrets/config in this repo.
+#                                Backup config + repos (backup.conf, .restic-password,
+#                                .backup-env, backups/) are kept so data can be restored.
+#
 # Knobs (override on the command line, e.g. `make sandbox PORT=19000`):
 #   IMAGES    image manifest to use            (default sandbox/images.env)
 #   PORT      host port for the admin UI        (default 18088)
@@ -33,10 +40,10 @@ REPO          ?= $(shell sed -n 's/^RESTIC_REPO=//p' backup.conf 2>/dev/null)
 # on disk; remote (sftp:/b2:) repos aren't wired in, and an absent path just skips it.
 REPO_MOUNT := $(if $(wildcard $(REPO)),-v $(abspath $(REPO)):/backup-repo:ro -v $(abspath $(PASSFILE)):/backup-pass:ro,)
 
-.PHONY: sandbox sandbox-restore sandbox-shell sandbox-logs sandbox-down sandbox-purge help
+.PHONY: sandbox sandbox-restore sandbox-shell sandbox-logs sandbox-down sandbox-purge uninstall help
 
 help:
-	@sed -n 's/^#\( \|$$\)//p' Makefile | sed -n '1,20p'
+	@sed -n 's/^#\( \|$$\)//p' Makefile | sed -n '1,26p'
 
 sandbox: ## build the sandbox image (with your current hsctl) and start it
 	@mkdir -p sandbox/_build
@@ -81,3 +88,41 @@ sandbox-down: ## stop the sandbox and sweep its loopback device off the host
 sandbox-purge: sandbox-down ## also delete the cached nested images/data volume
 	-docker volume rm $(DATA_VOL) >/dev/null 2>&1
 	@echo "purged $(DATA_VOL)."
+
+# ---- uninstall -------------------------------------------------------------------------
+# Every directory with a docker-compose.yml is an app stack (matches what hsctl drives).
+APP_DIRS   := $(patsubst %/docker-compose.yml,%,$(wildcard */docker-compose.yml))
+UNITS      := hsctl-ui.service hsctl-backup.service hsctl-backup.timer
+EDGE_NET   := homeserver-edge
+HSCTL_BIN  ?= /usr/local/bin/hsctl
+# Generated per-host files (see .gitignore). Backup config/repos are intentionally NOT here.
+GENERATED  := $(wildcard */.env) .ui-password setup.conf WELCOME.txt caddy-root-ca.crt pihole/custom.list hsctl/hsctl
+
+uninstall: ## remove services, binary, containers, volumes, images, network, generated config (CONFIRM=yes)
+ifneq ($(CONFIRM),yes)
+	@echo "This DELETES all app data (docker volumes) for: $(APP_DIRS)"
+	@echo "and removes $(HSCTL_BIN), the systemd units and the generated config in this repo."
+	@echo "Backups (backup.conf, .restic-password, .backup-env, backups/) are kept."
+	@echo ""
+	@echo "Re-run as:  make uninstall CONFIRM=yes"
+	@exit 1
+endif
+	@echo "== stopping + removing systemd units =="
+	-sudo systemctl disable --now $(UNITS) 2>/dev/null
+	-sudo rm -f $(addprefix /etc/systemd/system/,$(UNITS))
+	-sudo systemctl daemon-reload
+	-sudo systemctl reset-failed 2>/dev/null
+	@echo "== removing app containers, volumes and images =="
+	@for d in $(APP_DIRS); do \
+		echo "-- $$d"; \
+		( cd $$d && docker compose down -v --rmi all --remove-orphans ) || true; \
+	done
+	-docker network rm $(EDGE_NET) 2>/dev/null
+	@echo "== removing hsctl binary =="
+	-sudo rm -f $(HSCTL_BIN)
+	@echo "== removing generated config/secrets in this repo =="
+	rm -f $(GENERATED)
+	find . -name '.hsctl-tmp-*' -not -path './.git/*' -delete 2>/dev/null || true
+	@echo ""
+	@echo "Uninstalled. Kept: this repo's source, backup.conf, .restic-password, .backup-env, backups/."
+	@echo "Docker itself was not removed. To delete the backup repo too, remove it by hand."
