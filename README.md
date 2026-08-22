@@ -58,7 +58,7 @@ This project answers those three:
 [`services.json`](services.json), so adding or removing an app updates it automatically.
 
 <details>
-<summary><b>📸 More screenshots</b> — admin, command center, backups, drives, terminal, setup guide</summary>
+<summary><b>📸 More screenshots</b> — install, setup wizard, admin, commands, backups, drives, terminal</summary>
 
 <br>
 
@@ -70,6 +70,10 @@ This project answers those three:
 | <img src="docs/screenshots/backups.png" alt="Backups page"> | <img src="docs/screenshots/drives.png" alt="Drives page"> |
 | **Terminal** — a real shell on the server, admin-gated | **Setup guide** — the onboarding page you hand to a new user |
 | <img src="docs/screenshots/terminal.png" alt="Terminal"> | <img src="docs/screenshots/setup-guide.png" alt="Setup guide"> |
+| **Install** — `hsctl install` starts the HTTPS dashboard and prints the first-login details | **Settings** — review the automatically detected server configuration |
+| <img src="docs/screenshots/install.png" alt="hsctl install output"> | <img src="docs/screenshots/setup-settings.png" alt="Setup wizard settings"> |
+| **Your logins** — save the generated app credentials before starting | **Ready** — live startup progress, then install the certificate on each device |
+| <img src="docs/screenshots/setup-logins.png" alt="Generated app logins"> | <img src="docs/screenshots/setup-complete.png" alt="Setup complete and certificate step"> |
 
 </details>
 
