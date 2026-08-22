@@ -96,9 +96,11 @@ hsctl install
 
 That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS front door)
 and the dashboard, then tells you to open **`https://HOST/`** from any device on your
-network. The first visit lands in a **setup wizard**: confirm the autodetected IP and
-timezone, it generates every app's logins (shown once — save them), press **Start
-everything**, and it walks you through installing the certificate.
+network. The first visit lands in a **setup wizard**: confirm the autodetected IP,
+timezone, Pi-hole DNS address, and enabled apps; it generates every app's logins (shown
+once — save them), then press **Start everything**. Startup progress remains available if
+the browser briefly reconnects while images download, and the wizard finishes by walking
+you through installing the certificate.
 
 (Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).)
 
