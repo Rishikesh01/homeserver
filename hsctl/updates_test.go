@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -158,25 +158,57 @@ func TestServiceDirFor(t *testing.T) {
 	}
 }
 
-func TestBumpImageTag(t *testing.T) {
-	compose := "services:\n  vaultwarden:\n    image: vaultwarden/server:1.36.0\n    restart: unless-stopped\n"
-	got, err := bumpImageTag(compose, "vaultwarden/server:1.36.0", "vaultwarden/server:1.37.0")
-	if err != nil {
-		t.Fatalf("bumpImageTag: %v", err)
+func TestPinVarFor(t *testing.T) {
+	compose := "services:\n  vaultwarden:\n    image: ${VAULTWARDEN_IMAGE:-vaultwarden/server:1.36.0}\n    restart: unless-stopped\n"
+	// No override yet: the running ref matches the compose default.
+	v, err := pinVarFor(compose, nil, "vaultwarden/server:1.36.0")
+	if err != nil || v != "VAULTWARDEN_IMAGE" {
+		t.Fatalf("pinVarFor(default) = (%q, %v), want VAULTWARDEN_IMAGE", v, err)
 	}
-	want := "services:\n  vaultwarden:\n    image: vaultwarden/server:1.37.0\n    restart: unless-stopped\n"
-	if got != want {
-		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	// A previously applied update: the container runs the .env override, and the next
+	// update must match through it — while the shadowed default matches nothing.
+	env := map[string]string{"VAULTWARDEN_IMAGE": "vaultwarden/server:1.36.5"}
+	v, err = pinVarFor(compose, env, "vaultwarden/server:1.36.5")
+	if err != nil || v != "VAULTWARDEN_IMAGE" {
+		t.Fatalf("pinVarFor(override) = (%q, %v), want VAULTWARDEN_IMAGE", v, err)
 	}
-	// Only the matching service's line changes in a multi-image file.
-	multi := "  db:\n    image: postgres:16-alpine\n  app:\n    image: nextcloud:30-apache\n"
-	got, err = bumpImageTag(multi, "postgres:16-alpine", "postgres:17-alpine")
-	if err != nil || !strings.Contains(got, "postgres:17-alpine") || !strings.Contains(got, "nextcloud:30-apache") {
-		t.Errorf("multi-image edit wrong (err %v):\n%s", err, got)
+	if _, err := pinVarFor(compose, env, "vaultwarden/server:1.36.0"); err == nil {
+		t.Error("shadowed default should not match")
 	}
-	// A drifted compose file must refuse the edit, not guess.
-	if _, err := bumpImageTag(compose, "vaultwarden/server:1.35.0", "vaultwarden/server:1.37.0"); err == nil {
+	// Only the matching service resolves in a multi-image file.
+	multi := "  db:\n    image: ${DB_IMAGE:-postgres:16-alpine}\n  app:\n    image: ${APP_IMAGE:-nextcloud:30-apache}\n"
+	if v, err := pinVarFor(multi, nil, "postgres:16-alpine"); err != nil || v != "DB_IMAGE" {
+		t.Errorf("pinVarFor(multi) = (%q, %v), want DB_IMAGE", v, err)
+	}
+	// A bare pin has no variable to override — refuse, don't guess.
+	if _, err := pinVarFor("  image: postgres:16-alpine\n", nil, "postgres:16-alpine"); err == nil {
+		t.Error("bare pin should error")
+	}
+	// A drifted compose file (nothing resolves to the running ref) must refuse.
+	if _, err := pinVarFor(compose, nil, "vaultwarden/server:1.35.0"); err == nil {
 		t.Error("drifted file should error")
+	}
+}
+
+func TestUpsertEnvKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	// Missing file: created — it-tools/imagetools have no .env until their first update.
+	if err := upsertEnvKey(path, "ITTOOLS_IMAGE", "a:1"); err != nil {
+		t.Fatal(err)
+	}
+	// Existing file: other keys survive, the key is replaced in place.
+	if err := upsertEnvKey(path, "OTHER", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := upsertEnvKey(path, "ITTOOLS_IMAGE", "a:2"); err != nil {
+		t.Fatal(err)
+	}
+	kv, err := readKV(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv["ITTOOLS_IMAGE"] != "a:2" || kv["OTHER"] != "x" {
+		t.Errorf("readKV = %v, want ITTOOLS_IMAGE=a:2 and OTHER=x", kv)
 	}
 }
 

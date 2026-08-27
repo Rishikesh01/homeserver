@@ -20,7 +20,9 @@ import (
 // probe covers that gap: it lists the registry's tags and looks for one with the
 // same shape as the pin (same dotted-number count, same variant suffix) but a
 // higher version. Read-only — updating stays the deliberate flow (test in the
-// sandbox, then edit the tag / compose pull + up).
+// sandbox, then --apply). Applying records the new tag in the service's gitignored
+// .env (the compose files declare pins as `image: ${VAR:-default}`), so updates
+// never dirty a tracked file — pin bumps are deliberately not committed to the repo.
 
 // imageStatus is one image's check result.
 type imageStatus struct {
@@ -324,23 +326,25 @@ func isMajorJump(cur, next string) bool {
 	return okA && okB && a[0] != b[0] && a[0] < 2000
 }
 
-// bumpImageTag rewrites the compose file's `image: oldRef` line(s) to newRef.
-// Errors if no line matches — the file drifted from the running container, and
-// guessing which line to edit could repin the wrong service.
-func bumpImageTag(text, oldRef, newRef string) (string, error) {
-	lines := strings.Split(text, "\n")
-	found := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "image:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")) == oldRef {
-			lines[i] = strings.Replace(line, oldRef, newRef, 1)
-			found = true
+// pinVarFor finds the compose interpolation variable whose effective image ref (the
+// .env override when set, else the compose default) equals ref — the pin an update is
+// about to move. Matching uses parseComposeImage, the same definition of a pin that
+// composePins uses, so a pin `hsctl images` accepts is always movable here. Errors when
+// nothing resolves to ref (the file drifted from the running container, and guessing
+// could repin the wrong service) or when the match is a bare pin with no variable to
+// override.
+func pinVarFor(composeText string, env map[string]string, ref string) (string, error) {
+	for _, line := range strings.Split(composeText, "\n") {
+		varName, def, ok := parseComposeImage(line)
+		if !ok || effectiveRef(varName, def, env) != ref {
+			continue
 		}
+		if varName == "" {
+			return "", fmt.Errorf("`image: %s` is a bare pin without an ${..._IMAGE} variable — edit the compose file by hand", ref)
+		}
+		return varName, nil
 	}
-	if !found {
-		return "", fmt.Errorf("no `image: %s` line found — the compose file has drifted from the running container; edit it by hand", oldRef)
-	}
-	return strings.Join(lines, "\n"), nil
+	return "", fmt.Errorf("no image pin resolving to %s — the compose file has drifted from the running container; edit it by hand", ref)
 }
 
 // checkAllUpdates runs both probes for every stack container and returns the
@@ -403,8 +407,9 @@ func cmdUpdates(apply []string, yes bool) error {
 	return nil
 }
 
-// applyUpdates performs the chosen updates. For a NEWER RELEASE it rewrites the
-// pin in the service's docker-compose.yml first; either way the service is then
+// applyUpdates performs the chosen updates. For a NEWER RELEASE it first records the
+// new pin in the service's gitignored .env (the tracked docker-compose.yml, which
+// declares `image: ${VAR:-default}`, is never touched); either way the service is then
 // compose pull + up -d. "all" selects every stale image but skips major jumps —
 // postgres or Nextcloud majors need their own upgrade paths, so those must be
 // named explicitly (and confirmed) one at a time.
@@ -451,7 +456,7 @@ func applyUpdates(repo string, statuses []imageStatus, targets []string, yes boo
 			continue
 		}
 		tag := imageTag(st.Image)
-		fmt.Printf("  %-16s %s -> %s (edits %s/docker-compose.yml)\n", st.Container, tag, st.Newer, serviceDirFor(st.Container))
+		fmt.Printf("  %-16s %s -> %s (pins it in %s/.env)\n", st.Container, tag, st.Newer, serviceDirFor(st.Container))
 		if isMajorJump(tag, st.Newer) {
 			fmt.Printf("  %-16s ^ MAJOR upgrade — make sure you've tested it in the sandbox and have a fresh backup\n", "")
 		}
@@ -469,19 +474,25 @@ func applyUpdates(repo string, statuses []imageStatus, targets []string, yes boo
 		if st.Newer == "" {
 			continue
 		}
-		path := filepath.Join(repo, serviceDirFor(st.Container), "docker-compose.yml")
-		data, err := os.ReadFile(path)
+		svc := serviceDirFor(st.Container)
+		dir := filepath.Join(repo, svc)
+		data, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
 		if err != nil {
 			return err
 		}
-		edited, err := bumpImageTag(string(data), st.Image, retag(st.Image, st.Newer))
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		if err := os.WriteFile(path, []byte(edited), 0644); err != nil {
+		env, err := readKV(filepath.Join(dir, ".env"))
+		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		fmt.Printf("pinned %s to %s\n", path, retag(st.Image, st.Newer))
+		varName, err := pinVarFor(string(data), env, st.Image)
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Join(svc, "docker-compose.yml"), err)
+		}
+		newRef := retag(st.Image, st.Newer)
+		if err := upsertEnvKey(filepath.Join(dir, ".env"), varName, newRef); err != nil {
+			return err
+		}
+		fmt.Printf("pinned %s=%s in %s\n", varName, newRef, filepath.Join(svc, ".env"))
 	}
 
 	done := map[string]bool{}

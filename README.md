@@ -2,7 +2,7 @@
 
 # 🏠 Homeserver
 
-**Your passwords, files and photos — on a machine you own, in a room you're standing in.**
+### **Your passwords, files and photos — on a machine you own, in a room you're standing in.**
 
 A self-hosted stack for a home network: a password manager, cloud storage, a network
 ad-blocker and a few web tools, all behind HTTPS. One Go binary — **`hsctl`** — sets it up,
@@ -13,6 +13,13 @@ to touch a terminal.
 [![CI](https://github.com/Rishikesh01/homeserver/actions/workflows/ci.yml/badge.svg)](https://github.com/Rishikesh01/homeserver/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/Rishikesh01/homeserver?label=release&sort=semver)](https://github.com/Rishikesh01/homeserver/tags)
 [![Go](https://img.shields.io/github/go-mod/go-version/Rishikesh01/homeserver?filename=hsctl%2Fgo.mod)](hsctl/go.mod)
+[![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](docs/setup.md)
+
+**[Quick start](#-quick-start)** ·
+**[What you get](#-what-you-get)** ·
+**[How it works](#-how-it-works)** ·
+**[Backups](#-backups)** ·
+**[Documentation](#-documentation)**
 
 <img src="docs/screenshots/portal.png" alt="The homeserver dashboard — tiles for every app" width="820">
 
@@ -20,28 +27,58 @@ to touch a terminal.
 
 ---
 
-## Why
+## ✨ Why
 
 Most self-hosting guides leave you with a pile of `docker-compose.yml` files and no answer for
 the parts that actually matter: how does a family member get on it, is HTTPS real, and *does
 the backup actually restore?*
 
-This project answers those three:
+<table>
+<tr>
+<td width="50%" valign="top">
 
-- **Everything is HTTPS, on your LAN, with no public domain.** Caddy runs a private CA and
-  issues real certificates for the server's IP. Install the root cert once per device and the
-  browser padlock is genuine — which is what makes the Bitwarden and Nextcloud mobile apps
-  agree to connect at all.
-- **Non-technical users get a dashboard, not a shell.** Tiles for each app, a rendered
-  setup guide they can follow themselves, and an admin area with system health, drives,
-  backups, a command center and a real terminal.
-- **The backups are tested, not hoped for.** `hsctl backup verify` runs a five-check drill —
-  including booting a real Vaultwarden image and proving a byte-identical SQLite round-trip,
-  plus a WAL-loss regression test — against throwaway volumes, never your live data.
+### 🔐 HTTPS that's real
+
+Everything runs over HTTPS **on your LAN, with no public domain**. Caddy runs a private CA
+and issues real certificates for the server's IP. Install the root cert once per device and
+the browser padlock is genuine — which is what makes the Bitwarden and Nextcloud mobile apps
+agree to connect at all.
+
+</td>
+<td width="50%" valign="top">
+
+### 🖥️ A dashboard, not a shell
+
+Non-technical users get **tiles for each app**, a rendered setup guide they can follow
+themselves, and an admin area with system health, drives, backups, a command center and a
+real terminal.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 💾 Backups that are tested, not hoped for
+
+`hsctl backup verify` runs a **five-check restore drill** — including booting a real
+Vaultwarden image and proving a byte-identical SQLite round-trip, plus a WAL-loss
+regression test — against throwaway volumes, never your live data.
+
+</td>
+<td width="50%" valign="top">
+
+### ⚡ One command in, one command out
+
+A **prebuilt `hsctl`** installs on x86-64 or arm64 (a Pi 4/5 on a 64-bit OS works) with no
+toolchain — and `sudo hsctl uninstall` removes everything **except your data and backups**.
+
+</td>
+</tr>
+</table>
 
 ---
 
-## What you get
+## 📦 What you get
 
 | Tile | What it is | Folder | URL |
 |------|-----------|--------|-----|
@@ -52,7 +89,7 @@ This project answers those three:
 | 📄 Stirling-PDF | Compress / merge / split / convert PDFs | `stirling/` | https://HOST:8446 |
 | 🧰 IT-Tools | Converters, QR codes, hashes, image↔base64 | `it-tools/` | https://HOST:8447 |
 | 🖼️ Image tool | Resize / compress-to-KB / convert (in your browser) | `imagetools/` | https://HOST:8448 |
-| Caddy | The HTTPS front door — one cert per app | `caddy/` | — |
+| 🚪 Caddy | The HTTPS front door — one cert per app | `caddy/` | — |
 
 `HOST` = your server's LAN IP. The dashboard is built from
 [`services.json`](services.json), so adding or removing an app updates it automatically.
@@ -81,26 +118,50 @@ This project answers those three:
 
 ---
 
-## Quick start
+## 🚀 Quick start
 
-**You'll need:** a Linux machine that stays on (Ubuntu/Debian assumed) · a user with `sudo` ·
-**Docker Engine + Compose v2** (`curl -fsSL https://get.docker.com | sh`) · **Go** to build
-`hsctl` once (see [`hsctl/go.mod`](hsctl/go.mod) for the version) · a **fixed LAN IP** for the
-server (a DHCP reservation in your router). Optional: `restic` for backups,
-`docker-buildx-plugin` for `hsctl updates`, `smartmontools` for disk health.
+**You'll need:**
+
+- 🖥️ a **64-bit Linux machine that stays on** — x86-64 or arm64: a mini-PC, a NUC, or a
+  Raspberry Pi 4/5 on 64-bit Raspberry Pi OS (Ubuntu/Debian assumed)
+- 👤 a user with `sudo`
+- 🐳 **Docker Engine + Compose v2** — `curl -fsSL https://get.docker.com | sh`
+- 📡 a **fixed LAN IP** for the server (a DHCP reservation in your router)
+- ➕ optional: `restic` for backups, `docker-buildx-plugin` for `hsctl updates`,
+  `smartmontools` for disk health
 
 ```bash
-# 1. Get the code onto the server
-git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
+# 1. Install hsctl + the stack (prebuilt binary, no Go toolchain needed)
+curl -fsSL https://raw.githubusercontent.com/Rishikesh01/homeserver/main/install.sh | sh
 
-# 2. Build hsctl (version stamped from the git tag) and install it system-wide
-make -C hsctl install
-
-# 3. Start the dashboard as a service — it prints the URL and your admin password
-hsctl install
+# 2. Start the dashboard as a service — it prints the URL and your admin password
+cd /opt/homeserver && sudo hsctl install
 ```
 
-That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS front door)
+<details>
+<summary>What the installer does — and building from source instead</summary>
+
+<br>
+
+It downloads the `hsctl` release binary for your architecture, checks it against the
+release's `checksums.txt`, installs it to `/usr/local/bin`, and clones this repo at the
+matching tag into `/opt/homeserver`, owned by your user (`hsctl` reads the compose files
+from there at runtime). It starts nothing, writes no config, and runs **once** — it refuses
+to touch an existing install; after that, app updates come from `hsctl updates` and the
+dashboard. `VERSION=`, `HOMESERVER_DIR=` and `PREFIX=` override the release, the checkout
+path and the install prefix — place them **before `sh`**
+(`curl -fsSL … | VERSION=v1.8.0 sh`); before `curl` they'd only reach curl.
+
+To build it yourself instead — needs Go, see [`hsctl/go.mod`](hsctl/go.mod) for the version:
+
+```bash
+git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
+make -C hsctl install     # version stamped from the git tag
+```
+
+</details>
+
+`sudo hsctl install` is the last thing you type. It brings up Caddy (the HTTPS front door)
 and the dashboard, then tells you to open **`https://HOST/`** from any device on your
 network. The first visit lands in a **setup wizard**: confirm the autodetected IP,
 timezone, Pi-hole DNS address, and enabled apps; it generates every app's logins (shown
@@ -108,18 +169,20 @@ once — save them), then press **Start everything**. Startup progress remains a
 the browser briefly reconnects while images download, and the wizard finishes by walking
 you through installing the certificate.
 
-(Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).)
+> [!TIP]
+> Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).
 
-Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
-certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
-per-OS steps live in [ONBOARDING.md](ONBOARDING.md), which the dashboard also serves at
-`https://HOST/help` so you can just send someone the link.
+> [!IMPORTANT]
+> Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
+> certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
+> per-OS steps live in [ONBOARDING.md](ONBOARDING.md), which the dashboard also serves at
+> `https://HOST/help` so you can just send someone the link.
 
 Full walkthrough: **[docs/setup.md](docs/setup.md)**.
 
 ---
 
-## How it works
+## 🧭 How it works
 
 ```
                     ┌─────────────────────────── your LAN ────────────────────────────┐
@@ -152,14 +215,15 @@ More on the security posture: **[docs/security.md](docs/security.md)**.
 
 ---
 
-## `hsctl`
+## 🧰 `hsctl`
 
 ```
+sudo hsctl install                Dashboard as a systemd service (+ first-install bootstrap → setup wizard)
 hsctl setup                       Configure and generate each service's .env (interactive)
 hsctl up | down | status          Start / stop / inspect the stack
 hsctl updates                     Check whether newer app images are available (read-only)
+hsctl images                      Check every app image runs on amd64 and arm64 — this machine included
 hsctl get-ca                      Write caddy-root-ca.crt to install on devices
-hsctl install                     Dashboard as a systemd service (+ first-install bootstrap → setup wizard)
 hsctl ui                          Serve the web dashboard
 hsctl secrets show                Print the generated logins (read from the .env files)
 hsctl apps [enable|disable NAME]  List apps / switch one on or off (data kept; also Admin → Apps)
@@ -169,14 +233,39 @@ hsctl backup list | forget        List snapshots / apply retention and prune
 hsctl backup verify               Self-test backup+restore on throwaway volumes
 hsctl backup replicate            Copy every snapshot to the off-site replica
 hsctl backup restore [snapshot]   Extract a snapshot (--into-volumes = one-command DR)
+sudo hsctl uninstall              Remove everything EXCEPT your data (--data / --all delete more)
 ```
 
 Every one of these is also a card in the dashboard's Command Center, with an explanation and a
-Run button. Full reference: **[hsctl/README.md](hsctl/README.md)**.
+Run button (uninstall stays terminal-only, deliberately). Full reference:
+**[hsctl/README.md](hsctl/README.md)**.
 
 ---
 
-## Backups
+## 🔄 Updating — and uninstalling
+
+Updates are pull-based and yours to schedule; nothing changes under you:
+
+- **Check and apply from the dashboard's Updates page** (or `hsctl updates`). Every app is
+  compared against its registry; routine updates apply in one click. Major upgrades (a new
+  Nextcloud or Postgres generation) are deliberately skipped there — try those in the
+  [sandbox](sandbox/README.md) first, then apply them one at a time.
+- **Applied updates live outside git.** The compose files pin images as
+  `image: ${VAR:-default}`; applying an update records the new pin in that app's gitignored
+  `.env`. Your checkout stays pristine — no local drift, nothing to stash, nothing to commit.
+- **Compatibility is checked, not assumed.** The "Check app compatibility" card
+  (`hsctl images`) asks each registry which processor types every pin publishes and confirms
+  the whole stack runs on both amd64 and arm64 — including the machine it just ran on.
+
+And if you're done, leaving is as safe as staying: **`sudo hsctl uninstall`** removes the
+apps, their images, the services, the test sandbox, the generated secrets and `hsctl`
+itself — but keeps your **app data volumes and backups**. Deleting those too is explicit
+(`--data` for the volumes, `--all` for the backups as well) and always sits behind a typed
+double confirmation.
+
+---
+
+## 💾 Backups
 
 Encrypted, deduplicated [restic](https://restic.net) snapshots — the destination only ever
 sees ciphertext. A snapshot holds a consistent Postgres dump, a consistent Vaultwarden SQLite
@@ -198,7 +287,7 @@ Details: **[docs/backup-restore.md](docs/backup-restore.md)**.
 
 ---
 
-## Documentation
+## 📚 Documentation
 
 | Doc | What's in it |
 |-----|--------------|
@@ -213,7 +302,7 @@ Details: **[docs/backup-restore.md](docs/backup-restore.md)**.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome. The short version:
 
@@ -227,14 +316,19 @@ make sandbox            # try changes in an isolated copy of the whole stack
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the details, and
 [docs/adding-an-app.md](docs/adding-an-app.md) if you're adding a service.
 
-## Security
+## 🔒 Security
 
-This is designed for a **LAN only** — don't port-forward it. The threat model and hardening
-checklist are in **[docs/security.md](docs/security.md)**.
+> [!WARNING]
+> This is designed for a **LAN only** — don't port-forward it. The threat model and
+> hardening checklist are in **[docs/security.md](docs/security.md)**.
 
-## License
+---
+
+<div align="center">
 
 [MIT](LICENSE) © Rishikesh
 
 The applications this stack runs (Vaultwarden, Nextcloud, Pi-hole, Stirling-PDF, IT-Tools,
 Caddy) are separate projects under their own licenses.
+
+</div>

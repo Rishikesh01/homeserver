@@ -1,0 +1,71 @@
+name: Release
+
+# Publishes the hsctl binaries for a release. Push a tag (`git tag v1.9.0 && git push
+# --tags`) and this attaches linux/amd64 + linux/arm64 tarballs, plus checksums.txt, to
+# that tag's release — which is what install.sh downloads. Re-runnable by hand for a tag
+# that already exists (workflow_dispatch), including tags that predate this workflow;
+# existing assets are replaced, notes untouched.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish binaries for, e.g. v1.8.0"
+        required: true
+
+permissions:
+  contents: write   # create the release and upload its assets
+
+jobs:
+  release:
+    name: build + publish
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0   # the dispatch path grafts release tooling from the default branch
+
+      # A dispatched tag can predate the release tooling (`make dist` shipped together
+      # with this workflow), so build the tag's SOURCE with the CURRENT Makefile — the
+      # dist target only cross-compiles and tars, it doesn't change what gets built.
+      - name: Use current release tooling (dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: git checkout origin/${{ github.event.repository.default_branch }} -- hsctl/Makefile
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hsctl/go.mod
+          cache-dependency-path: hsctl/go.sum
+
+      # $TAG always comes through the job env, never ${{ }}-interpolated into a script —
+      # a crafted dispatch input must not be able to inject shell with a write token.
+      - name: Cross-compile
+        run: make -C hsctl dist VERSION="$TAG"
+
+      # Catch a mis-stamped version or a tarball that silently built for the wrong
+      # target before it reaches a release page.
+      - name: Smoke-test the archives
+        working-directory: hsctl/dist
+        run: |
+          tar -xzf "hsctl_${TAG}_linux_amd64.tar.gz"
+          ./hsctl --version | grep -q "$TAG" || { echo "amd64 binary is not stamped $TAG"; exit 1; }
+          rm hsctl
+          tar -xzf "hsctl_${TAG}_linux_arm64.tar.gz"
+          file hsctl | grep -q "ARM aarch64" || { echo "arm64 tarball is not an aarch64 binary"; exit 1; }
+          rm hsctl
+
+      - name: Publish to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets="hsctl/dist/hsctl_${TAG}_linux_amd64.tar.gz hsctl/dist/hsctl_${TAG}_linux_arm64.tar.gz hsctl/dist/checksums.txt"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $assets --clobber
+          else
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" $assets
+          fi

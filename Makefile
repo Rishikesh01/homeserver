@@ -9,19 +9,17 @@
 #   make sandbox-logs      follow the sandbox logs
 #   make sandbox-down      stop + clean up everything
 #
-#   make uninstall        remove the whole homeserver install from this machine. Asks
-#                         twice before touching anything (CONFIRM=yes skips the prompts):
-#                         dashboard service + timer, /usr/local/bin/hsctl, every app's
-#                         containers, volumes (ALL APP DATA), images, the shared docker
-#                         network, orphaned containers/volumes from renamed or removed
-#                         app dirs, the test sandbox, and the generated secrets/config
-#                         in this repo. Backup config + repos (backup.conf,
-#                         .restic-password, .backup-env, backups/) are kept so data can
-#                         be restored.
-#   make uninstall ALL=yes  all of the above PLUS backup.conf, .restic-password,
-#   (= make uninstall-all)  .backup-env and backups/ — deleted permanently, every snapshot
-#                         gone. ALWAYS asks for double confirmation, even with CONFIRM=yes.
-#                         (make has no literal --all option, hence ALL=yes.)
+#   make uninstall        remove the whole homeserver install from this machine, KEEPING
+#                         all user data by default: dashboard service + timer, hsctl,
+#                         every app's containers and images, the shared docker network,
+#                         orphans from renamed/removed app dirs, the test sandbox, and
+#                         the generated secrets/config in this repo all go — the app data
+#                         volumes and the backups stay. CONFIRM=yes skips the prompt.
+#   make uninstall DATA=yes  also delete the app data volumes (ALL APP DATA). Always
+#                         asks for a typed double confirmation, even with CONFIRM=yes.
+#   make uninstall ALL=yes  delete the volumes AND backup.conf, .restic-password,
+#   (= make uninstall-all)  .backup-env, backups/ — every snapshot gone, permanently.
+#                         Always double-confirms. (make has no --all option, hence ALL=yes.)
 #
 # Knobs (override on the command line, e.g. `make sandbox PORT=19000`):
 #   IMAGES    image manifest to use            (default sandbox/images.env)
@@ -97,100 +95,17 @@ sandbox-purge: sandbox-down ## also delete the cached nested images/data volume
 	@echo "purged $(DATA_VOL)."
 
 # ---- uninstall -------------------------------------------------------------------------
-# Every directory with a docker-compose.yml is an app stack (matches what hsctl drives).
-APP_DIRS   := $(patsubst %/docker-compose.yml,%,$(wildcard */docker-compose.yml))
-UNITS      := hsctl-ui.service hsctl-backup.service hsctl-backup.timer
-EDGE_NET   := homeserver-edge
-HSCTL_BIN  ?= /usr/local/bin/hsctl
-# Fixed container_name from each compose file — swept by name too, so a renamed/removed app
-# dir can't leave its containers running after an uninstall.
-APP_CONTAINERS := caddy vaultwarden nextcloud-app nextcloud-db nextcloud-redis pihole stirling-pdf it-tools imagetools
-# Compose names volumes <project>_<volume> (project = app dir name). Sweep every known
-# project prefix — including the canonical ones, so leftovers from a since-renamed dir go too.
-COMPOSE_PROJECTS := $(sort $(APP_DIRS) caddy vaultwarden nextcloud pihole stirling it-tools imagetools)
-# Generated per-host files (see .gitignore). Backup config/repos are intentionally NOT here —
-# they only go with ALL=yes / `make uninstall-all`.
-GENERATED  := $(wildcard */.env) .ui-password setup.conf WELCOME.txt caddy-root-ca.crt pihole/custom.list hsctl/hsctl
-BACKUPS    := backup.conf .restic-password .backup-env backups
+# Single implementation: `sudo hsctl uninstall` (hsctl/uninstall.go). These targets are
+# thin wrappers so the old `make uninstall` muscle memory keeps working — the installed
+# hsctl is used when present, else one is built from this checkout (needs Go).
+# DATA=yes -> --data (also delete app volumes), ALL=yes -> --all (volumes + backups),
+# CONFIRM=yes -> --yes (skips the prompt for the data-keeping default only; the
+# data-deleting tiers always ask for a typed double confirmation).
+HSCTL_BIN ?= $(shell command -v hsctl || echo ./hsctl/hsctl)
 
-uninstall-all: ## uninstall EVERYTHING incl. backup config + restic snapshots (always double-confirms)
+uninstall: ## remove the stack + hsctl; keeps app data and backups (DATA=yes / ALL=yes delete more)
+	@[ -x "$(HSCTL_BIN)" ] || $(MAKE) --no-print-directory -C hsctl build
+	sudo $(HSCTL_BIN) uninstall $(if $(filter yes,$(ALL)),--all,$(if $(filter yes,$(DATA)),--data)) $(if $(filter yes,$(CONFIRM)),--yes)
+
+uninstall-all: ## uninstall EVERYTHING incl. app data + backups (always double-confirms)
 	@$(MAKE) --no-print-directory ALL=yes uninstall
-
-uninstall: ## remove hsctl itself + all apps, sandbox, generated config; ALL=yes also deletes backups
-	@echo "This DELETES all app data (docker volumes) for: $(APP_DIRS)"
-	@echo "and removes hsctl itself ($(HSCTL_BIN) + systemd units), the test"
-	@echo "sandbox and the generated config in this repo."
-ifneq ($(CONFIRM),yes)
-ifneq ($(ALL),yes)
-	@echo ""
-	@echo "Kept: backup.conf, .restic-password, .backup-env, backups/."
-	@echo "(Run 'make uninstall ALL=yes' to delete those too.)"
-	@echo ""
-	@printf 'Confirm 1/2 — type YES to continue: '; read -r a || exit 1; \
-	if [ "$$a" != "YES" ]; then echo "No match — nothing was removed."; exit 1; fi; \
-	printf 'Confirm 2/2 — type YES again: '; read -r b || exit 1; \
-	if [ "$$b" != "YES" ]; then echo "No match — nothing was removed."; exit 1; fi
-endif
-endif
-ifeq ($(ALL),yes)
-	@echo ""
-	@echo "ALL MODE: backup.conf, .restic-password, .backup-env and backups/"
-	@echo "(EVERY restic snapshot) will be PERMANENTLY deleted. There is no undo."
-	@printf 'Confirm 1/2 — type DESTROY to continue: '; read -r a || exit 1; \
-	if [ "$$a" != "DESTROY" ]; then echo "No match — nothing was removed."; exit 1; fi; \
-	printf 'Confirm 2/2 — re-type DESTROY: '; read -r b || exit 1; \
-	if [ "$$b" != "DESTROY" ]; then echo "No match — nothing was removed."; exit 1; fi
-endif
-	@echo ""
-	@echo "== stopping + removing systemd units =="
-	-sudo systemctl disable --now $(UNITS) 2>/dev/null
-	-sudo rm -f $(addprefix /etc/systemd/system/,$(UNITS))
-	-sudo systemctl daemon-reload
-	-sudo systemctl reset-failed 2>/dev/null
-	@echo "== removing app containers, volumes and images =="
-	@for d in $(APP_DIRS); do \
-		echo "-- $$d"; \
-		( cd $$d && docker compose down -v --rmi all --remove-orphans ) || true; \
-	done
-	@echo "-- sweeping orphaned app containers (renamed/removed dirs)"
-	@for c in $(APP_CONTAINERS); do \
-		if docker rm -f $$c >/dev/null 2>&1; then echo "   removed container $$c"; fi; \
-	done
-	@echo "-- sweeping orphaned volumes from old compose projects"
-	@for p in $(COMPOSE_PROJECTS); do \
-		for v in $$(docker volume ls --format '{{.Name}}' 2>/dev/null | awk -F'_' -v p="$$p" '$$1 == p {print}'); do \
-			if docker volume rm "$$v" >/dev/null 2>&1; then echo "   removed volume $$v"; fi; \
-		done; \
-	done
-	-docker network rm $(EDGE_NET) 2>/dev/null
-	@echo "== removing the test sandbox (container, image, cached data) =="
-	-docker stop -t 8 $(SANDBOX_NAME) >/dev/null 2>&1
-	-docker run --rm --privileged --entrypoint bash $(SANDBOX_IMAGE) -c \
-		'losetup -a 2>/dev/null | grep -i sandboxdisk | cut -d: -f1 | xargs -r -n1 losetup -d' >/dev/null 2>&1
-	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1
-	-docker volume rm $(DATA_VOL) >/dev/null 2>&1 && echo "   removed volume $(DATA_VOL)"
-	-docker rmi -f $(SANDBOX_IMAGE) >/dev/null 2>&1 && echo "   removed image $(SANDBOX_IMAGE)"
-	rm -rf sandbox/_build
-	@echo "== removing dangling images left behind by app updates =="
-	-@old=$$(docker images -f dangling=true -q 2>/dev/null | wc -l); \
-	if [ "$$old" -gt 0 ]; then docker image prune -f >/dev/null && echo "   pruned $$old untagged image(s)"; fi
-	@echo "== removing hsctl itself (binary; dashboard state goes with the generated config below) =="
-	-sudo rm -f $(HSCTL_BIN)
-	@echo "== removing generated config/secrets in this repo =="
-	rm -f $(GENERATED)
-	find . -name '.hsctl-tmp-*' -not -path './.git/*' -delete 2>/dev/null || true
-ifeq ($(ALL),yes)
-	@echo "== deleting backups: $(BACKUPS) =="
-	@if [ -f backup.conf ]; then \
-		sed -n 's/^RESTIC_REPO=/   restic repo was: /p' backup.conf; \
-	fi
-	rm -rf $(BACKUPS)
-endif
-	@echo ""
-ifeq ($(ALL),yes)
-	@echo "Everything removed, including all backups and their config."
-	@echo "If the restic repo lived off-box (sftp:/b2:/s3:), delete it at that location too."
-else
-	@echo "Uninstalled. Kept: this repo's source, backup.conf, .restic-password, .backup-env, backups/."
-endif
-	@echo "Docker itself was not removed."
