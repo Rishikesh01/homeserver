@@ -82,6 +82,17 @@ func rootCmd() *cobra.Command {
 		}}
 	images.Flags().StringSlice("platforms", supportedPlatforms, "platforms every pinned image must publish")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, appsCmd(), backupCmd(), secretsCmd())
+	uninstall := &cobra.Command{Use: "uninstall", Short: "Remove the stack + hsctl; keeps app data and backups unless told otherwise", Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			data, _ := c.Flags().GetBool("data")
+			all, _ := c.Flags().GetBool("all")
+			yes, _ := c.Flags().GetBool("yes")
+			return cmdUninstall(data, all, yes)
+		}}
+	uninstall.Flags().Bool("data", false, "also delete the app data volumes (asks to type DESTROY)")
+	uninstall.Flags().Bool("all", false, "delete the app data volumes AND the backups (asks to type DESTROY)")
+	uninstall.Flags().Bool("yes", false, "skip the confirmation — only for the default, data-keeping tier")
+
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
 	return root
 }

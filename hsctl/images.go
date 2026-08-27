@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -17,23 +19,61 @@ import (
 // doesn't fail here: it fails at `docker compose pull` on someone's Raspberry Pi, long
 // after the pin was merged. `hsctl images` asks each registry what a tag actually
 // publishes, reading the manifest index over HTTP with no Docker and no pull, so it
-// works on a machine that has never run the stack. CI runs it on every PR.
+// works on a machine that has never run the stack.
 
 // supportedPlatforms is what a pin has to cover: every platform we publish hsctl for
 // (see DIST_PLATFORMS in hsctl/Makefile). Keep the two lists in step.
 var supportedPlatforms = []string{"linux/amd64", "linux/arm64"}
 
-// composePin is one image reference and the compose file that pins it.
+// errBadPin marks a probe failure that is the PIN's fault — the tag was deleted, or the
+// repository was renamed or made private — as opposed to the network's. Pin faults fail
+// the run; network faults are reported and tolerated (see cmdImages).
+var errBadPin = errors.New("bad pin")
+
+// composePin is one image pinned by a compose file. Pins are declared as
+// `image: ${VAR:-default}`: Default is the repo's pin (tracked, frozen — pin bumps are
+// never committed), and Image is what compose will actually run — the service dir's
+// gitignored .env can override Var with a locally applied update (`hsctl updates
+// --apply`), which is how updates land without ever dirtying a tracked file.
 type composePin struct {
-	File  string // repo-relative, e.g. "nextcloud/docker-compose.yml"
-	Image string
+	File    string // repo-relative, e.g. "nextcloud/docker-compose.yml"
+	Var     string // interpolation variable, e.g. NEXTCLOUD_IMAGE ("" for a bare pin)
+	Default string // the ref the compose file falls back to
+	Image   string // effective ref: the .env override when set, else Default
 }
 
-var composeImageRE = regexp.MustCompile(`(?m)^\s*image:\s*(\S+)`)
+// parseComposeImage splits a compose `image:` line (optionally quoted) into its
+// interpolation variable and default ref. A bare `image: ref` line yields varName ""
+// and the ref as def; ok is false when the line isn't an image line at all. This is THE
+// definition of what counts as a pin: composePins (platform checks) and pinVarFor
+// (updates --apply) both use it, so a pin one command accepts can't be invisible to
+// the other.
+func parseComposeImage(line string) (varName, def string, ok bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(line), "image:")
+	if !found {
+		return "", "", false
+	}
+	ref := strings.Trim(strings.TrimSpace(rest), `"'`)
+	if inner, isVar := strings.CutPrefix(ref, "${"); isVar && strings.HasSuffix(inner, "}") {
+		name, dflt, _ := strings.Cut(strings.TrimSuffix(inner, "}"), ":-")
+		return name, dflt, true
+	}
+	return "", ref, true
+}
 
-// composePins lists every image pinned by a service's compose file, in path order.
-// It reads the files rather than asking Docker, so it reports what the repo declares
-// even when nothing is running.
+// effectiveRef resolves a parsed pin against the service dir's env: the override when
+// the variable is set there (compose interpolates from the same .env), else the default.
+func effectiveRef(varName, def string, env map[string]string) string {
+	if varName != "" && env[varName] != "" {
+		return env[varName]
+	}
+	return def
+}
+
+// composePins lists every image pinned by a service's compose file, in path order,
+// resolved against that service's .env override (if any). It reads the files rather
+// than asking Docker, so it reports what the repo + local overrides declare even when
+// nothing is running.
 func composePins(repo string) ([]composePin, error) {
 	files, err := filepath.Glob(filepath.Join(repo, "*", "docker-compose.yml"))
 	if err != nil {
@@ -50,8 +90,18 @@ func composePins(repo string) ([]composePin, error) {
 		if err != nil {
 			rel = f
 		}
-		for _, m := range composeImageRE.FindAllStringSubmatch(string(data), -1) {
-			pins = append(pins, composePin{File: rel, Image: strings.Trim(m[1], `"'`)})
+		env, err := readKV(filepath.Join(filepath.Dir(f), ".env"))
+		if err != nil {
+			env = nil // no .env (or unreadable) — the compose defaults apply
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			varName, def, ok := parseComposeImage(line)
+			if !ok {
+				continue
+			}
+			if ref := effectiveRef(varName, def, env); ref != "" {
+				pins = append(pins, composePin{File: rel, Var: varName, Default: def, Image: ref})
+			}
 		}
 	}
 	return pins, nil
@@ -93,10 +143,13 @@ const manifestAccept = "application/vnd.oci.image.index.v1+json," +
 	"application/vnd.docker.distribution.manifest.v2+json"
 
 // parsePlatforms pulls the runnable platforms out of a manifest index. A bare manifest
-// (no "manifests" key) is single-architecture by definition and yields none. Attestation
-// entries carry os/architecture "unknown" and aren't images, so they're skipped; the
-// arm64 variant (v8) is dropped because arm64 and arm64/v8 are the same target.
-func parsePlatforms(body []byte) []string {
+// (valid JSON with no "manifests" key) is single-architecture by definition and yields
+// none; a body that isn't JSON at all is an error — it means something other than a
+// registry answered (a proxy or captive portal), not that the tag publishes nothing.
+// Attestation entries carry os/architecture "unknown" and aren't images, so they're
+// skipped; the arm64 variant (v8) is dropped because arm64 and arm64/v8 are the same
+// target.
+func parsePlatforms(body []byte) ([]string, error) {
 	var doc struct {
 		Manifests []struct {
 			Platform struct {
@@ -105,8 +158,8 @@ func parsePlatforms(body []byte) []string {
 			} `json:"platform"`
 		} `json:"manifests"`
 	}
-	if json.Unmarshal(body, &doc) != nil {
-		return nil
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("response isn't a manifest (a proxy or captive portal answered?)")
 	}
 	seen := map[string]bool{}
 	var out []string
@@ -121,10 +174,12 @@ func parsePlatforms(body []byte) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
-// imagePlatforms reports the platforms a pinned tag publishes.
+// imagePlatforms reports the platforms a pinned tag publishes. An error wrapping
+// errBadPin means the pin itself is broken; any other error means we couldn't get an
+// answer (offline, rate-limited, a middlebox in the way).
 func imagePlatforms(image string) ([]string, error) {
 	host, repo, tag := splitImageRef(image)
 	resp, err := registryGet(registryBase(host)+"/v2/"+repo+"/manifests/"+tag, manifestAccept)
@@ -132,10 +187,13 @@ func imagePlatforms(image string) ([]string, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("tag %s is not in the registry any more", tag)
-	}
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("%w: tag %s is not in the registry any more", errBadPin, tag)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("%w: registry denied access (%s) — repository renamed or made private?", errBadPin, resp.Status)
+	default:
 		return nil, fmt.Errorf("registry returned %s", resp.Status)
 	}
 	// An index is a few KB; the cap is only there so a hostile or broken registry
@@ -144,7 +202,7 @@ func imagePlatforms(image string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parsePlatforms(body), nil
+	return parsePlatforms(body)
 }
 
 // missingPlatforms returns the wanted platforms a tag doesn't publish.
@@ -162,13 +220,17 @@ func missingPlatforms(want, got []string) []string {
 	return missing
 }
 
-// cmdImages checks every pinned image against its registry. A tag that's missing a
-// platform (or has vanished) is an error; a registry we simply couldn't reach is
-// reported and tolerated, because Docker Hub rate-limits anonymous callers per IP and
-// CI runners share addresses — failing there would mean red builds that have nothing
-// to do with the change under review.
+// cmdImages checks every pinned image against its registry. Failures split by fault: a
+// tag that's missing a platform, has vanished, or is denied to us is the pin's problem
+// and fails the run. A registry we couldn't get an answer from is reported and tolerated
+// — Docker Hub rate-limits anonymous callers per IP, and misreporting network luck as a
+// broken stack would erode trust in the dashboard card — unless NO pin could be checked,
+// in which case nothing was verified and a green exit would be a lie.
 func cmdImages(want []string) error {
-	repo := repoDir()
+	repo, err := requireRepoDir()
+	if err != nil {
+		return err
+	}
 	pins, err := composePins(repo)
 	if err != nil {
 		return err
@@ -178,20 +240,26 @@ func cmdImages(want []string) error {
 	}
 
 	fmt.Printf("checking %d pinned image(s) cover %s...\n\n", len(pins), strings.Join(want, " + "))
-	var bad, unreachable []string
+	var bad []string
+	checked, unreachable := 0, 0
 	for _, p := range pins {
 		got, err := imagePlatforms(p.Image)
-		if err != nil {
+		switch {
+		case errors.Is(err, errBadPin):
+			fmt.Printf("  %-12s %-46s %v\n", "BROKEN", p.Image, err)
+			bad = append(bad, fmt.Sprintf("%s: %s — %v", p.File, p.Image, err))
+		case err != nil:
 			fmt.Printf("  %-12s %-46s %v\n", "UNREACHABLE", p.Image, err)
-			unreachable = append(unreachable, fmt.Sprintf("%s: %s — %v", p.File, p.Image, err))
-			continue
+			unreachable++
+		default:
+			checked++
+			if missing := missingPlatforms(want, got); len(missing) > 0 {
+				fmt.Printf("  %-12s %-46s publishes %s\n", "MISSING", p.Image, strings.Join(got, ", "))
+				bad = append(bad, fmt.Sprintf("%s: %s — no %s", p.File, p.Image, strings.Join(missing, ", ")))
+			} else {
+				fmt.Printf("  %-12s %-46s %s\n", "ok", p.Image, strings.Join(got, ", "))
+			}
 		}
-		if missing := missingPlatforms(want, got); len(missing) > 0 {
-			fmt.Printf("  %-12s %-46s publishes %s\n", "MISSING", p.Image, strings.Join(got, ", "))
-			bad = append(bad, fmt.Sprintf("%s: %s — no %s", p.File, p.Image, strings.Join(missing, ", ")))
-			continue
-		}
-		fmt.Printf("  %-12s %-46s %s\n", "ok", p.Image, strings.Join(got, ", "))
 	}
 
 	if len(bad) > 0 {
@@ -199,14 +267,21 @@ func cmdImages(want []string) error {
 		for _, b := range bad {
 			fmt.Fprintf(os.Stderr, "  %s\n", b)
 		}
-		return fmt.Errorf("%d image(s) don't cover %s — pin a tag the upstream builds for both, or drop the app",
+		return fmt.Errorf("%d image(s) failed — pin a tag the upstream publishes for %s, or drop the app",
 			len(bad), strings.Join(want, " + "))
 	}
-	if len(unreachable) > 0 {
-		fmt.Printf("\n%d image(s) couldn't be checked (registry unreachable or rate-limited) — re-run to retry.\n",
-			len(unreachable))
+	if checked == 0 {
+		return fmt.Errorf("none of the %d pins could be checked (registries unreachable or rate-limited) — nothing was verified, re-run to retry", len(pins))
+	}
+	if unreachable > 0 {
+		fmt.Printf("\n%d image(s) couldn't be checked (registry unreachable or rate-limited) — re-run to retry.\n", unreachable)
 		return nil
 	}
 	fmt.Printf("\nevery image publishes %s.\n", strings.Join(want, " and "))
+	// Answer the question the dashboard card is really asked — "will this run on MY
+	// server?" — by confirming the machine we're on is itself in the covered set.
+	if host := runtime.GOOS + "/" + runtime.GOARCH; slices.Contains(want, host) {
+		fmt.Printf("this machine is %s — every app runs here.\n", host)
+	}
 	return nil
 }

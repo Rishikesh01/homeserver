@@ -56,7 +56,7 @@ var webCmds = []webCmd{
 		Args: []string{"updates", "--apply", "all", "--yes"}, Danger: dangerCaution, Slow: true,
 		Confirm: "Apply all routine app updates now? The updated apps will restart briefly."},
 	{Slug: "images", Title: "Check app compatibility", Category: "Stack",
-		Desc: "Ask each app's registry which processor types it publishes, and confirm every one of them runs on both 64-bit Intel/AMD and 64-bit ARM (a Raspberry Pi). Read-only; nothing is downloaded.",
+		Desc: "Ask each app's registry which processor types it publishes, and confirm every one of them runs on both 64-bit Intel/AMD and 64-bit ARM (a Raspberry Pi) — including whichever this server is. Read-only; nothing is downloaded.",
 		Args: []string{"images"}, Danger: dangerNone, Slow: true},
 	{Slug: "status", Title: "Show status", Category: "Stack",
 		Desc: "List each container and whether it's running. Read-only.",

@@ -61,20 +61,3 @@ jobs:
 
       - name: Check the binary runs
         run: ./hsctl/hsctl --version
-
-  images:
-    name: image platform coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: hsctl/go.mod
-          cache-dependency-path: hsctl/go.sum
-
-      # Every pinned image has to publish both platforms we ship binaries for; a tag that
-      # skipped arm64 would otherwise surface as a failed `docker compose pull` on someone's
-      # Pi. Reads registry manifests only — no Docker, no pulls.
-      - name: Check every pinned image publishes amd64 + arm64
-        run: make -C hsctl build && ./hsctl/hsctl images

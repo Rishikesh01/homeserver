@@ -52,12 +52,25 @@ cd /opt/homeserver && sudo hsctl install
 
 Step 1 downloads the `hsctl` binary built for your architecture, verifies it against the
 release's `checksums.txt`, installs it to `/usr/local/bin/hsctl`, and clones this repo at
-the matching tag into `/opt/homeserver` — `hsctl` reads the compose files, Caddy config and
-dashboard assets from that checkout at runtime. It starts nothing and writes no config, so
-it is safe to re-run; on an existing checkout it moves both binary and repo to the newer
-release, and refuses rather than discarding local edits (`hsctl updates` rewrites compose
-pins in place). Override with `VERSION=v1.8.0`, `HOMESERVER_DIR=/srv/homeserver` or
-`PREFIX=/usr`.
+the matching tag into `/opt/homeserver`, owned by your user — `hsctl` reads the compose
+files, Caddy config and dashboard assets from that checkout at runtime, and the everyday
+commands write there without sudo. It starts nothing and writes no config, and it is
+**one-time**: on a machine that already has `/opt/homeserver` it refuses rather than
+touching an existing install. From then on, updates come from inside the stack —
+`hsctl updates --apply` (or the dashboard) records new image pins in each app's
+gitignored `.env`, never in the tracked compose files. Override with
+`VERSION=v1.8.0`, `HOMESERVER_DIR=/srv/homeserver` or `PREFIX=/usr`, placed **before `sh`**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rishikesh01/homeserver/main/install.sh | VERSION=v1.8.0 sh
+```
+
+(`VERSION=… curl … | sh` would set the variable for curl, not for the script.)
+
+Already running homeserver from a source build (the `git clone` + `make -C hsctl
+install` flow)? Keep it — the installer is for fresh machines only and refuses to touch
+an existing install; building a newer hsctl stays `make -C hsctl install` from your
+checkout.
 
 Prefer to build it yourself? You'll need Go (version in [`hsctl/go.mod`](../hsctl/go.mod)):
 
@@ -69,7 +82,8 @@ make -C hsctl install
 `hsctl install` is the last thing you type. It:
 
 - saves `setup.conf` with autodetected values (LAN IP, timezone, a free dashboard port),
-- creates the dashboard admin password (`.ui-password`) and prints it,
+- creates the dashboard admin password (`.ui-password`, handed back to your user even
+  though the command runs under sudo — so you can read it later without root),
 - starts **Caddy** on its own, so `https://HOST/` already answers,
 - installs and starts the `hsctl-ui` systemd service.
 

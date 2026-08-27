@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -80,6 +81,16 @@ func setEnvKey(path, key, value string) error {
 	return writeFile0600(path, strings.Join(lines, "\n"))
 }
 
+// upsertEnvKey is setEnvKey for a file that may not exist yet — some service dirs
+// (it-tools, imagetools) have no secrets, and gain their first .env when an image-pin
+// override (`hsctl updates --apply`) lands there.
+func upsertEnvKey(path, key, value string) error {
+	if !fileExists(path) {
+		return writeFile0600(path, key+"="+value+"\n")
+	}
+	return setEnvKey(path, key, value)
+}
+
 // removeEnvLinesMatching deletes KEY=VALUE lines where match(key, value) is true, preserving
 // everything else (other keys, comments, order). A missing file is a no-op. Reports whether it
 // changed anything — used to migrate away from settings no longer used.
@@ -136,6 +147,16 @@ func writeFileAtomic(path, content string, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
+	// Under sudo, generated files must end up owned by the real user, not root —
+	// `sudo hsctl install` is the documented flow, and a root-owned .ui-password or
+	// .env would be unreadable to the login user afterwards (`cat`, `hsctl secrets
+	// show`). The systemd service runs without SUDO_UID and is unaffected.
+	if uid, gid, ok := invokerIDs(); ok {
+		if err := tmp.Chown(uid, gid); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
@@ -152,5 +173,19 @@ func writeFileAtomic(path, content string, perm os.FileMode) error {
 
 func writeFile0600(path, content string) error { return writeFileAtomic(path, content, 0600) }
 func writeFile0644(path, content string) error { return writeFileAtomic(path, content, 0644) }
+
+// invokerIDs returns the sudo-invoking user's uid/gid when running as root under
+// sudo; ok=false otherwise (plain user, or a root session with no sudo behind it).
+func invokerIDs() (uid, gid int, ok bool) {
+	if os.Geteuid() != 0 {
+		return 0, 0, false
+	}
+	uid, err1 := strconv.Atoi(os.Getenv("SUDO_UID"))
+	gid, err2 := strconv.Atoi(os.Getenv("SUDO_GID"))
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return uid, gid, true
+}
 
 func fileExists(path string) bool { _, err := os.Stat(path); return err == nil }

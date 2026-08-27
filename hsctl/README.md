@@ -37,18 +37,25 @@ hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
 hsctl apps              # list apps; `apps enable|disable NAME` switches one on/off (data kept)
 hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
+sudo hsctl uninstall    # remove the stack + hsctl; KEEPS app data + backups (--data / --all delete more)
 ```
 
 `hsctl updates` compares each installed image against its registry digest and reports what's
 behind. It downloads nothing and restarts nothing, but it needs `docker buildx`
-(`sudo apt-get install -y docker-buildx-plugin`).
+(`sudo apt-get install -y docker-buildx-plugin`). `updates --apply` records the new pin in
+the app's gitignored `.env` (the compose files declare `image: ${VAR:-default}` and are
+never edited), so applied updates never dirty the repo checkout.
 
 `hsctl images` asks each registry which platforms a pinned tag publishes and fails if one
 doesn't cover both `linux/amd64` and `linux/arm64` — the two hsctl ships for. A pin that
 skipped arm64 would otherwise go unnoticed until `docker compose pull` failed on someone's
 Raspberry Pi. It talks HTTP to the registries only: no Docker, no buildx, no image pull, so
-it also runs on a machine that has never started the stack. CI runs it on every pull
-request; `--platforms` overrides the required set.
+it also runs on a machine that has never started the stack. A pin whose tag has vanished
+or whose repository is gone fails the run; a registry that merely couldn't be reached is
+tolerated (Docker Hub rate-limits anonymous callers) — unless none could, in which case
+nothing was verified and the run fails. When everything is covered it also confirms the
+machine it ran on is in the set, so the dashboard card answers the practical question:
+will every app run on this server? `--platforms` overrides the required set.
 
 Every command above is also a card in the dashboard's Command Center (`/admin/commands`).
 

@@ -104,9 +104,12 @@ cd /opt/homeserver && sudo hsctl install
 
 It downloads the `hsctl` release binary for your architecture, checks it against the
 release's `checksums.txt`, installs it to `/usr/local/bin`, and clones this repo at the
-matching tag into `/opt/homeserver` (`hsctl` reads the compose files from there at runtime).
-It starts nothing and writes no config. `VERSION=`, `HOMESERVER_DIR=` and `PREFIX=` override
-the release, the checkout path and the install prefix.
+matching tag into `/opt/homeserver`, owned by your user (`hsctl` reads the compose files
+from there at runtime). It starts nothing, writes no config, and runs **once** — it refuses
+to touch an existing install; after that, app updates come from `hsctl updates` and the
+dashboard. `VERSION=`, `HOMESERVER_DIR=` and `PREFIX=` override the release, the checkout
+path and the install prefix — place them **before `sh`**
+(`curl -fsSL … | VERSION=v1.8.0 sh`); before `curl` they'd only reach curl.
 
 To build it yourself instead — needs Go, see [`hsctl/go.mod`](hsctl/go.mod) for the version:
 
