@@ -27,3 +27,6 @@ backups/
 
 # sandbox: host-built hsctl binary (rebuilt by `make sandbox`)
 sandbox/_build/
+
+# hsctl: cross-compiled release archives (make -C hsctl dist)
+hsctl/dist/

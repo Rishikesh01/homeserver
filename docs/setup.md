@@ -16,18 +16,18 @@ afterwards. `HOST` below = your server's LAN IP.
 
 You need, on the machine that will be the server:
 
-1. **A Linux machine that stays on** (a spare PC, mini-PC, or NUC). These steps assume
-   Ubuntu/Debian; adjust package commands for other distros.
+1. **A 64-bit Linux machine that stays on** (a spare PC, mini-PC, NUC, or a Raspberry Pi
+   4/5). Both **x86-64 and arm64** are supported — every image in the stack is published
+   for both. 32-bit ARM is not: IT-Tools and Stirling-PDF are arm64-only, so on a Pi use
+   the **64-bit** Raspberry Pi OS. These steps assume Ubuntu/Debian; adjust package
+   commands for other distros.
 2. **A user account with `sudo`.**
 3. **Docker Engine + Docker Compose v2:**
    ```bash
    curl -fsSL https://get.docker.com | sh
    docker --version && docker compose version    # both should print a version
    ```
-4. **Go** (to build `hsctl` once) — `sudo apt install golang-go`, or download from
-   <https://go.dev/dl/> and unpack it somewhere like `~/sdk/go`. See the version required in
-   [`hsctl/go.mod`](../hsctl/go.mod).
-5. **A fixed LAN IP for the server.** In your router, give the server a **DHCP reservation**
+4. **A fixed LAN IP for the server.** In your router, give the server a **DHCP reservation**
    (a.k.a. static lease) so its IP never changes. Note that IP — it's `HOST` everywhere below.
 
 Optional, but recommended:
@@ -43,14 +43,27 @@ Optional, but recommended:
 ## Install
 
 ```bash
-# 1. Get the code onto the server, then enter the folder
+# 1. Install hsctl and the stack it manages
+curl -fsSL https://raw.githubusercontent.com/Rishikesh01/homeserver/main/install.sh | sh
+
+# 2. Start the dashboard as a service (auto-starts on every boot)
+cd /opt/homeserver && sudo hsctl install
+```
+
+Step 1 downloads the `hsctl` binary built for your architecture, verifies it against the
+release's `checksums.txt`, installs it to `/usr/local/bin/hsctl`, and clones this repo at
+the matching tag into `/opt/homeserver` — `hsctl` reads the compose files, Caddy config and
+dashboard assets from that checkout at runtime. It starts nothing and writes no config, so
+it is safe to re-run; on an existing checkout it moves both binary and repo to the newer
+release, and refuses rather than discarding local edits (`hsctl updates` rewrites compose
+pins in place). Override with `VERSION=v1.8.0`, `HOMESERVER_DIR=/srv/homeserver` or
+`PREFIX=/usr`.
+
+Prefer to build it yourself? You'll need Go (version in [`hsctl/go.mod`](../hsctl/go.mod)):
+
+```bash
 git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
-
-# 2. Build hsctl (version stamped from the git tag) and install it system-wide
 make -C hsctl install
-
-# 3. Start the dashboard as a service (auto-starts on every boot)
-hsctl install
 ```
 
 `hsctl install` is the last thing you type. It:

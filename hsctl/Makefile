@@ -15,6 +15,30 @@ build:
 vet:
 	$(GO) vet ./...
 
+# Cross-compile the release archives into hsctl/dist/ — one tarball per platform, plus
+# the checksums file. These are exactly the artifacts .github/workflows/release.yml
+# attaches to a tag and install.sh downloads, so a release can be reproduced locally.
+# hsctl is pure Go (no cgo), so CGO_ENABLED=0 gives a static binary that runs on any
+# distro, glibc or musl.
+#
+# 32-bit ARM is deliberately absent: IT-Tools and Stirling-PDF publish arm64 images only,
+# so a 32-bit OS can't run the full stack even though hsctl itself would build for it.
+DIST_PLATFORMS ?= linux/amd64 linux/arm64
+
+.PHONY: dist
+dist:
+	rm -rf dist && mkdir -p dist
+	@for p in $(DIST_PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; \
+		echo "  building $$os/$$arch"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+			$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o dist/hsctl . || exit 1; \
+		tar -C dist -czf dist/hsctl_$(VERSION)_$${os}_$${arch}.tar.gz hsctl || exit 1; \
+		rm -f dist/hsctl; \
+	done
+	@cd dist && sha256sum *.tar.gz > checksums.txt && cat checksums.txt
+
+
 # Unit tests — no Docker needed. The restic replica round-trip in replica_test.go skips
 # itself if restic isn't installed, so install restic to exercise that path too.
 test:

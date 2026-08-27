@@ -83,24 +83,41 @@ This project answers those three:
 
 ## Quick start
 
-**You'll need:** a Linux machine that stays on (Ubuntu/Debian assumed) · a user with `sudo` ·
-**Docker Engine + Compose v2** (`curl -fsSL https://get.docker.com | sh`) · **Go** to build
-`hsctl` once (see [`hsctl/go.mod`](hsctl/go.mod) for the version) · a **fixed LAN IP** for the
-server (a DHCP reservation in your router). Optional: `restic` for backups,
+**You'll need:** a 64-bit Linux machine that stays on — x86-64 or arm64, so a mini-PC, a NUC
+or a Raspberry Pi 4/5 on 64-bit Raspberry Pi OS (Ubuntu/Debian assumed) · a user with `sudo` ·
+**Docker Engine + Compose v2** (`curl -fsSL https://get.docker.com | sh`) · a **fixed LAN IP**
+for the server (a DHCP reservation in your router). Optional: `restic` for backups,
 `docker-buildx-plugin` for `hsctl updates`, `smartmontools` for disk health.
 
 ```bash
-# 1. Get the code onto the server
-git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
+# 1. Install hsctl + the stack (prebuilt binary, no Go toolchain needed)
+curl -fsSL https://raw.githubusercontent.com/Rishikesh01/homeserver/main/install.sh | sh
 
-# 2. Build hsctl (version stamped from the git tag) and install it system-wide
-make -C hsctl install
-
-# 3. Start the dashboard as a service — it prints the URL and your admin password
-hsctl install
+# 2. Start the dashboard as a service — it prints the URL and your admin password
+cd /opt/homeserver && sudo hsctl install
 ```
 
-That's the last terminal command. `hsctl install` brings up Caddy (the HTTPS front door)
+<details>
+<summary>What the installer does — and building from source instead</summary>
+
+<br>
+
+It downloads the `hsctl` release binary for your architecture, checks it against the
+release's `checksums.txt`, installs it to `/usr/local/bin`, and clones this repo at the
+matching tag into `/opt/homeserver` (`hsctl` reads the compose files from there at runtime).
+It starts nothing and writes no config. `VERSION=`, `HOMESERVER_DIR=` and `PREFIX=` override
+the release, the checkout path and the install prefix.
+
+To build it yourself instead — needs Go, see [`hsctl/go.mod`](hsctl/go.mod) for the version:
+
+```bash
+git clone https://github.com/Rishikesh01/homeserver.git && cd homeserver
+make -C hsctl install     # version stamped from the git tag
+```
+
+</details>
+
+`hsctl install` is the last thing you type. It brings up Caddy (the HTTPS front door)
 and the dashboard, then tells you to open **`https://HOST/`** from any device on your
 network. The first visit lands in a **setup wizard**: confirm the autodetected IP,
 timezone, Pi-hole DNS address, and enabled apps; it generates every app's logins (shown
