@@ -69,7 +69,7 @@ regression test — against throwaway volumes, never your live data.
 
 ### ⚡ One command in, one command out
 
-A **prebuilt `hsctl`** installs on x86-64 or arm64 (a Pi 4/5 on a 64-bit OS works) with no
+A **prebuilt `hsctl`** installs on x86-64 or arm64 (a Pi 4/5 on a 64-bit OS) with no
 toolchain — and `sudo hsctl uninstall` removes everything **except your data and backups**.
 
 </td>
@@ -129,6 +129,11 @@ toolchain — and `sudo hsctl uninstall` removes everything **except your data a
 - 📡 a **fixed LAN IP** for the server (a DHCP reservation in your router)
 - ➕ optional: `restic` for backups, `docker-buildx-plugin` for `hsctl updates`,
   `smartmontools` for disk health
+
+> [!NOTE]
+> arm64 binaries ship with every release and every app image publishes arm64, but the
+> stack hasn't been tested on real arm64 hardware yet. If you run it on a Pi, an issue
+> saying how it went — either way — would be very welcome.
 
 ```bash
 # 1. Install hsctl + the stack (prebuilt binary, no Go toolchain needed)

@@ -18,7 +18,8 @@ You need, on the machine that will be the server:
 
 1. **A 64-bit Linux machine that stays on** (a spare PC, mini-PC, NUC, or a Raspberry Pi
    4/5). Both **x86-64 and arm64** are supported — every image in the stack is published
-   for both. 32-bit ARM is not: IT-Tools and Stirling-PDF are arm64-only, so on a Pi use
+   for both, though arm64 hasn't been tested on real hardware yet (reports welcome).
+   32-bit ARM is not supported: IT-Tools and Stirling-PDF are arm64-only, so on a Pi use
    the **64-bit** Raspberry Pi OS. These steps assume Ubuntu/Debian; adjust package
    commands for other distros.
 2. **A user account with `sudo`.**
