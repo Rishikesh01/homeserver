@@ -75,6 +75,13 @@ func rootCmd() *cobra.Command {
 		"apply updates: a container name (repeatable), or \"all\" for every routine (non-major) update")
 	updates.Flags().Bool("yes", false, "skip the confirmation prompt")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, appsCmd(), backupCmd(), secretsCmd())
+	images := &cobra.Command{Use: "images", Short: "Check every pinned image runs on the platforms we support", Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			want, _ := c.Flags().GetStringSlice("platforms")
+			return cmdImages(want)
+		}}
+	images.Flags().StringSlice("platforms", supportedPlatforms, "platforms every pinned image must publish")
+
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, appsCmd(), backupCmd(), secretsCmd())
 	return root
 }

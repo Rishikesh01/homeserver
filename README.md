@@ -175,6 +175,7 @@ More on the security posture: **[docs/security.md](docs/security.md)**.
 hsctl setup                       Configure and generate each service's .env (interactive)
 hsctl up | down | status          Start / stop / inspect the stack
 hsctl updates                     Check whether newer app images are available (read-only)
+hsctl images                      Check every pinned app image runs on amd64 and arm64
 hsctl get-ca                      Write caddy-root-ca.crt to install on devices
 hsctl install                     Dashboard as a systemd service (+ first-install bootstrap → setup wizard)
 hsctl ui                          Serve the web dashboard

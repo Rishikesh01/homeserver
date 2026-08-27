@@ -31,6 +31,7 @@ hsctl up                # start the stack (apps + tools -> caddy)
 hsctl status            # container status
 hsctl down              # stop (down --volumes also deletes data)
 hsctl updates           # check whether newer app images are available (read-only)
+hsctl images            # check every pinned app image runs on amd64 AND arm64
 hsctl install           # dashboard as a systemd service; on a fresh box also starts Caddy + opens the setup wizard
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
@@ -41,6 +42,13 @@ hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-ha
 `hsctl updates` compares each installed image against its registry digest and reports what's
 behind. It downloads nothing and restarts nothing, but it needs `docker buildx`
 (`sudo apt-get install -y docker-buildx-plugin`).
+
+`hsctl images` asks each registry which platforms a pinned tag publishes and fails if one
+doesn't cover both `linux/amd64` and `linux/arm64` — the two hsctl ships for. A pin that
+skipped arm64 would otherwise go unnoticed until `docker compose pull` failed on someone's
+Raspberry Pi. It talks HTTP to the registries only: no Docker, no buildx, no image pull, so
+it also runs on a machine that has never started the stack. CI runs it on every pull
+request; `--platforms` overrides the required set.
 
 Every command above is also a card in the dashboard's Command Center (`/admin/commands`).
 
