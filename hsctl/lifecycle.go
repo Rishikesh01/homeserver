@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,7 @@ func migrateSharedNetworkEnv(repo string) {
 }
 
 // coreServices need a generated .env (the tools run from compose defaults, no .env).
-var coreServices = []string{"vaultwarden", "nextcloud", "pihole"}
+var coreServices = []string{"vaultwarden", "nextcloud", "pihole", "caddy"}
 
 // container names belonging to the stack (for status filtering).
 var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "stirling-pdf", "it-tools", "imagetools"}
@@ -89,18 +90,46 @@ func missingEnv() []string {
 	return miss
 }
 
+// prepareUp is the pre-flight every stack start needs: config migration, the shared network,
+// re-rendering the domain / Let's Encrypt files from the saved settings (so `edit setup.conf,
+// then hsctl up` works, and a restored box regenerates them), and building the caddy+DNS-plugin
+// image when that mode is on. Shared by the CLI `up` and the dashboard's Start all.
+func prepareUp(repo string, w io.Writer) error {
+	migrateSharedNetworkEnv(repo)
+	if err := ensureEdgeNetwork(); err != nil {
+		return err
+	}
+	c := LoadConfig(repo)
+	c.Normalize()
+	if err := renderTLS(repo, c, w); err != nil {
+		return err
+	}
+	if c.leUsesDNS() {
+		return ensureCaddyImage(repo, c, false, w)
+	}
+	return nil
+}
+
 func cmdUp() error {
 	if m := missingEnv(); len(m) > 0 {
 		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
 	}
-	migrateSharedNetworkEnv(repoDir())
-	if err := ensureEdgeNetwork(); err != nil {
+	repo := repoDir()
+	if err := prepareUp(repo, os.Stdout); err != nil {
 		return err
 	}
+	// A Caddy that was already running keeps its loaded config through `compose up -d` (a changed
+	// bind-mounted Caddyfile doesn't recreate it), so reload it afterwards to pick up any change.
+	caddyWasUp := containerState(repo, "caddy") == "running"
 	for _, s := range services {
 		fmt.Printf("== up: %s ==\n", s)
-		if err := dockerRun(filepath.Join(repoDir(), s), "compose", "up", "-d"); err != nil {
+		if err := dockerRun(filepath.Join(repo, s), "compose", "up", "-d"); err != nil {
 			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	if caddyWasUp {
+		if err := reloadCaddy(repo); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Caddy kept its previous config — %v\n", err)
 		}
 	}
 	fmt.Println()
@@ -138,6 +167,10 @@ func cmdStatus() error {
 }
 
 func cmdGetCA() error {
+	if c := LoadConfig(repoDir()); c.leEnabled() {
+		fmt.Printf("Let's Encrypt is on (%s) — the private CA isn't used, so there's no certificate to install on devices.\n", c.Domain)
+		return nil
+	}
 	out, err := dockerOut(repoDir(), "exec", "caddy", "cat",
 		"/data/caddy/pki/authorities/local/root.crt")
 	if err != nil {

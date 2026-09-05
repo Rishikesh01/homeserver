@@ -1,5 +1,13 @@
+# This is the PRIVATE-CA config: https://<server-ip>:<port> per app, certificates from Caddy's
+# own CA (installed once per device), the CA download on :80. It is complete on its own.
+#
+# The optional Let's Encrypt mode (`hsctl letsencrypt enable` / the dashboard's Domain & HTTPS
+# page) does NOT edit this file: hsctl generates a separate, complete config into
+# generated/Caddyfile and points Caddy at it via CADDY_CONFIG in .env (see docker-compose.yml).
+# Switching back just unsets that, so this file is always the fallback.
+
 {
-	# Used only if you ever switch to a real public domain.
+	# Let's Encrypt account contact (only used by the Let's Encrypt config).
 	email {$ACME_EMAIL}
 	# Browsers don't send SNI for a bare IP, so without this the handshake fails with
 	# "no SNI". Make the server IP the default so the IP cert is served regardless.
@@ -79,3 +87,9 @@
 	tls internal
 	reverse_proxy {$IMAGETOOLS_UPSTREAM}
 }
+
+# --- Sites of your own: caddy/sites.d/*.caddy ---
+# Every *.caddy file in that folder is imported here AND by the Let's Encrypt config, so an app
+# you add keeps its site in either mode (docs/adding-an-app.md). An empty folder only logs a
+# "no files matching" warning at start.
+import /etc/caddy/sites.d/*.caddy

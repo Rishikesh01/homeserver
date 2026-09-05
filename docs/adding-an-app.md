@@ -28,12 +28,15 @@ networks:
 Do **not** publish its HTTP port. Caddy reaches it by container name over `homeserver-edge`,
 so it never touches the LAN — that's what keeps every app HTTPS-only.
 
-## 2. The Caddy block
+## 2. The Caddy site
 
-In [`caddy/Caddyfile`](../caddy/Caddyfile), add an HTTPS site on a new port, following the
-pattern of the existing blocks:
+Put it in a file of its own in [`caddy/sites.d/`](../caddy/sites.d/README.md) — every `*.caddy`
+there is imported by the private-CA [`caddy/Caddyfile`](../caddy/Caddyfile) *and* by the Let's
+Encrypt config hsctl generates, so your site survives switching modes. (Adding the block straight
+to the Caddyfile works too, but only for private-CA mode.)
 
 ```caddyfile
+# caddy/sites.d/myapp.caddy — private-CA mode: a new HTTPS port on the server IP
 {$SERVER_IP}:{$MYAPP_HTTPS} {
 	bind 0.0.0.0
 	tls internal
@@ -41,14 +44,26 @@ pattern of the existing blocks:
 }
 ```
 
+```caddyfile
+# caddy/sites.d/myapp.caddy — Let's Encrypt mode: a subdomain instead
+https://myapp.home.example.com {
+	import letsencrypt        # the tls settings hsctl generated (dns challenge / staging)
+	reverse_proxy {$MYAPP_UPSTREAM}
+}
+```
+
+(In Let's Encrypt mode leave out `import letsencrypt` if you use the http challenge without
+staging — there's no snippet then.) The built-in apps' Let's Encrypt sites come from the table
+in `hsctl/tls.go`.
+
 Then, in [`caddy/docker-compose.yml`](../caddy/docker-compose.yml):
 
-- publish the port — `"${MYAPP_HTTPS:-8449}:${MYAPP_HTTPS:-8449}"`,
+- publish the port (private-CA mode) — `"${MYAPP_HTTPS:-8449}:${MYAPP_HTTPS:-8449}"`,
 - add the upstream default — `MYAPP_UPSTREAM: ${MYAPP_UPSTREAM:-myapp:80}`,
 - add the port variable — `MYAPP_HTTPS: ${MYAPP_HTTPS:-8449}`.
 
 Finally add the new `MYAPP_HTTPS` line to `hsctl/env.go` so a fresh `hsctl setup` writes it
-into `caddy/.env` too.
+into `caddy/.env` too. Reload Caddy with `hsctl letsencrypt apply` (works in either mode).
 
 ## 3. The tile
 

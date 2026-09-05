@@ -75,6 +75,12 @@ var webCmds = []webCmd{
 	{Slug: "install", Title: "Run dashboard on boot", Category: "Setup",
 		Desc: "Install this dashboard as a systemd service so it auto-starts when the server boots. Writes a system service file (needs root).",
 		Args: []string{"install"}, Danger: dangerCaution, NeedsRoot: true},
+	{Slug: "le-status", Title: "Domain & HTTPS status", Category: "Setup",
+		Desc: "Show whether Let's Encrypt is on and which certificate each domain address is serving right now. Read-only — change the settings on the Domain & HTTPS page.",
+		Args: []string{"letsencrypt", "status"}, Danger: dangerNone},
+	{Slug: "caddy-logs", Title: "Show Caddy's log", Category: "Setup",
+		Desc: "The last 120 lines from the HTTPS proxy: certificate requests, and why one failed (DNS token rejected, name not resolving, rate limit). Read-only.",
+		Args: []string{"letsencrypt", "logs"}, Danger: dangerNone},
 
 	// ---- Backups (the dedicated Backups page has more detail + Restore) -------
 	{Slug: "backup-init", Title: "Initialize backup repo", Category: "Backups",

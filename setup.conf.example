@@ -7,10 +7,20 @@
 
 SERVER_IP=192.168.1.10          # this host's LAN IP (hsctl autodetects it)
 TZ_VAL=Etc/UTC                  # e.g. Europe/Brussels, Asia/Kolkata
-ACME_EMAIL=you@example.com      # only used if you ever switch to a real domain + Let's Encrypt
+ACME_EMAIL=you@example.com      # Let's Encrypt contact (only used with DOMAIN + LETSENCRYPT below)
 # The apps aren't published on the LAN — Caddy reaches them by container name over the shared
 # "edge" docker network — so there are no per-app host ports here. Only the dashboard, which
 # runs on the host, still has one:
 UI_PORT=8088                    # hsctl dashboard port (Caddy proxies it at https://SERVER_IP)
 PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver already holds :53
 VW_SIGNUPS_ALLOWED=true         # false = invitation-only
+
+# Optional: serve the apps on a public domain with Let's Encrypt certificates instead of the
+# private CA (nothing to install on devices; the https://IP:port addresses go away). Off by
+# default. The DNS API token is NOT here — it lives in caddy/.env (`hsctl setup --dns-token …`,
+# $ACME_DNS_TOKEN, or the dashboard). See docs/setup.md.
+DOMAIN=                         # e.g. home.example.com -> vault.home.example.com, cloud.…, and the dashboard at the bare name
+LETSENCRYPT=false               # true = https://<app>.DOMAIN with Let's Encrypt certs, replacing the private CA
+ACME_CHALLENGE=dns              # dns (LAN-only, needs the DNS API token) or http (port 80 forwarded from the internet)
+ACME_DNS_PROVIDER=cloudflare    # caddy-dns plugin name for the dns challenge (cloudflare, duckdns, hetzner, desec, …)
+ACME_STAGING=false              # true = Let's Encrypt's staging CA (untrusted test certs, no rate limits) while trying it out

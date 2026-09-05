@@ -51,17 +51,17 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Home server</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🏠 Home server</h1>
-<p class="sub">Your private apps. New device? Install the certificate first.</p>
+<p class="sub">Your private apps.{{if not .LE}} New device? Install the certificate first.{{end}}</p>
 
-<div class="note"><b>First time on this device:</b> open
-<a href="/root.crt">Install the certificate</a> so the apps below load without warnings.</div>
+{{if not .LE}}<div class="note"><b>First time on this device:</b> open
+<a href="/root.crt">Install the certificate</a> so the apps below load without warnings.</div>{{end}}
 
 <div class="grid">
   {{range .Services}}<a class="card" href="{{.URL}}"><h3>{{.Icon}} {{.Name}}</h3>
     <p>{{.Desc}}</p></a>
-  {{end}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
+  {{end}}{{if not .LE}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
     <p>Install this once per device so the apps load without warnings.</p></a>
-  <a class="card" href="/help"><h3>📖 Setup guide</h3>
+  {{end}}<a class="card" href="/help"><h3>📖 Setup guide</h3>
     <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
   <a class="card" href="/admin/backup"><h3>💾 Backup &amp; restore</h3>
     <p>Back the server up, or restore it from a backup (admin login).</p></a>
@@ -83,6 +83,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
   <a class="tool" href="/admin/terminal"><div class="ico">⌨️</div><div class="t">Terminal</div></a>
+  <a class="tool" href="/admin/letsencrypt"><div class="ico">🌐</div><div class="t">Domain &amp; HTTPS</div></a>
 </div>
 
 <h3>System</h3>
@@ -384,5 +385,100 @@ ws.onclose=function(){ term.write('\r\n\r\n[disconnected — reload the page to 
 ws.onerror=function(){ term.write('\r\n[connection error]\r\n'); };
 term.onData(function(d){ if(ws.readyState===1) ws.send(enc.encode(d)); });
 addEventListener('resize',sendResize);
+</script>
+</div></body></html>`
+
+// letsencryptTmpl is the Domain & HTTPS page: what each domain site is serving, and the form
+// that turns Let's Encrypt on/off. Applying runs detached on the server (it can build an image
+// and restart Caddy — the proxy this page is served through), so the script polls the status
+// endpoint for the log and outcome, tolerating the proxy being briefly away.
+const letsencryptTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Domain &amp; HTTPS</title>
+<style>{{css}}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}@media(max-width:640px){.row{grid-template-columns:1fr}}
+label.b{display:block;margin:12px 0 4px;font-weight:600}.opt{display:block;margin:6px 0}
+</style></head><body><div class="wrap">
+<h1>🌐 Domain &amp; HTTPS</h1>
+<p class="sub">How the apps are served over HTTPS: the private certificate (install once per device), or a public domain with Let's Encrypt certificates (nothing to install).</p>
+{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+
+<h3>Now</h3>
+<div class="kv">
+  <div class="k">Mode</div><div>{{if .On}}<span class="tag ok">Let's Encrypt</span> on <code>{{.Cfg.Domain}}</code> · {{.Cfg.ACMEChallenge}} challenge{{if eq .Cfg.ACMEChallenge "dns"}} via {{.Cfg.DNSProvider}}{{end}}{{if .Cfg.ACMEStaging}} · <span class="tag bad">staging — test certificates, not trusted</span>{{end}}{{else}}<span class="tag ok">private CA</span> — <code>https://{{.Cfg.ServerIP}}:&lt;port&gt;</code>, the <a href="/root.crt">certificate</a> installed once per device{{end}}</div>
+</div>
+{{if .On}}
+<table><tr><th>Address</th><th>Certificate</th></tr>
+{{range .Hosts}}<tr><td><a href="{{.URL}}">{{.Host}}</a></td>
+<td>{{if .OK}}<span class="tag ok">trusted</span> {{.Issuer}} · expires {{.Expires}}{{else}}<span class="tag bad">not ready</span> {{if .Issuer}}{{.Issuer}} — {{end}}{{.Note}}{{end}}</td>
+</tr>{{end}}</table>
+<div class="note">These names must resolve to this server (<code>{{.Cfg.ServerIP}}</code>) on your network. Pi-hole users: done — hsctl keeps them in Pi-hole's local DNS records. Otherwise add them in your router's local DNS, or as public A records for <code>{{.Cfg.Domain}}</code> and <code>*.{{.Cfg.Domain}}</code> pointing at that LAN IP.{{if eq .Cfg.ACMEChallenge "http"}} <b>HTTP challenge:</b> the names must also resolve to your public IP from the internet, with port 80 forwarded to this box.{{end}} New certificates take about a minute; "not ready" with a reason usually means a DNS token or name problem — <b>Show Caddy's log</b> below says which.</div>
+{{end}}
+
+<h3>Settings</h3>
+<form id="lef" method="post" action="/admin/letsencrypt/apply">
+  <label class="opt"><input type="checkbox" name="enabled" value="on" {{if .On}}checked{{end}}> <b>Use a public domain with Let's Encrypt certificates</b> (replaces the private certificate)</label>
+  <div class="row">
+  <div><label class="b">Domain</label><input class="in" name="domain" value="{{.Cfg.Domain}}" placeholder="home.example.com" autocomplete="off"><div class="foot">Apps become <code>vault.</code>, <code>cloud.</code>, <code>pihole.</code>… under it; the dashboard is the bare name.</div></div>
+  <div><label class="b">Contact email</label><input class="in" name="email" value="{{.Cfg.ACMEEmail}}" placeholder="you@yourdomain.net"><div class="foot">Let's Encrypt sends expiry warnings here.</div></div>
+  </div>
+  <label class="b">How Let's Encrypt checks that you own the domain</label>
+  <label class="opt"><input type="radio" name="challenge" value="dns" {{if ne .Cfg.ACMEChallenge "http"}}checked{{end}}> <b>DNS</b> (recommended) — Caddy adds a TXT record through your DNS provider's API. <b>Nothing is opened to the internet.</b></label>
+  <label class="opt"><input type="radio" name="challenge" value="http" {{if eq .Cfg.ACMEChallenge "http"}}checked{{end}}> <b>HTTP</b> — Let's Encrypt connects to port 80 here from the internet: port 80 must be forwarded to this box and the names must point at your public IP. <span style="color:var(--bad)">This exposes the box; see docs/security.md.</span></label>
+  <div class="row">
+  <div><label class="b">DNS provider plugin</label><input class="in" name="provider" list="providers" value="{{.Cfg.DNSProvider}}" placeholder="cloudflare" autocomplete="off">
+    <datalist id="providers">{{range .Providers}}<option value="{{.}}">{{end}}</datalist>
+    <div class="foot">A <code>caddy-dns</code> module that takes a single API token. The first apply builds Caddy with it (a few minutes).</div></div>
+  <div><label class="b">DNS API token</label><input class="in" type="password" name="token" autocomplete="new-password" placeholder="{{if .HasToken}}saved — leave blank to keep it{{else}}paste the provider's API token{{end}}"><div class="foot">Kept only in <code>caddy/.env</code>. Cloudflare: a token with <i>Zone → DNS → Edit</i> on this zone.</div></div>
+  </div>
+  <label class="opt"><input type="checkbox" name="staging" value="on" {{if .Cfg.ACMEStaging}}checked{{end}}> Use Let's Encrypt's <b>staging</b> CA first — test certificates browsers won't trust, but no rate limits while you check the setup. Untick and apply again for real ones.</label>
+  <label class="opt"><input type="checkbox" name="rebuild" value="on"> Rebuild the Caddy+plugin image (after a Caddy or plugin update)</label>
+  <p style="margin-top:14px">
+  <button class="btn green" name="action" value="apply" {{if .Running}}disabled{{end}}>Save &amp; apply</button>
+  {{if .On}}<button class="btn gray" name="action" value="disable" {{if .Running}}disabled{{end}}>Back to the private CA</button>{{end}}
+  <button class="btn gray" type="button" data-slug="caddy-logs" data-confirm="">Show Caddy's log</button>
+  </p>
+</form>
+<div id="out" class="out">{{if .Running}}Applying — this page follows along…{{else}}Progress appears here when you apply.{{end}}</div>
+
+<div class="banner" style="margin-top:18px"><b>Switching replaces the private certificate.</b> The <code>https://{{.Cfg.ServerIP}}:&lt;port&gt;</code> addresses stop working and the apps are only reachable by name — so <b>before</b> you switch, make sure <code>{{if .Cfg.Domain}}{{.Cfg.Domain}}{{else}}&lt;domain&gt;{{end}}</code> and its subdomains resolve to <code>{{.Cfg.ServerIP}}</code> on your network (Pi-hole users: automatic; otherwise your router's local DNS or public A records). If a name doesn't open afterwards, run <code>hsctl letsencrypt disable</code> on the server itself to get the IP addresses back. Vaultwarden's <code>DOMAIN</code> and Nextcloud's trusted domains are updated for you; the Bitwarden / Nextcloud apps need the new server address.</div>
+<p class="foot"><a href="/admin">← Admin</a></p>
+<script>` + runJS + `
+(function(){
+  var f=document.getElementById('lef'), out=document.getElementById('out'), fails=0;
+  var domainInput=f.querySelector('input[name=domain]'), enabledBox=f.querySelector('input[name=enabled]');
+  function setBusy(b){ f.querySelectorAll('button[name=action]').forEach(function(x){ x.disabled=b; }); }
+  function onDomain(d){ var h=location.hostname.toLowerCase(); return d && (h===d || h.endsWith('.'+d)); }
+  function poll(){
+    fetch('/admin/letsencrypt/status',{cache:'no-store'}).then(function(r){ return r.json(); }).then(function(s){
+      fails=0; out.textContent=s.log||''; out.scrollTop=out.scrollHeight;
+      if(s.done){
+        setBusy(false);
+        out.textContent+='\n'+(s.ok?'[done] ':'[FAILED] ')+s.message;
+        if(s.ok){ setTimeout(function(){ location.href='/admin/letsencrypt?msg='+encodeURIComponent(s.message); }, 2500); }
+        return;
+      }
+      setTimeout(poll, 2000);
+    }).catch(function(){ fails++; if(fails===3){ out.textContent+='\n(the proxy is restarting — still waiting…)'; } setTimeout(poll, 2000); });
+  }
+  f.addEventListener('submit', function(e){
+    e.preventDefault();
+    var action=(e.submitter && e.submitter.value) || 'apply';
+    var turningOn = action==='apply' && enabledBox.checked, d=domainInput.value.trim().toLowerCase();
+    if(action==='disable' && !window.confirm('Go back to the private certificate? The domain addresses stop working and the https://IP:port addresses come back (devices need the certificate installed again). Your Let\'s Encrypt settings are kept.')) return;
+    if(turningOn && !onDomain(d) && !window.confirm('Switch to Let\'s Encrypt on '+d+'?\n\nThis REPLACES the private certificate: the address you are using right now stops working, and this page will not be able to follow the progress. Continue at https://'+d+'/admin/letsencrypt once it is applied.\n\nMake sure '+d+' and *.'+d+' already resolve to this server on your network. If they do not, you can undo it on the server with: hsctl letsencrypt disable')) return;
+    var fd=new FormData(f); fd.set('action', action);
+    setBusy(true); out.textContent='Starting…';
+    fetch('/admin/letsencrypt/apply',{method:'POST',body:new URLSearchParams(fd)}).then(function(r){
+      if(!r.ok){ return r.text().then(function(t){ out.textContent='Not applied: '+t; setBusy(false); }); }
+      if(turningOn && !onDomain(d)){
+        var a=document.createElement('a'); a.href='https://'+d+'/admin/letsencrypt'; a.textContent='https://'+d+'/admin/letsencrypt';
+        var n=document.createElement('div'); n.className='flash'; n.textContent='Applying. This address stops working once Caddy switches over — continue at '; n.appendChild(a);
+        out.parentNode.insertBefore(n, out);
+      }
+      poll();
+    }).catch(function(err){ out.textContent='request failed: '+err; setBusy(false); });
+  });
+  if({{.Running}}) poll();
+})();
 </script>
 </div></body></html>`

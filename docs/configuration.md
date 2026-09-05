@@ -8,7 +8,8 @@ root unless noted; everything with secrets is `chmod 600` and git-ignored (only 
 |------|------|----------|
 | `setup.conf` | Main settings (IP, ports, timezone…) | `hsctl setup` |
 | `<service>/.env` | Each service's generated secrets + ports | `hsctl setup` (generated) |
-| `caddy/.env` | Caddy: server IP, upstreams, HTTPS ports | `hsctl setup` (generated) |
+| `caddy/.env` | Caddy: server IP, upstreams, HTTPS ports, Let's Encrypt settings + DNS token | `hsctl setup` / `hsctl letsencrypt` (generated) |
+| `caddy/generated/Caddyfile` | The complete Caddy config for Let's Encrypt mode (absent otherwise) | `hsctl up` / `hsctl letsencrypt` (generated) |
 | `services.json` | Dashboard tiles | edit by hand |
 | `backup.conf` | Backup destination, retention, replica, guards | `hsctl backup config` |
 | `.restic-password` | Backup repo password | see [Backups](#backups) |
@@ -28,16 +29,28 @@ copying `setup.conf.example` → `setup.conf`.
 |-----|---------|------|
 | `SERVER_IP` | Server LAN IP (cert SAN, DNS, upstreams) | `--server-ip` |
 | `TZ_VAL` | Timezone (e.g. `Asia/Kolkata`) | `--tz` |
-| `ACME_EMAIL` | Admin email (only used if you move to a real domain) | `--email` |
+| `ACME_EMAIL` | Admin email — the Let's Encrypt account contact | `--email` |
 | `UI_PORT` | Dashboard (hsctl ui) port — the one app still on a host port, since it runs on the host | — |
 | `PIHOLE_DNS_BIND` | Pi-hole `:53` bind IP (`0.0.0.0` or the LAN IP) | `--pihole-dns-bind` |
 | `VW_SIGNUPS_ALLOWED` | Open Vaultwarden signups (`true`/`false`) | `--vw-signups` |
+| `DOMAIN` | Public domain for Let's Encrypt (see below); empty = none | `--domain` |
+| `LETSENCRYPT` | `true` = `https://<app>.DOMAIN` with Let's Encrypt certificates instead of the private CA | `--letsencrypt` |
+| `ACME_CHALLENGE` | `dns` (LAN-only, needs a DNS API token) or `http` (port 80 forwarded) | `--acme-challenge` |
+| `ACME_DNS_PROVIDER` | `caddy-dns` plugin for the dns challenge (`cloudflare`, `duckdns`, …) | `--dns-provider` |
+| `ACME_STAGING` | `true` = Let's Encrypt's staging CA (untrusted test certificates) | `--acme-staging` |
 
 Changing a value: edit `setup.conf` (or re-run `hsctl setup`), then `hsctl up`. Note that
 `hsctl setup` never overwrites an existing service `.env` (use `--force` to regenerate, which
-also rotates secrets).
+also rotates secrets). The Let's Encrypt keys are the exception: they're settings, so `hsctl up`
+/ `hsctl letsencrypt apply` re-render them into `caddy/.env` and the generated sites file.
 
 ## Service / HTTPS ports — `caddy/.env`
+
+`caddy/Caddyfile` is the private-CA config (`https://SERVER_IP:<port>` per app) and is complete on
+its own — nothing is generated for the default mode. In Let's Encrypt mode hsctl generates a
+separate, complete config into `caddy/generated/Caddyfile` (from the table in `hsctl/tls.go`,
+using the same env) and sets `CADDY_CONFIG` in `caddy/.env` so `caddy run` loads that one
+instead. Both configs import `caddy/sites.d/*.caddy`, where sites of your own go.
 
 The apps are **not** published on the LAN. They share an internal docker network
 (`homeserver-edge`, created by hsctl) and Caddy reaches each by container name — so the only
@@ -57,10 +70,39 @@ To change a service's HTTPS port you edit it in **three** places so they agree: 
 the matching block in `caddy/Caddyfile`, and its tile in `services.json`. Then
 `cd caddy && docker compose up -d --force-recreate`.
 
+## Public domain + Let's Encrypt
+
+Optional, off by default; when on it **replaces** the private CA (the `https://SERVER_IP:<port>`
+addresses stop being served). Turn it on with `hsctl setup` (the last question), `hsctl letsencrypt
+enable …`, or the dashboard's **Domain & HTTPS** page — the walkthrough is in
+[Setup → Optional: a public domain](setup.md#optional-a-public-domain-with-lets-encrypt). What it
+writes:
+
+| Where | What |
+|-------|------|
+| `setup.conf` | `DOMAIN`, `LETSENCRYPT`, `ACME_CHALLENGE`, `ACME_DNS_PROVIDER`, `ACME_STAGING` (table above) |
+| `caddy/.env` | the same keys, plus **`ACME_DNS_TOKEN`** (the provider's API token — the only place it's stored; `$` is doubled for compose), `CADDY_CONFIG=/etc/caddy/generated/Caddyfile` (which config `caddy run` loads), and `CADDY_IMAGE=homeserver-caddy:<provider>` for the dns challenge. All three are removed when off |
+| `caddy/generated/Caddyfile` | a complete config: one `https://<sub>.DOMAIN` site per app on `:443` (so `HOME_HTTPS` must stay `443`), `http://` → `https://` redirects, an info page on `:80` for the bare IP, and the `sites.d` import. Rewritten on every apply, removed when off (Caddy then loads `caddy/Caddyfile` again) |
+| `pihole/custom.list` | a marked block of `SERVER_IP <name>` lines, so Pi-hole resolves the names locally; your own lines outside the markers are kept |
+| `vaultwarden/.env` | `VW_DOMAIN` = `https://vault.DOMAIN` (back to `https://SERVER_IP:8443` when off) |
+| `nextcloud/.env` | `NC_TRUSTED_DOMAINS` gains `cloud.DOMAIN`; a running Nextcloud gets it via `occ` too |
+
+The subdomain of each app is its `key` in `services.json` (`vault`, `cloud`, `pihole`, `pdf`,
+`tools`, `image`); add `"host": "…"` to a tile to rename it. The dashboard is the bare domain.
+The **dns** challenge needs a Caddy build with the provider's plugin: hsctl builds
+`caddy/Dockerfile` (`--build-arg CADDY_DNS_PROVIDER=<name>`) into `homeserver-caddy:<name>` the
+first time, and `hsctl letsencrypt apply --rebuild` rebuilds it (after a Caddy or plugin update).
+Only plugins configured by a single token work with the generated `dns <provider>
+{env.ACME_DNS_TOKEN}` line.
+
+`hsctl letsencrypt status` shows what each name is currently serving (issuer, expiry, trusted or
+not); `hsctl letsencrypt logs` shows Caddy's log, where a failed issuance explains itself.
+
 ## Dashboard tiles — `services.json`
 
 A JSON array; each entry is a tile the dashboard renders, so adding/removing one updates the
-home page. Fields: `key`, `name`, `icon`, `desc`, `https_port`, optional `path`. Example:
+home page. Fields: `key`, `name`, `icon`, `desc`, `https_port`, optional `path`, and optional
+`host` (the subdomain under the Let's Encrypt domain; defaults to `key`). Example:
 
 ```json
 { "key": "vault", "name": "Passwords", "icon": "🔑", "desc": "Vaultwarden", "https_port": 8443 }

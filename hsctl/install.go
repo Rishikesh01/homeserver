@@ -49,7 +49,9 @@ WantedBy=multi-user.target
 		}
 	}
 	fmt.Printf("\nDone — the dashboard now runs as a service and auto-starts on boot.\n")
-	fmt.Printf("Open https://%s\n", LoadConfig(repo).ServerIP)
+	c := LoadConfig(repo)
+	c.Normalize()
+	fmt.Printf("Open %s\n", c.dashboardURL())
 	return nil
 }
 

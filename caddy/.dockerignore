@@ -1,0 +1,4 @@
+# The DNS-plugin image build copies nothing from this directory — keep .env (secrets), the
+# Caddyfile and generated sites out of the build context entirely.
+*
+!Dockerfile

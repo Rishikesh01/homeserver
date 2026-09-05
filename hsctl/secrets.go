@@ -59,6 +59,9 @@ func argon2idPHC(token string) string {
 // of '$'; without this, compose eats them and the token reaching the container is corrupted.
 func escapeDollarsForCompose(s string) string { return strings.ReplaceAll(s, "$", "$$") }
 
+// unescapeDollarsFromCompose is the inverse, for reading such a value back out of a .env file.
+func unescapeDollarsFromCompose(s string) string { return strings.ReplaceAll(s, "$$", "$") }
+
 // setEnvKey rewrites key=value in a simple KEY=VALUE env file, preserving everything else
 // (other keys, comments, order). Appends the key if it isn't present.
 func setEnvKey(path, key, value string) error {

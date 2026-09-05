@@ -35,6 +35,9 @@ hsctl install           # run the dashboard as a systemd service (auto-start on 
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
 hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
+hsctl letsencrypt enable --domain home.example.com --email … --dns-provider cloudflare
+                        # optional: https://<app>.<domain> with Let's Encrypt certs instead of the private CA
+hsctl letsencrypt status | logs | apply | disable
 ```
 
 `hsctl updates` compares each installed image against its registry digest and reports what's
@@ -47,6 +50,8 @@ Every command above is also a card in the dashboard's Command Center (`/admin/co
 published on the LAN — Caddy reaches them over an internal network — so there are no per-app
 host ports), reads any existing `.env` so it stays consistent with a running stack, and saves
 answers to `setup.conf` (re-run non-interactively with `--yes`, or pass `--server-ip`, `--email`, etc.).
+Its last question is the optional public domain; `hsctl letsencrypt` changes that later
+(and applies it live) — see [docs/setup.md](../docs/setup.md#optional-a-public-domain-with-lets-encrypt).
 
 ## Backups & restore
 
@@ -124,6 +129,11 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
     Prune / Self-test / Copy off-site, plus the destructive **Restore**.
   - **⌨️ Terminal** (`/admin/terminal`) — a real shell on the server (xterm.js over a
     WebSocket; admin-session gated + Origin-checked). Powerful — it's a root shell on the LAN.
+  - **🌐 Domain & HTTPS** (`/admin/letsencrypt`) — the HTTPS mode: private CA, or Let's Encrypt
+    on your domain (replacing it). Shows what certificate each `https://<app>.<domain>` name is
+    serving, and the form to switch (domain, email, DNS vs HTTP challenge, DNS provider + token,
+    staging). Applying runs in the background — it may build the plugin image and reload Caddy —
+    and the page follows its log (from the IP address it can't, since that address goes away).
 
 **Make it permanent (auto-start on boot):**
 
@@ -140,4 +150,5 @@ install` does the same for the dashboard process. For the nightly backup timer t
 `setup.conf` (your settings, `0600`) · `WELCOME.txt` (the logins handout — `0644`, so delete
 it once you've saved them) · `.ui-password` (dashboard admin, `0600`) · `backup.conf` (backup
 destination, `0600`) · `.restic-password` (`0600` — back this up separately!) · `.backup-env`
-(cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`).
+(cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`) ·
+`caddy/generated/Caddyfile` (the Let's Encrypt-mode config, only while that mode is on).

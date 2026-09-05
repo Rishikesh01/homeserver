@@ -4,6 +4,7 @@ This stack stores your passwords and files, so treat the server like a safe.
 
 - [Threat model](#threat-model)
 - [Hardening checklist](#hardening-checklist)
+- [A public domain and Let's Encrypt](#a-public-domain-and-lets-encrypt)
 - [Where the secrets live](#where-the-secrets-live)
 - [Changing & rotating passwords](#changing--rotating-passwords)
 
@@ -55,8 +56,32 @@ browser on a trusted device, or someone with physical access to an unlocked, run
 **On image pinning:** the application images are pinned to exact versions, so a rebuild is
 reproducible — `vaultwarden/server:1.36.0`, `nextcloud:30-apache`, `pihole/pihole:2025.04.0`,
 `stirling-tools/stirling-pdf:2.12.0`, `it-tools:2024.10.22-7ca5933`. The supporting images
-(`caddy:2.8-alpine`, `postgres:16-alpine`, `redis:7-alpine`, `nginx:1.27-alpine`) track a
+(`caddy:2.11-alpine`, `postgres:16-alpine`, `redis:7-alpine`, `nginx:1.27-alpine`) track a
 minor tag and pick up patch releases when you pull.
+
+---
+
+## A public domain and Let's Encrypt
+
+The [optional domain feature](setup.md#optional-a-public-domain-with-lets-encrypt) replaces
+the private CA with Let's Encrypt certificates. It does not change the threat model **as long
+as you use the DNS challenge** (the default): the server still listens only on your LAN,
+nothing is port-forwarded, and the domain names simply resolve to a private address. Two things
+to know:
+
+- **The DNS API token** (`ACME_DNS_TOKEN` in `caddy/.env`, `0600`) can edit your DNS zone.
+  Scope it as narrowly as the provider allows (Cloudflare: one zone, *DNS: Edit* only) and
+  treat it like the other secrets — it's covered by full-disk encryption and by backups.
+- **Your hostnames become public knowledge.** Every certificate is logged in the public
+  Certificate Transparency logs, so `vault.home.example.com` is discoverable. That's only a name
+  — it resolves to a private IP nobody outside can reach — but if that bothers you, keep using
+  the private CA.
+
+The **HTTP challenge** is different: Let's Encrypt must reach `http://<name>/` from the
+internet, so the names have to point at your public IP and **port 80 forwarded to the server**.
+Port 80 serves only the CA-download page, but you now have a box reachable from the internet
+and a public record that says what runs on it. Use it only if your DNS provider can't do the
+DNS challenge, and don't forward anything else.
 
 ---
 
@@ -85,7 +110,8 @@ Two things to act on:
   machine the backups protect.
 
 The **certificate authority's private key** lives in the `caddy-data` Docker volume. Anyone
-with it could impersonate your sites, so it is included in backups and shouldn't leak.
+with it could impersonate your sites, so it is included in backups and shouldn't leak. (In
+Let's Encrypt mode the CA is no longer used for anything, but the key stays in the volume.)
 
 ---
 

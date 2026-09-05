@@ -23,6 +23,16 @@ type Config struct {
 	UIPort           int
 	PiholeDNSBind    string
 	VWSignupsAllowed bool
+
+	// Optional Let's Encrypt on a public domain — see tls.go. Off by default: the stack then
+	// serves only https://<ip>:<port> with Caddy's private CA. When on, each app is ALSO
+	// served at https://<app>.<Domain> with a publicly trusted certificate.
+	Domain        string // base domain, e.g. home.example.com ("" = none)
+	LetsEncrypt   bool   // serve the <app>.<Domain> sites with Let's Encrypt certs
+	ACMEChallenge string // "dns" (nothing port-forwarded; needs a DNS API token) or "http" (port 80 reachable from the internet)
+	DNSProvider   string // caddy-dns plugin name for the dns challenge (cloudflare, duckdns, ...)
+	DNSToken      string // that provider's API token — kept ONLY in caddy/.env, never in setup.conf
+	ACMEStaging   bool   // use Let's Encrypt's staging CA (untrusted certs, but no rate limits) to test
 }
 
 const confFile = "setup.conf"
@@ -67,6 +77,13 @@ func (c *Config) Normalize() {
 	if c.UIPort == 0 {
 		c.UIPort = pickPort(8088)
 	}
+	c.Domain = strings.ToLower(strings.TrimSpace(c.Domain))
+	if c.ACMEChallenge == "" {
+		c.ACMEChallenge = challengeDNS // the one that keeps the box LAN-only
+	}
+	if c.Domain == "" {
+		c.LetsEncrypt = false // nothing to issue for
+	}
 }
 
 // defaultDNSBind picks where Pi-hole's DNS should listen: all interfaces, unless the
@@ -105,6 +122,11 @@ func overlayFromConf(c *Config, repo string) {
 	c.UIPort = atoiDef(get("UI_PORT", ""), c.UIPort)
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
+	c.Domain = get("DOMAIN", c.Domain)
+	c.LetsEncrypt = get("LETSENCRYPT", boolStr(c.LetsEncrypt, "true", "false")) == "true"
+	c.ACMEChallenge = get("ACME_CHALLENGE", c.ACMEChallenge)
+	c.DNSProvider = get("ACME_DNS_PROVIDER", c.DNSProvider)
+	c.ACMEStaging = get("ACME_STAGING", boolStr(c.ACMEStaging, "true", "false")) == "true"
 }
 
 // overlayFromEnv reflects the actual deployed .env files into c (so config matches a
@@ -118,6 +140,25 @@ func overlayFromEnv(c *Config, repo string) {
 		if v := portFromUpstream(kv["HOME_UPSTREAM"]); v > 0 {
 			c.UIPort = v
 		}
+		// Let's Encrypt settings live here too (it's where they take effect); the DNS API token
+		// lives ONLY here. setup.conf, overlaid next, wins for the non-secret ones.
+		if v := kv["DOMAIN"]; v != "" {
+			c.Domain = v
+		}
+		if v, ok := kv["LETSENCRYPT"]; ok {
+			c.LetsEncrypt = v == "true"
+		}
+		if v := kv["ACME_CHALLENGE"]; v != "" {
+			c.ACMEChallenge = v
+		}
+		if v := kv["ACME_DNS_PROVIDER"]; v != "" {
+			c.DNSProvider = v
+		}
+		if v, ok := kv["ACME_STAGING"]; ok {
+			c.ACMEStaging = v == "true"
+		}
+		// Stored compose-escaped ('$' doubled) — undo that, or every re-render would double it again.
+		c.DNSToken = unescapeDollarsFromCompose(kv["ACME_DNS_TOKEN"])
 	}
 	if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
 		if _, ok := kv["VW_SIGNUPS_ALLOWED"]; ok {
@@ -142,7 +183,8 @@ func portFromUpstream(s string) int {
 	return 0
 }
 
-// Save writes setup.conf (0600). Not secrets — just settings.
+// Save writes setup.conf (0600). Not secrets — just settings (so the DNS API token, which is
+// a secret, is deliberately NOT here; it lives in caddy/.env only — see renderTLS).
 func (c Config) Save(repo string) error {
 	var b strings.Builder
 	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). Edit + re-run freely.\n")
@@ -151,6 +193,11 @@ func (c Config) Save(repo string) error {
 		{"UI_PORT", strconv.Itoa(c.UIPort)},
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
+		{"DOMAIN", c.Domain},
+		{"LETSENCRYPT", boolStr(c.LetsEncrypt, "true", "false")},
+		{"ACME_CHALLENGE", c.ACMEChallenge},
+		{"ACME_DNS_PROVIDER", c.DNSProvider},
+		{"ACME_STAGING", boolStr(c.ACMEStaging, "true", "false")},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}

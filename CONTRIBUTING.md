@@ -69,7 +69,12 @@ page at `/help`. Two consequences:
 
 - it must stay at the repo root,
 - the literal token `SERVER_IP` in it is a placeholder that gets substituted with the real IP —
-  don't "fix" it to an actual address.
+  don't "fix" it to an actual address,
+- the `<!-- private-ca --> … <!-- /private-ca -->` passages are dropped, and the
+  `<!-- letsencrypt … /letsencrypt -->` comment blocks unwrapped, when the server runs in
+  Let's Encrypt mode (`hsctl/tls.go`, `onboardingFor`) — keep certificate-install text inside
+  the former, and the `https://SERVER_IP:8443`-style addresses as they are (they're rewritten
+  to the domain names).
 
 ## Releases
 

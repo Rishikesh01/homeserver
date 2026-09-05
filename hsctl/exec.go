@@ -122,13 +122,14 @@ func volumeMountpoint(repo, name string) (string, error) {
 	return mp, nil
 }
 
-// containerState returns a container's state ("running", "exited", …), or "" if missing.
+// containerState returns a container's state ("running", "exited", …), or "" if missing. It's
+// a probe — "no such object" is an answer, so docker's stderr is swallowed rather than streamed.
 func containerState(dir, name string) string {
-	out, err := dockerOut(dir, "inspect", "-f", "{{.State.Status}}", name)
+	out, err := dockerCmd(dir, "inspect", "-f", "{{.State.Status}}", name).Output()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	return strings.TrimSpace(string(out))
 }
 
 // dockerRun streams a docker command's output to the user.

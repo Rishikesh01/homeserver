@@ -57,11 +57,12 @@ func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return hj.Hijack()
 }
 
-// quietPaths are logged only at debug level: static assets, and the restore progress
-// endpoint the browser polls every few seconds — routine noise that would bury the
-// interesting lines in the journal.
+// quietPaths are logged only at debug level: static assets, and the progress endpoints the
+// browser polls every few seconds (restore, Let's Encrypt apply) — routine noise that would
+// bury the interesting lines in the journal.
 func quietPath(path string) bool {
-	return strings.HasPrefix(path, "/admin/assets/") || path == "/admin/backup/restore/status"
+	return strings.HasPrefix(path, "/admin/assets/") ||
+		path == "/admin/backup/restore/status" || path == "/admin/letsencrypt/status"
 }
 
 // logRequests logs every finished request: method, path, status, duration, client.

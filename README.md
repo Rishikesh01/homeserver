@@ -31,7 +31,9 @@ This project answers those three:
 - **Everything is HTTPS, on your LAN, with no public domain.** Caddy runs a private CA and
   issues real certificates for the server's IP. Install the root cert once per device and the
   browser padlock is genuine — which is what makes the Bitwarden and Nextcloud mobile apps
-  agree to connect at all.
+  agree to connect at all. Own a domain? Optionally swap the private CA for **Let's Encrypt**
+  certificates on `https://vault.home.example.com` & co. — via the DNS challenge, so still
+  nothing is port-forwarded, and nothing to install on devices.
 - **Non-technical users get a dashboard, not a shell.** Tiles for each app, a rendered
   setup guide they can follow themselves, and an admin area with system health, drives,
   backups, a command center and a real terminal.
@@ -133,7 +135,11 @@ Full walkthrough: **[docs/setup.md](docs/setup.md)**.
   and nothing serves plaintext HTTP. The exceptions are deliberate: Pi-hole's `:53` (that's
   the point of Pi-hole) and port `:80`, which serves the CA certificate download only.
 - **One HTTPS port per app** (`8443`–`8448`, dashboard on `443`), each with a `tls internal`
-  certificate carrying the server's IP in its SAN.
+  certificate carrying the server's IP in its SAN. Or, optionally, `https://<app>.<your domain>`
+  on `443` with Let's Encrypt certificates instead (`hsctl letsencrypt`, or the dashboard's
+  Domain & HTTPS page) — hsctl generates a separate config for that mode and points Caddy at
+  it, leaving the private-CA `Caddyfile` as the fallback; DNS challenge by default so the box
+  stays LAN-only. See [docs/setup.md](docs/setup.md#optional-a-public-domain-with-lets-encrypt).
 - **The dashboard runs on the host, not in a container** — it manages Docker and offers a root
   shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, not the LAN
   (if the bridge can't be detected it warns and falls back to all interfaces). Caddy reaches
@@ -156,6 +162,8 @@ hsctl install                     Run the dashboard as a systemd service (auto-s
 hsctl ui                          Serve the web dashboard
 hsctl secrets show                Print the generated logins (read from the .env files)
 hsctl secrets rotate-vw-admin     Generate a new Vaultwarden /admin token
+hsctl letsencrypt enable|disable  Optional: Let's Encrypt certificates on your domain instead of the private CA
+hsctl letsencrypt status|logs     …what each name serves / Caddy's log
 hsctl backup config | init | run  Configure / create / write to the encrypted repo
 hsctl backup list | forget        List snapshots / apply retention and prune
 hsctl backup verify               Self-test backup+restore on throwaway volumes

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 )
 
@@ -13,6 +14,7 @@ type Secret struct{ Label, Value string }
 // set. It returns the human logins for any .env it newly created.
 func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	var secrets []Secret
+	hosts := leHostsFor(c, LoadServices(repo)) // the domain sites, if Let's Encrypt is on
 	// writeEnv writes path only if absent (or force); reports whether it wrote.
 	writeEnv := func(rel, content string) (bool, error) {
 		path := filepath.Join(repo, rel)
@@ -28,8 +30,8 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	vwToken := genPassword(40)
 	vwStored := escapeDollarsForCompose(argon2idPHC(vwToken))
 	if wrote, err := writeEnv("vaultwarden/.env", fmt.Sprintf(
-		"VW_DOMAIN=https://%s:8443\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\n",
-		c.ServerIP, vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
+		"VW_DOMAIN=%s\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\n",
+		vwDomainFor(c, hosts, 8443), vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
 		return nil, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Vaultwarden /admin token (SAVE — not recoverable):", vwToken})
@@ -41,7 +43,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		"POSTGRES_DB=nextcloud\nPOSTGRES_USER=nextcloud\nPOSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n"+
 			"NC_ADMIN_USER=admin\nNC_ADMIN_PASSWORD=%s\nNC_TRUSTED_DOMAINS=%s\n"+
 			"NC_TRUSTED_PROXIES=172.16.0.0/12\n",
-		genPassword(32), genPassword(32), ncPw, c.ServerIP)); err != nil {
+		genPassword(32), genPassword(32), ncPw, ncTrustedDomainsFor(c, hosts))); err != nil {
 		return nil, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Nextcloud (user 'admin'):", ncPw})
@@ -67,7 +69,8 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		}
 	}
 
-	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP).
+	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP). The Let's Encrypt keys
+	// are written by renderTLS (below, and on every `up`), which also updates an existing file.
 	if _, err := writeEnv("caddy/.env", fmt.Sprintf(
 		"SERVER_IP=%s\nACME_EMAIL=%s\n"+
 			"# App upstreams are the container names on the shared \"edge\" network — set as\n"+
@@ -77,6 +80,9 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=443\n"+
 			"STIRLING_HTTPS=8446\nITTOOLS_HTTPS=8447\nIMAGETOOLS_HTTPS=8448\n",
 		c.ServerIP, c.ACMEEmail, c.UIPort)); err != nil {
+		return nil, err
+	}
+	if err := renderTLS(repo, c, io.Discard); err != nil {
 		return nil, err
 	}
 
@@ -90,6 +96,18 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
   PDF tools / Utilities / Image:  https://%[1]s:8446  /  :8447  /  :8448
 Step-by-step per device: see ONBOARDING.md
 `, c.ServerIP)
+	if c.leEnabled() {
+		welcome = fmt.Sprintf(`Homeserver — quick reference (Let's Encrypt: nothing to install on devices)
+  Dashboard (home page):          https://%[1]s
+  Passwords (Vaultwarden):        https://%[2]s
+  Files (Nextcloud):              https://%[3]s
+  Pi-hole admin:                  https://%[4]s/admin
+  PDF tools / Utilities / Image:  https://%[5]s  /  https://%[6]s  /  https://%[7]s
+The names must resolve to %[8]s on your network (Pi-hole users: already done).
+Step-by-step per device: see ONBOARDING.md (or the dashboard's Setup guide)
+`, c.Domain, hostFor(hosts, "vault"), hostFor(hosts, "cloud"), hostFor(hosts, "pihole"),
+			hostFor(hosts, "pdf"), hostFor(hosts, "tools"), hostFor(hosts, "image"), c.ServerIP)
+	}
 	if err := writeFile0644(filepath.Join(repo, "WELCOME.txt"), welcome); err != nil {
 		return nil, err
 	}

@@ -1,12 +1,18 @@
 # Onboarding a person / device
 
-A short checklist for adding someone (and each of their devices) to the homeserver. Do
-the **one-time certificate step** on every device, then the per-app steps. Hand someone
+A short checklist for adding someone (and each of their devices) to the homeserver.<!-- private-ca --> Do
+the **one-time certificate step** on every device, then the per-app steps.<!-- /private-ca --> Hand someone
 this page and they can self-serve most of it.
 
-Everything is reached over HTTPS at the **server's IP + a port** (no names). Replace
+<!-- private-ca -->Everything is reached over HTTPS at the **server's IP + a port** (no names). Replace
 **`SERVER_IP`** below with the server's LAN address (ask your admin; it's also on the
-dashboard). The **dashboard** at `https://SERVER_IP` links to every app.
+dashboard). The **dashboard** at `https://SERVER_IP` links to every app.<!-- /private-ca -->
+<!-- letsencrypt
+Everything is reached over HTTPS by **name**, with certificates every device already trusts —
+there is nothing to install. The names work on the home network (if one doesn't open, ask your
+admin: it has to point at the server there). The **dashboard** at `https://SERVER_IP` links to
+every app.
+/letsencrypt -->
 
 | | URL |
 |--|--|
@@ -17,6 +23,7 @@ dashboard). The **dashboard** at `https://SERVER_IP` links to every app.
 
 ---
 
+<!-- private-ca -->
 ## 1. Install the certificate (once per device) — do this first
 
 The server runs its own certificate authority (there's no public domain). Each device
@@ -48,6 +55,7 @@ connect**.
   pick `root.crt` → tick *"Trust this CA to identify websites"*.
 
 ---
+<!-- /private-ca -->
 
 ## 2. Passwords — Vaultwarden (Bitwarden app)
 
@@ -55,8 +63,8 @@ connect**.
 2. **Create account** → email + a strong master password. **The master password is the
    one thing nobody can reset for you — write it down somewhere safe.**
 3. Phone: install **Bitwarden** (App Store / Play Store). On the login screen tap the
-   gear/settings → **Self-hosted** → Server URL `https://SERVER_IP:8443` → log in.
-   (The cert from step 1 must be installed for the app to connect.)
+   gear/settings → **Self-hosted** → Server URL `https://SERVER_IP:8443` → log in.<!-- private-ca -->
+   (The cert from step 1 must be installed for the app to connect.)<!-- /private-ca -->
 
 ---
 
@@ -73,12 +81,17 @@ connect**.
 
 ## Admin notes (server owner)
 
-- Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
-  `http://SERVER_IP/root.crt`.
+<!-- private-ca -->- Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
+  `http://SERVER_IP/root.crt`. Own a domain? `hsctl letsencrypt enable` swaps the private
+  certificate for Let's Encrypt ones (nothing to install) — see `docs/setup.md`.<!-- /private-ca -->
+<!-- letsencrypt
+- HTTPS: Let's Encrypt certificates on your domain (nothing to install on devices). Status:
+  `hsctl letsencrypt status`; back to the private certificate: `hsctl letsencrypt disable`.
+/letsencrypt -->
 - Pi-hole is just a network ad-blocker now — point the router's DHCP DNS at the server to
   ad-block every device (see `docs/setup.md` → "Pi-hole / network-wide ad-blocking").
-- Add an app to the dashboard: add a service folder + a Caddy block (new HTTPS port) + an
-  entry in `services.json`. The dashboard updates on next load.
+- Add an app to the dashboard: add a service folder + a Caddy block (a file in `caddy/sites.d/`)
+  + an entry in `services.json`. The dashboard updates on next load.
 - Nextcloud users: create them in *Admin → Users*. Vaultwarden allows self-signup; switch
   to invitation-only later via `VW_SIGNUPS_ALLOWED=false` + `hsctl up`.
 

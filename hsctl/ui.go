@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,6 +45,52 @@ type uiServer struct {
 	// while Caddy (and thus normal dashboard access) is down mid-restore.
 	restoreMu sync.Mutex
 	restoreSt restoreStatus
+
+	// leSt / leLog track the Domain & HTTPS page's background apply. It can take minutes (a
+	// plugin image build) and may recreate Caddy — the very proxy this response travels through —
+	// so it runs detached and the page polls for its log and outcome, like the restore.
+	leMu  sync.Mutex
+	leSt  opStatus
+	leLog strings.Builder
+}
+
+// opStatus is the live state of a detached admin operation, polled by its page.
+type opStatus struct {
+	Active  bool   `json:"active"`
+	Done    bool   `json:"done"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+	Log     string `json:"log"` // everything the operation printed so far
+}
+
+func (s *uiServer) startLE() {
+	s.leMu.Lock()
+	s.leSt = opStatus{Active: true}
+	s.leLog.Reset()
+	s.leMu.Unlock()
+}
+
+func (s *uiServer) finishLE(ok bool, msg string) {
+	s.leMu.Lock()
+	s.leSt = opStatus{Done: true, OK: ok, Message: msg}
+	s.leMu.Unlock()
+}
+
+func (s *uiServer) getLE() opStatus {
+	s.leMu.Lock()
+	defer s.leMu.Unlock()
+	st := s.leSt
+	st.Log = s.leLog.String()
+	return st
+}
+
+// leLogWriter is the io.Writer the background apply prints to; the page polls it out.
+type leLogWriter struct{ s *uiServer }
+
+func (l leLogWriter) Write(p []byte) (int, error) {
+	l.s.leMu.Lock()
+	defer l.s.leMu.Unlock()
+	return l.s.leLog.Write(p)
 }
 
 // restoreStatus is the live state of the background web restore, polled by its progress page.
@@ -109,9 +156,12 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
 	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
+	mux.HandleFunc("/admin/letsencrypt", s.requireAuth(s.handleLetsEncrypt))
+	mux.HandleFunc("/admin/letsencrypt/apply", s.requireAuth(s.handleLetsEncryptApply))
+	mux.HandleFunc("/admin/letsencrypt/status", s.requireAuth(s.handleLetsEncryptStatus))
 	fmt.Printf("hsctl ui:\n")
-	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
-	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
+	fmt.Printf("  dashboard : %s/   (via Caddy — the LAN entrypoint)\n", c.dashboardURL())
+	fmt.Printf("  admin     : %s/admin\n", c.dashboardURL())
 	fmt.Printf("  login     : user 'admin', password in %s\n", filepath.Join(s.repo, ".ui-password"))
 
 	handler := logRequests(mux)
@@ -346,6 +396,7 @@ type serviceLink struct{ Name, Icon, Desc, URL string }
 type homeData struct {
 	Cfg      Config
 	Services []serviceLink
+	LE       bool // Let's Encrypt mode: domain addresses, nothing to install
 }
 
 func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -354,11 +405,11 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := s.config()
-	var links []serviceLink
+	d := homeData{Cfg: c, LE: c.leEnabled()}
 	for _, svc := range LoadServices(s.repo) {
-		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
+		d.Services = append(d.Services, serviceLink{svc.Name, svc.Icon, svc.Desc, c.appURL(svc)})
 	}
-	render(w, homeTmpl, homeData{Cfg: c, Services: links})
+	render(w, homeTmpl, d)
 }
 
 type helpData struct{ Body template.HTML }
@@ -371,7 +422,7 @@ func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "setup guide not available", http.StatusNotFound)
 		return
 	}
-	src := strings.ReplaceAll(string(md), "SERVER_IP", c.ServerIP)
+	src := onboardingFor(string(md), c, leHostsFor(c, LoadServices(s.repo)))
 	var buf bytes.Buffer
 	if err := markdown.Convert([]byte(src), &buf); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -441,14 +492,21 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 func (s *uiServer) runLifecycle(action string) string {
 	order := services
 	cargs := []string{"compose", "up", "-d"}
+	caddyWasUp := false
 	if action == "down" {
 		cargs = []string{"compose", "down"}
 		order = reversed(services)
 	} else {
-		migrateSharedNetworkEnv(s.repo)
-		if err := ensureEdgeNetwork(); err != nil {
+		// The DNS-plugin build takes minutes and this handler can't stream — send the operator
+		// somewhere that can, rather than hanging the click.
+		if c := s.config(); leNeedsImageBuild(s.repo, c) {
+			return "up: Caddy's " + c.DNSProvider + " DNS-plugin image isn't built yet (a few minutes). " +
+				"Use Commands → 'Start all services', which shows the build as it runs."
+		}
+		if err := prepareUp(s.repo, io.Discard); err != nil {
 			return "up: FAILED — " + err.Error()
 		}
+		caddyWasUp = containerState(s.repo, "caddy") == "running"
 	}
 	var failed []string
 	for _, svc := range order {
@@ -458,6 +516,12 @@ func (s *uiServer) runLifecycle(action string) string {
 	}
 	if len(failed) > 0 {
 		return fmt.Sprintf("%s: FAILED for %s", action, strings.Join(failed, ", "))
+	}
+	if caddyWasUp {
+		// Same as the CLI: an already-running Caddy doesn't reread a changed Caddyfile on `up`.
+		if err := reloadCaddy(s.repo); err != nil {
+			uiLog.Warn("caddy reload after up failed", "err", err)
+		}
 	}
 	return action + ": ok"
 }
@@ -735,8 +799,100 @@ func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(s.getRestore())
 }
 
-// handleCert serves the public root CA (from the saved file, else extracted live).
+// ---- Domain & HTTPS (Let's Encrypt) -----------------------------------------
+
+type leData struct {
+	Cfg       Config
+	On        bool
+	Msg       string
+	Hosts     []certStatus // what each domain site serves right now (only when On)
+	Providers []string     // dropdown suggestions
+	HasToken  bool         // a DNS API token is saved (never shown)
+	Running   bool         // an apply is in progress — the page should follow it
+}
+
+func (s *uiServer) handleLetsEncrypt(w http.ResponseWriter, r *http.Request) {
+	c := s.config()
+	d := leData{Cfg: c, On: c.leEnabled(), Msg: r.URL.Query().Get("msg"), Providers: dnsProviders,
+		HasToken: c.DNSToken != "", Running: s.getLE().Active}
+	if d.On {
+		d.Hosts = leStatuses(c, leHostsFor(c, LoadServices(s.repo)))
+	}
+	render(w, letsencryptTmpl, d)
+}
+
+// handleLetsEncryptApply validates the form, then runs applyTLS detached (it may build an image
+// and recreate Caddy). The page polls handleLetsEncryptStatus for the log and the outcome. A
+// blank token keeps the saved one, so the secret never round-trips through the browser.
+func (s *uiServer) handleLetsEncryptApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/letsencrypt", http.StatusSeeOther)
+		return
+	}
+	c := s.config()
+	if r.FormValue("action") == "disable" {
+		c.LetsEncrypt = false
+	} else {
+		c.LetsEncrypt = r.FormValue("enabled") == "on"
+		c.Domain = strings.TrimSpace(r.FormValue("domain"))
+		c.ACMEEmail = strings.TrimSpace(r.FormValue("email"))
+		c.ACMEChallenge = strings.TrimSpace(r.FormValue("challenge"))
+		c.DNSProvider = strings.TrimSpace(r.FormValue("provider"))
+		if t := strings.TrimSpace(r.FormValue("token")); t != "" {
+			c.DNSToken = t
+		}
+		c.ACMEStaging = r.FormValue("staging") == "on"
+	}
+	c.Normalize()
+	if err := validateTLS(c); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Applying restarts Caddy (and maybe Vaultwarden) — it must not overlap a backup or restore.
+	if !s.opMu.TryLock() {
+		http.Error(w, "A backup, restore or another apply is running — try again once it finishes.", http.StatusConflict)
+		return
+	}
+	rebuild := r.FormValue("rebuild") == "on"
+	uiLog.Info("letsencrypt apply", "enabled", c.LetsEncrypt, "domain", c.Domain,
+		"challenge", c.ACMEChallenge, "provider", c.DNSProvider, "staging", c.ACMEStaging, "from", remoteIP(r))
+	s.startLE()
+	go func() {
+		defer s.opMu.Unlock()
+		defer func() {
+			if p := recover(); p != nil {
+				uiLog.Error("letsencrypt apply crashed", "panic", fmt.Sprint(p))
+				s.finishLE(false, fmt.Sprintf("Apply crashed: %v", p))
+			}
+		}()
+		err := applyTLS(s.repo, c, applyOpts{Rebuild: rebuild}, leLogWriter{s})
+		switch {
+		case err != nil:
+			uiLog.Warn("letsencrypt apply failed", "err", err)
+			s.finishLE(false, "Not applied: "+err.Error())
+		case c.leEnabled():
+			s.finishLE(true, "Applied — Caddy is requesting the certificates now; they show up in the table as they arrive (about a minute).")
+		default:
+			s.finishLE(true, "Let's Encrypt is off — the apps are served on the IP addresses with the private CA, as before.")
+		}
+	}()
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprint(w, "started")
+}
+
+func (s *uiServer) handleLetsEncryptStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(s.getLE())
+}
+
+// handleCert serves the public root CA (from the saved file, else extracted live). In Let's
+// Encrypt mode there is nothing to install, so the link (still cached on some phones) says so.
 func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
+	if c := s.config(); c.leEnabled() {
+		http.Error(w, "This server uses Let's Encrypt certificates now — there is nothing to install. Open "+c.dashboardURL(), http.StatusNotFound)
+		return
+	}
 	path := filepath.Join(s.repo, "caddy-root-ca.crt")
 	if b, err := os.ReadFile(path); err == nil {
 		serveCert(w, b)

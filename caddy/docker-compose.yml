@@ -1,8 +1,15 @@
 services:
   caddy:
-    image: caddy:2.8-alpine
+    # CADDY_IMAGE is set in .env by hsctl only for Let's Encrypt with the DNS challenge, pointing
+    # at a local build of this same version + the DNS-provider plugin (caddy/Dockerfile). Keep
+    # the version here in step with CADDY_VERSION in that Dockerfile.
+    image: ${CADDY_IMAGE:-caddy:2.11-alpine}
     container_name: caddy
     restart: unless-stopped
+    # Which config Caddy loads: the committed Caddyfile (private CA — the default), or the
+    # complete Let's Encrypt config hsctl generates into generated/ (CADDY_CONFIG is set in .env
+    # by hsctl only in that mode). Switching modes changes this, which recreates the container.
+    command: caddy run --config ${CADDY_CONFIG:-/etc/caddy/Caddyfile} --adapter caddyfile
     ports:
       - "80:80"                                                  # CA download (http)
       - "${VAULT_HTTPS:-8443}:${VAULT_HTTPS:-8443}"              # Vaultwarden (https)
@@ -17,6 +24,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       ACME_EMAIL: ${ACME_EMAIL:-you@example.com}
+      # DNS provider API token for the Let's Encrypt DNS challenge (optional; see sites.d/).
+      ACME_DNS_TOKEN: ${ACME_DNS_TOKEN:-}
       # Server LAN IP — used as the cert SAN so https://<ip>:<port> is trusted.
       SERVER_IP: ${SERVER_IP}
       # App upstreams are the container names on the shared "edge" network (below), NOT
@@ -41,6 +50,8 @@ services:
       IMAGETOOLS_HTTPS: ${IMAGETOOLS_HTTPS:-8448}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./generated:/etc/caddy/generated:ro   # hsctl's Let's Encrypt config (used only in that mode)
+      - ./sites.d:/etc/caddy/sites.d:ro       # your extra sites, imported by both configs
       - caddy-data:/data       # issued certs + local CA root — back this up
       - caddy-config:/config
     networks:

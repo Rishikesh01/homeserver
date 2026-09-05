@@ -6,6 +6,7 @@ afterwards. `HOST` below = your server's LAN IP.
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Install the certificate (once per device)](#install-the-certificate-once-per-device)
+- [Optional: a public domain with Let's Encrypt](#optional-a-public-domain-with-lets-encrypt)
 - [Day-to-day](#day-to-day)
 - [Keeping it updated](#keeping-it-updated)
 - [Pi-hole / network-wide ad-blocking](#pi-hole--network-wide-ad-blocking)
@@ -63,12 +64,13 @@ hsctl install
 ```
 
 **What `hsctl setup` asks:** your server's LAN IP, timezone, an admin email, the dashboard
-port, the Pi-hole DNS bind address, and whether Vaultwarden allows open signups — all
-pre-filled with sensible autodetected values, so you can usually just press Enter through it.
-(The apps themselves aren't published on the LAN — Caddy reaches them over an internal
-network — so there are no per-app ports to set.) It writes the configuration to `setup.conf`
-and generates each service's secrets. Run it non-interactively with `--yes` plus flags like
-`--server-ip` / `--tz` / `--email`.
+port, the Pi-hole DNS bind address, whether Vaultwarden allows open signups — all
+pre-filled with sensible autodetected values, so you can usually just press Enter through it —
+and finally whether you want the **optional** [public domain with Let's Encrypt](#optional-a-public-domain-with-lets-encrypt)
+(default: no). (The apps themselves aren't published on the LAN — Caddy reaches them over an
+internal network — so there are no per-app ports to set.) It writes the configuration to
+`setup.conf` and generates each service's secrets. Run it non-interactively with `--yes` plus
+flags like `--server-ip` / `--tz` / `--email` (and `--domain --letsencrypt …` for the domain).
 
 **Your generated logins** are printed once at the end of `setup` (and saved to `WELCOME.txt`).
 You can see them again anytime — `hsctl secrets show` reads them straight from the `.env` files:
@@ -107,6 +109,87 @@ Then open **https://HOST** — that's your dashboard, linking to every app.
 
 On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy around.
 
+Don't want to install anything on devices? Use a real domain with Let's Encrypt instead —
+next section.
+
+---
+
+## Optional: a public domain with Let's Encrypt
+
+By default everything is `https://HOST:port` with the private certificate above. If you **own
+a domain**, hsctl can instead serve every app at a real name with a certificate from
+[Let's Encrypt](https://letsencrypt.org) that every device already trusts — **replacing the
+private CA**, so there is nothing to install on any device:
+
+| App | Address |
+|-----|---------|
+| 🏠 Dashboard | `https://home.example.com` |
+| 🔑 Vaultwarden | `https://vault.home.example.com` |
+| ☁️ Nextcloud | `https://cloud.home.example.com` |
+| 🛡️ Pi-hole | `https://pihole.home.example.com/admin` |
+| 📄 🧰 🖼️ tools | `https://pdf.` / `tools.` / `image.home.example.com` |
+
+The `https://HOST:port` addresses stop working when you switch (and come back when you switch
+back). Vaultwarden's `DOMAIN` and Nextcloud's trusted domains are updated for you; the Bitwarden
+and Nextcloud apps need the new server address.
+
+**The server stays LAN-only.** Let's Encrypt has to see that you control the domain, and the
+default **DNS challenge** does that through your DNS provider's API: Caddy creates a temporary
+`_acme-challenge` TXT record, nothing is port-forwarded, and the names can point at a private
+`192.168.x.x` address. It needs:
+
+1. a domain at a provider with an API that Caddy has a plugin for — the
+   [`caddy-dns`](https://github.com/caddy-dns) modules that take a single token: Cloudflare,
+   DuckDNS, Hetzner, deSEC, DigitalOcean, Gandi, GoDaddy, Linode, Vultr, Netlify, Vercel,
+   DNSimple, IONOS, Infomaniak, Njalla, … (a domain elsewhere? point its nameservers at one of
+   those, or delegate just `home.example.com` to it);
+2. an **API token** from that provider (Cloudflare: *My Profile → API Tokens → Edit zone DNS*,
+   scoped to the one zone).
+
+**Make the names resolve first.** Once switched, the server is *only* reachable by name, so
+devices have to find `vault.home.example.com` → `HOST` before you flip it — otherwise you lose
+the dashboard until they do (from the server itself, `hsctl letsencrypt disable` always brings
+the IP addresses back). Three ways:
+
+- **Pi-hole is your DNS** → nothing to do; hsctl writes the names into Pi-hole's local records
+  (`pihole/custom.list`) as part of the switch.
+- **Your router's local-DNS page** → add `home.example.com` and each subdomain (or a wildcard,
+  if it supports one) → `HOST`.
+- **Public A records** → `home.example.com` and `*.home.example.com` → `HOST`. Pointing a
+  public name at a private IP is allowed, though a few routers block such answers ("DNS
+  rebinding protection"; whitelist the domain there).
+
+Then either answer *yes* to the domain question in `hsctl setup`, or switch any time later:
+
+```bash
+hsctl letsencrypt enable --domain home.example.com --email you@yourdomain.net \
+    --dns-provider cloudflare            # prompts for the token (or --dns-token / $ACME_DNS_TOKEN)
+hsctl letsencrypt status                 # what each name is serving; the names to point here
+hsctl letsencrypt logs                   # Caddy's log, if a certificate doesn't arrive
+hsctl letsencrypt disable                # back to the private CA (settings are kept)
+```
+
+…or do the same from the dashboard: **Admin → 🌐 Domain & HTTPS**. Either way hsctl:
+
+- builds Caddy with your provider's plugin the first time (`caddy/Dockerfile`, a few minutes),
+- generates a complete Caddy config into `caddy/generated/Caddyfile`, checks it parses, and
+  points Caddy at it (the committed `caddy/Caddyfile` stays untouched as the private-CA
+  fallback); the certificates arrive within a minute or so,
+- adds the names to Pi-hole's local DNS records.
+
+**Test with staging first.** Let's Encrypt limits failed attempts (5 per hour per name) and
+issuances (50 per week per domain). Tick *staging* (or `--staging`) the first time: you get
+untrusted test certificates that prove the DNS token and names work, then untick and apply
+again for the real ones.
+
+**The HTTP challenge instead.** If your provider has no plugin, `--challenge http` lets Let's
+Encrypt validate by connecting to `http://home.example.com/` — which means the names must
+resolve to your **public** IP from the internet and **port 80 must be forwarded** to this box.
+That exposes the server, which the rest of this project deliberately avoids; read
+[Security](security.md#a-public-domain-and-lets-encrypt) before choosing it.
+
+Every setting is in the [configuration reference](configuration.md#public-domain--lets-encrypt).
+
 ---
 
 ## Day-to-day
@@ -116,6 +199,7 @@ hsctl up | down | status        # start / stop / show the stack
 hsctl updates                   # check whether newer app images are available (read-only)
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
+hsctl letsencrypt status        # (if you use a domain) certificates per name
 hsctl secrets show              # print the generated logins
 hsctl backup run | list         # see docs/backup-restore.md
 ```

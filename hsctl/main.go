@@ -45,6 +45,12 @@ func rootCmd() *cobra.Command {
 	setup.Flags().String("email", "", "admin email")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
 	setup.Flags().Bool("vw-signups", true, "allow open Vaultwarden signups")
+	setup.Flags().String("domain", "", "public domain for Let's Encrypt (apps become vault.<domain>, …)")
+	setup.Flags().Bool("letsencrypt", false, "serve the apps on --domain with Let's Encrypt certificates")
+	setup.Flags().String("acme-challenge", "", "Let's Encrypt challenge: dns (default, LAN-only) or http")
+	setup.Flags().String("dns-provider", "", "caddy-dns plugin for the dns challenge (cloudflare, duckdns, …)")
+	setup.Flags().String("dns-token", "", "that provider's API token (or set $ACME_DNS_TOKEN)")
+	setup.Flags().Bool("acme-staging", false, "use Let's Encrypt's staging CA (untrusted test certificates)")
 
 	up := &cobra.Command{Use: "up", Short: "Start the stack (apps + tools, then caddy)", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return cmdUp() }}
@@ -68,6 +74,6 @@ func rootCmd() *cobra.Command {
 	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only)", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return cmdUpdates() }}
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, backupCmd(), secretsCmd(), letsencryptCmd())
 	return root
 }
