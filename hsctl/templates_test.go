@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"io"
 	"testing"
+	"time"
 )
 
 // TestTemplatesParseAndExecute renders every UI template against representative data.
@@ -59,6 +60,19 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			Stats: "Total Size: 1.2 GiB", Snapshots: "ID  Time\nabc 2026", Msg: "done"}},
 		{"restore", restoreTmpl, restoreData{Snapshots: "ID  Time", Msg: "", ResticOK: true}},
 		{"restore-progress", restoreProgressTmpl, nil},
+		{"home-public", homeTmpl, homeData{Cfg: Config{ServerIP: "192.168.1.10", ActiveDomain: "home.example.org"},
+			Services: []serviceLink{{Name: "Passwords", URL: "https://192.168.1.10:8443", Outside: "https://home.example.org:8443"}}}},
+		{"help-public", helpTmpl, helpData{Body: "<p>hi</p>", Public: []publicApp{{Dir: "vaultwarden", Name: "Passwords", URL: "https://home.example.org:8443", Port: 8443}}}},
+		{"admin-cert-expiring", adminTmpl, adminData{Cfg: Config{ServerIP: "192.168.1.10", ActiveDomain: "home.example.org"},
+			Cert: certStatus{Domain: "home.example.org", Present: true, NotBefore: time.Now().Add(-87 * 24 * time.Hour), NotAfter: time.Now().Add(72 * time.Hour)}}},
+		{"cert-empty", certTmpl, certPageData{Cfg: Config{ServerIP: "192.168.1.10", ACMEEmail: "you@example.com"}}},
+		{"cert", certTmpl, certPageData{Cfg: Config{ServerIP: "192.168.1.10", Domain: "home.example.org", DNSProvider: "cloudflare", ActiveDomain: "home.example.org"},
+			Apps: []appInfo{{Dir: "vaultwarden", Name: "Passwords", Icon: "🔑", Enabled: true}, {Dir: "nextcloud", Name: "Files"}},
+			St: certStatus{Domain: "home.example.org", Provider: "cloudflare", Active: "home.example.org", HasCreds: true, Present: true,
+				PublicApps: []string{"vaultwarden"}, Live: []publicApp{{Dir: "vaultwarden", Name: "Passwords", URL: "https://home.example.org:8443", Port: 8443}},
+				CertPath: "/opt/homeserver/letsencrypt/certificates/home.example.org.crt", Names: []string{"home.example.org", "*.home.example.org"},
+				Issuer: "(STAGING) Pseudo Plum E5", Staging: true, NotAfter: time.Now().Add(80 * 24 * time.Hour)},
+			CredKeys: []string{"CF_DNS_API_TOKEN"}, Providers: []string{"cloudflare", "duckdns"}, Msg: "Saved.", Err: "oops"}},
 	}
 
 	for _, tc := range cases {

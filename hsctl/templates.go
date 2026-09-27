@@ -58,7 +58,7 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 <div class="grid">
   {{range .Services}}<a class="card" href="{{.URL}}"><h3>{{.Icon}} {{.Name}}</h3>
-    <p>{{.Desc}}</p></a>
+    <p>{{.Desc}}</p>{{if .Outside}}<p style="margin-top:6px">🌍 Away from home: <code>{{.Outside}}</code></p>{{end}}</a>
   {{end}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
     <p>Install this once per device so the apps load without warnings.</p></a>
   <a class="card" href="/help"><h3>📖 Setup guide</h3>
@@ -73,11 +73,12 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>hsctl admin</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>⚙️ Admin</h1>
-<p class="sub">Server {{.Cfg.ServerIP}} · timezone {{.Cfg.TZ}}</p>
+<p class="sub">Server {{.Cfg.ServerIP}}{{if .Cfg.ActiveDomain}} · public at {{.Cfg.ActiveDomain}}{{end}} · timezone {{.Cfg.TZ}}</p>
 
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
 {{if not .SetupDone}}<div class="note"><b>Setup isn't finished</b> — the apps aren't configured yet. <a href="/setup">Continue the setup wizard →</a></div>{{end}}
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
+{{if .Cert.Expiring}}<div class="banner"><b>The public certificate expires in {{.Cert.DaysLeft}} days</b> and automatic renewal hasn't managed it. <a href="/admin/cert">Public access →</a></div>{{end}}
 
 <div class="tools">
   <a class="tool" href="/admin/apps"><div class="ico">🧩</div><div class="t">Apps</div></a>
@@ -85,6 +86,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
+  <a class="tool" href="/admin/cert"><div class="ico">🌍</div><div class="t">Public access</div></a>
   <a class="tool" href="/admin/terminal"><div class="ico">⌨️</div><div class="t">Terminal</div></a>
 </div>
 
@@ -276,6 +278,7 @@ const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <p><a href="/">← Dashboard</a></p>
+{{if .Public}}<div class="flash"><b>Away from home</b>, these apps are also reachable at their public address — no certificate to install for those: {{range $i, $a := .Public}}{{if $i}} · {{end}}{{$a.Name}} <code>{{$a.URL}}</code>{{end}}. At home, use the addresses below.</div>{{end}}
 <div class="md">{{.Body}}</div>
 <p class="foot"><a href="/">← Back to dashboard</a></p>
 </div></body></html>`
@@ -448,4 +451,68 @@ ws.onerror=function(){ term.write('\r\n[connection error]\r\n'); };
 term.onData(function(d){ if(ws.readyState===1) ws.send(enc.encode(d)); });
 addEventListener('resize',sendResize);
 </script>
+</div></body></html>`
+
+const certTmpl = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Public access</title>
+<style>{{css}}
+label{display:block;margin:12px 0 4px;font-weight:600}.hint{color:var(--muted);font-size:13.5px;margin:2px 0 0}
+textarea.in{min-height:80px;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace}
+</style></head><body><div class="wrap">
+<h1>🌍 Public access</h1>
+<p class="sub">Reach chosen apps from outside your home network at your own domain, with a free Let's Encrypt certificate. At home nothing changes: every app stays at <code>https://{{.Cfg.ServerIP}}:&lt;port&gt;</code> with the server's own certificate.</p>
+{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
+{{if .St.Expiring}}<div class="banner"><b>The public certificate expires in {{.St.DaysLeft}} days</b> and automatic renewal hasn't managed it — press <b>Get certificate</b> to see why.</div>{{end}}
+
+<h3>Status</h3>
+<div class="kv">
+  <div class="k">At home</div><div>https://{{.Cfg.ServerIP}}:&lt;port&gt; for every app (server's own certificate) — always on</div>
+  <div class="k">From outside</div><div>{{if .St.Live}}{{range .St.Live}}<div><span class="tag ok">{{.Name}}</span> <code>{{.URL}}</code> — forward port <b>{{.Port}}</b> to {{$.Cfg.ServerIP}}</div>{{end}}{{else}}nothing is public{{if .St.Domain}} yet — press <b>Get certificate</b>{{end}}{{end}}</div>
+  {{if .St.Domain}}<div class="k">Certificate</div><div>{{if .St.Err}}<span class="tag bad">unreadable</span> {{.St.Err}}{{else if .St.Present}}{{if .St.Expiring}}<span class="tag bad">{{.St.DaysLeft}} days left</span>{{else}}<span class="tag ok">valid</span>{{end}} until {{.St.Expiry}} · <code>{{.St.Domain}}</code> + <code>*.{{.St.Domain}}</code> · {{.St.Issuer}}{{if .St.Staging}} <span class="tag bad">STAGING — not trusted</span>{{end}}
+    <div class="hint">Renewed automatically (the dashboard checks twice a day). Files: <code>{{.St.CertPath}}</code> and its <code>.key</code> — use them for your other services too.</div>{{else}}none yet{{end}}</div>{{end}}
+</div>
+
+<h3>Get the certificate</h3>
+<p class="hint">Asks Let's Encrypt for a certificate covering your domain and <code>*.</code>your domain, proving you own it with a temporary DNS record made through your DNS provider's API (no port needs to be open for that). Takes a minute or two; then the apps you picked are served publicly. Safe to press again — it only renews when due.</p>
+<p>
+<button class="btn green" data-slug="cert-issue" data-confirm="" data-reload="1"{{if not .St.Domain}} disabled{{end}}>Get certificate</button>
+<button class="btn gray" data-slug="cert-status" data-confirm="">Show details</button>
+{{if .St.Active}}<button class="btn gray" data-slug="cert-off" data-confirm="End public access? The apps stay reachable at home as before. The certificate files are kept." data-reload="1">Turn off</button>{{end}}
+</p>
+<div id="out" class="out">Output appears here.</div>
+
+<h3 style="margin-top:24px">Settings</h3>
+<form method="post" action="/admin/cert/config">
+  <label for="domain">Public domain</label>
+  <input class="in" id="domain" name="domain" value="{{.Cfg.Domain}}" placeholder="home.example.com" required>
+  <p class="hint">A domain (or subdomain) you own, pointed at your <b>public</b> IP address by a DNS record at your provider (a dynamic-DNS name works too).</p>
+
+  <label>Apps to reach from outside</label>
+  {{range .Apps}}<label style="font-weight:400;margin:4px 0"><input type="checkbox" name="public" value="{{.Dir}}" {{if .Enabled}}checked{{end}}> {{.Icon}} <b>{{.Name}}</b> <span class="hint" style="display:inline">— {{.Desc}}</span></label>
+  {{end}}<p class="hint">Each one is served at <code>https://&lt;domain&gt;:&lt;its port&gt;</code>; forward exactly those ports on your router to {{.Cfg.ServerIP}}. This dashboard is never public — it's a root shell on the server.</p>
+
+  <label for="dns">DNS provider</label>
+  <input class="in" id="dns" name="dns" value="{{.Cfg.DNSProvider}}" placeholder="cloudflare" list="providers" required>
+  <datalist id="providers">{{range .Providers}}<option value="{{.}}">{{end}}</datalist>
+  <p class="hint">Where your domain's DNS is hosted, as lego's provider code: <code>cloudflare</code>, <code>duckdns</code>, <code>porkbun</code>, … (<a href="https://go-acme.github.io/lego/dns/" target="_blank" rel="noopener">all ~180</a>).</p>
+
+  <label for="creds">DNS API credentials</label>
+  <textarea class="in" id="creds" name="creds" placeholder="CF_DNS_API_TOKEN=your-token" autocomplete="off" spellcheck="false"></textarea>
+  <p class="hint">One <code>KEY=value</code> per line, e.g. for Cloudflare an API token with <i>Zone → DNS → Edit</i> on your zone: <code>CF_DNS_API_TOKEN=…</code>. {{if .CredKeys}}Saved: {{range $i, $k := .CredKeys}}{{if $i}}, {{end}}<code>{{$k}}</code>{{end}} — leave empty to keep them.{{else}}Nothing saved yet.{{end}} Stored in <code>.acme-env</code> (private to the server, never shown again).</p>
+
+  <label for="email">Email (optional)</label>
+  <input class="in" id="email" name="email" value="{{if ne .Cfg.ACMEEmail "you@example.com"}}{{.Cfg.ACMEEmail}}{{end}}" placeholder="you@your-domain">
+  <p class="hint">Contact for your Let's Encrypt account. Not required.</p>
+
+  <label for="server">Certificate authority</label>
+  <input class="in" id="server" name="server" value="{{.Cfg.ACMEServer}}" placeholder="(Let's Encrypt)">
+  <p class="hint">Leave empty. <code>letsencrypt-staging</code> gets an untrusted test certificate — handy for a first dry run, since Let's Encrypt limits how many real ones you can get per week.</p>
+
+  <p style="margin-top:16px"><button class="btn">Save settings</button></p>
+</form>
+
+<p class="foot">Terminal equivalents: <code>hsctl cert config</code> · <code>hsctl cert issue</code> · <code>hsctl cert status</code> · <code>hsctl cert off</code>. Details: docs/letsencrypt.md.</p>
+<p class="foot"><a href="/admin">← Admin</a></p>
+<script>` + runJS + `</script>
 </div></body></html>`

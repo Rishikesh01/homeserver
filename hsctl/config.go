@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,18 @@ type Config struct {
 	// DisabledApps are compose dir names (see apps.go) the admin switched off: `hsctl up`
 	// skips them and the dashboard hides their tiles. Their data volumes are kept.
 	DisabledApps []string
+	// Public access from outside the home network (cert.go). Domain is your public domain,
+	// with a Let's Encrypt certificate; PublicApps are the apps (compose dir names) reachable
+	// there, at https://<Domain>:<port>. The local sites (server IP + Caddy's own CA) are
+	// unaffected. DNSProvider is the lego DNS provider code that proves you own the domain
+	// (cloudflare, duckdns, …), and ACMEServer an optional CA override ("letsencrypt-staging").
+	Domain, DNSProvider, ACMEServer string
+	PublicApps                      []string
+	// ActiveDomain and ActivePublic are what Caddy serves publicly right now (from
+	// caddy/domain.caddy, which exists only while its certificate does) — "" / nil when
+	// everything is local only.
+	ActiveDomain string
+	ActivePublic []string
 }
 
 const confFile = "setup.conf"
@@ -109,6 +122,10 @@ func overlayFromConf(c *Config, repo string) {
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
 	c.DisabledApps = splitCSV(get("DISABLED_APPS", ""))
+	c.Domain = get("DOMAIN", c.Domain)
+	c.DNSProvider = get("DNS_PROVIDER", c.DNSProvider)
+	c.ACMEServer = get("ACME_SERVER", c.ACMEServer)
+	c.PublicApps = splitCSV(get("PUBLIC_APPS", strings.Join(c.PublicApps, ",")))
 }
 
 // overlayFromEnv reflects the actual deployed .env files into c (so config matches a
@@ -123,6 +140,7 @@ func overlayFromEnv(c *Config, repo string) {
 			c.UIPort = v
 		}
 	}
+	c.ActiveDomain, c.ActivePublic = activePublic(repo)
 	if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
 		if _, ok := kv["VW_SIGNUPS_ALLOWED"]; ok {
 			c.VWSignupsAllowed = kv["VW_SIGNUPS_ALLOWED"] == "true"
@@ -136,6 +154,12 @@ func overlayFromEnv(c *Config, repo string) {
 			c.PiholeDNSBind = v
 		}
 	}
+}
+
+// IsPublic reports whether Caddy currently serves the app (compose dir name) publicly, at
+// https://<ActiveDomain>:<port> (see cert.go).
+func (c Config) IsPublic(dir string) bool {
+	return c.ActiveDomain != "" && slices.Contains(c.ActivePublic, dir)
 }
 
 // portFromUpstream parses "host.docker.internal:8082" -> 8082.
@@ -156,6 +180,8 @@ func (c Config) Save(repo string) error {
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
 		{"DISABLED_APPS", strings.Join(c.DisabledApps, ",")},
+		{"DOMAIN", c.Domain}, {"DNS_PROVIDER", c.DNSProvider}, {"ACME_SERVER", c.ACMEServer},
+		{"PUBLIC_APPS", strings.Join(c.PublicApps, ",")},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}

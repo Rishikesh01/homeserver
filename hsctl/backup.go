@@ -19,7 +19,8 @@ import (
 // Backups use restic: encrypted, deduplicated, snapshotted, many backends (local
 // path, USB, SFTP to another host, S3/Backblaze B2). What we protect:
 //   - a fresh Postgres dump (consistent DB) + every data volume's files
-//   - the per-service .env + setup.conf (so a restore can rebuild the stack)
+//   - the per-service .env + setup.conf (so a restore can rebuild the stack), and your
+//     domain's Let's Encrypt certificate + credentials if you use one (cert.go)
 // Volume files live under /var/lib/docker/volumes, so `backup run` needs root
 // (run via sudo, or from the root-owned systemd timer).
 
@@ -311,8 +312,12 @@ func backupRun(repo string, cfg backupCfg) error {
 			paths = append(paths, p)
 		}
 	}
-	if p := filepath.Join(repo, confFile); fileExists(p) {
-		paths = append(paths, p)
+	// Your domain's certificate + Let's Encrypt account key, its DNS credentials and the
+	// switch that serves it — so a restored box can serve the domain again straight away.
+	for _, rel := range []string{confFile, certDirName, acmeEnvFile, domainSites} {
+		if p := filepath.Join(repo, rel); fileExists(p) {
+			paths = append(paths, p)
+		}
 	}
 
 	args := []string{"backup", "--tag", "homeserver"}

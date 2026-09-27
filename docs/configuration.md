@@ -9,6 +9,9 @@ root unless noted; everything with secrets is `chmod 600` and git-ignored (only 
 | `setup.conf` | Main settings (IP, ports, timezone…) | `hsctl setup` |
 | `<service>/.env` | Each service's generated secrets + ports | `hsctl setup` (generated) |
 | `caddy/.env` | Caddy: server IP, upstreams, HTTPS ports | `hsctl setup` (generated) |
+| `.acme-env` | DNS API credentials for the public Let's Encrypt certificate | `hsctl cert config` / edit by hand |
+| `letsencrypt/` | That certificate + your Let's Encrypt account key | `hsctl cert issue` (generated) |
+| `caddy/domain.caddy` | The switch that serves the public apps (exists only with the certificate) | `hsctl cert` (generated) |
 | `services.json` | Dashboard tiles | edit by hand |
 | `backup.conf` | Backup destination, retention, replica, guards | `hsctl backup config` |
 | `.restic-password` | Backup repo password | see [Backups](#backups) |
@@ -28,7 +31,11 @@ copying `setup.conf.example` → `setup.conf`.
 |-----|---------|------|
 | `SERVER_IP` | Server LAN IP (cert SAN, DNS, upstreams) | `--server-ip` |
 | `TZ_VAL` | Timezone (e.g. `Asia/Kolkata`) | `--tz` |
-| `ACME_EMAIL` | Certificate contact email (only used if you move to a real domain; edit `setup.conf` manually) | — |
+| `ACME_EMAIL` | Contact email for your Let's Encrypt account, if you use public access (optional; the `you@example.com` placeholder is never sent) | `hsctl cert config --email` |
+| `DOMAIN` | Public domain for reaching apps from outside, with a Let's Encrypt certificate (covers it and `*.DOMAIN`); empty = local only. See [letsencrypt.md](letsencrypt.md) | `hsctl cert config --domain` |
+| `PUBLIC_APPS` | Apps served publicly at `DOMAIN` (compose dir names, e.g. `vaultwarden,nextcloud`). The dashboard can't be one | `hsctl cert config --public` |
+| `DNS_PROVIDER` | lego DNS provider code that proves you own `DOMAIN` (`cloudflare`, `duckdns`, …); its credentials go in `.acme-env` | `hsctl cert config --dns` |
+| `ACME_SERVER` | Certificate authority: empty = Let's Encrypt, `letsencrypt-staging` for a test run | `hsctl cert config --server` |
 | `UI_PORT` | Dashboard (hsctl ui) port — the one app still on a host port, since it runs on the host | — |
 | `PIHOLE_DNS_BIND` | Pi-hole `:53` bind IP (`0.0.0.0` or the LAN IP) | `--pihole-dns-bind` |
 | `VW_SIGNUPS_ALLOWED` | Open Vaultwarden signups (`true`/`false`) | `--vw-signups` |
@@ -54,9 +61,20 @@ only. Pi-hole's DNS (`:53`) is still published — that's the point of Pi-hole.
   `VAULT_HTTPS=8443`, `CLOUD_HTTPS=8444`, `PIHOLE_HTTPS=8445`, `HOME_HTTPS=443` (the
   dashboard), and the tools `8446/8447/8448`.
 
-To change a service's HTTPS port you edit it in **three** places so they agree: `caddy/.env`,
-the matching block in `caddy/Caddyfile`, and its tile in `services.json`. Then
-`cd caddy && docker compose up -d --force-recreate`.
+To change a service's HTTPS port you edit it in **two** places so they agree: `caddy/.env`
+and its tile in `services.json` (the Caddyfile and `letsencrypt.caddy` read the port from
+`caddy/.env`). Then `cd caddy && docker compose up -d --force-recreate`.
+
+## Public access — `.acme-env`, `letsencrypt/`
+
+Optional, for reaching chosen apps from outside; the local sites are unaffected.
+`DOMAIN` / `PUBLIC_APPS` / `DNS_PROVIDER` / `ACME_SERVER` (above) say which domain, which apps,
+and how to prove you own the domain; `.acme-env` (repo root, `0600`, git-ignored) holds the
+DNS provider's API credentials, one `KEY=value` per line — e.g. `CF_DNS_API_TOKEN=…` for
+Cloudflare. `hsctl cert issue` puts the certificate in
+`letsencrypt/certificates/<DOMAIN>.crt` + `.key` and then writes `caddy/domain.caddy`, which
+switches on those apps' public sites from `caddy/letsencrypt.caddy`. The lego image is pinned
+as `LEGO_IMAGE` (override in `caddy/.env`). Everything about it: [letsencrypt.md](letsencrypt.md).
 
 ## Dashboard tiles — `services.json`
 
@@ -192,6 +210,7 @@ For a **remote** repo, also export the backend's credentials before running rest
 | `<repo>/backups/staging/vaultwarden/db.sqlite3*` | Vaultwarden's **consistent DB fileset** (`db.sqlite3` + `-wal` + `-shm`) — excluded from the volume, lives only here |
 | `<repo>/backups/staging/nextcloud-db.sql` | consistent Postgres dump (fallback if the DB volume won't start) |
 | `<repo>/*/.env`, `<repo>/setup.conf` | per-service config and the main server config |
+| `<repo>/letsencrypt/`, `<repo>/.acme-env`, `<repo>/caddy/domain.caddy` | the public Let's Encrypt certificate, account key and DNS credentials (only with public access) |
 
 `<repo>` is the absolute path the server used, e.g. `/home/you/homeserver`.
 

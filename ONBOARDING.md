@@ -4,9 +4,15 @@ A short checklist for adding someone (and each of their devices) to the homeserv
 the **one-time certificate step** on every device, then the per-app steps. Hand someone
 this page and they can self-serve most of it.
 
-Everything is reached over HTTPS at the **server's IP + a port** (no names). Replace
-**`SERVER_IP`** below with the server's LAN address (ask your admin; it's also on the
-dashboard). The **dashboard** at `https://SERVER_IP` links to every app.
+Everything is reached over HTTPS at the **server's IP + a port**. Replace **`SERVER_IP`**
+below with the server's LAN address (ask your admin; it's also on the dashboard). The
+**dashboard** at `https://SERVER_IP` links to every app.
+
+> **Away from home:** if your admin made an app public, it's also reachable at their domain
+> on the same port (e.g. `https://home.example.com:8443` for passwords) — no certificate to
+> install for that address. The guide on the dashboard (`/help`) lists them. At home, use the
+> addresses below. For Vaultwarden, when it's public, set the Bitwarden app's server URL to its
+> **public** address — that one works everywhere.
 
 | | URL |
 |--|--|
@@ -74,7 +80,8 @@ connect**.
 ## Admin notes (server owner)
 
 - Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
-  `http://SERVER_IP/root.crt`.
+  `http://SERVER_IP/root.crt`. To reach apps from outside (with a public Let's Encrypt
+  certificate): `docs/letsencrypt.md`.
 - Pi-hole is just a network ad-blocker now — point the router's DHCP DNS at the server to
   ad-block every device (see `docs/setup.md` → "Pi-hole / network-wide ad-blocking").
 - Add an app to the dashboard: add a service folder + a Caddy block (new HTTPS port) + an

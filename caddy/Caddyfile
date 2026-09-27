@@ -1,5 +1,6 @@
 {
-	# Used only if you ever switch to a real public domain.
+	# Unused by Caddy itself: the local certs come from its internal CA, and the public
+	# Let's Encrypt certificate (if any) is fetched by `hsctl cert`, not by Caddy.
 	email {$ACME_EMAIL}
 	# Browsers don't send SNI for a bare IP, so without this the handshake fails with
 	# "no SNI". Make the server IP the default so the IP cert is served regardless.
@@ -26,7 +27,7 @@
 # --- When an app isn't running ---
 # An app can be switched off (Admin → Apps / `hsctl apps disable`) or simply still be starting.
 # Its port stays ours either way; rather than a bare "502 Bad Gateway", explain and point
-# back to the dashboard. Imported by every app block below.
+# back to the dashboard.
 (app_offline) {
 	handle_errors {
 		@down expression `{err.status_code} == 502`
@@ -37,14 +38,11 @@
 	}
 }
 
-# --- Each app over HTTPS at the server IP + its own port ---
-# The site address is <ip>:<port> so "tls internal" mints a cert with the server IP
-# in the SAN (trusted once the CA above is installed). `bind 0.0.0.0` makes Caddy
-# actually listen on all of the container's interfaces (it has no <ip> of its own).
+# --- What each app's site does ---
+# One snippet per app, imported by its local site below and — if you make the app public — by
+# its public site in letsencrypt.caddy, so both addresses always behave the same.
 
-{$SERVER_IP}:{$VAULT_HTTPS} {
-	bind 0.0.0.0
-	tls internal
+(vault) {
 	import app_offline
 	reverse_proxy {$VAULT_UPSTREAM} {
 		# Vaultwarden reads the client IP from X-Real-IP (not X-Forwarded-For),
@@ -55,9 +53,7 @@
 	}
 }
 
-{$SERVER_IP}:{$CLOUD_HTTPS} {
-	bind 0.0.0.0
-	tls internal
+(cloud) {
 	import app_offline
 	reverse_proxy {$CLOUD_UPSTREAM}
 	redir /.well-known/carddav /remote.php/dav 301
@@ -69,39 +65,86 @@
 	}
 }
 
-{$SERVER_IP}:{$PIHOLE_HTTPS} {
-	bind 0.0.0.0
-	tls internal
+(pihole) {
 	import app_offline
 	redir / /admin/ 302
 	reverse_proxy {$PIHOLE_UPSTREAM}
 }
 
 # The hsctl dashboard — the home page for all services.
+(home) {
+	reverse_proxy {$HOME_UPSTREAM}
+}
+
+(stirling) {
+	import app_offline
+	reverse_proxy {$STIRLING_UPSTREAM}
+}
+
+(ittools) {
+	import app_offline
+	reverse_proxy {$ITTOOLS_UPSTREAM}
+}
+
+(imagetools) {
+	import app_offline
+	reverse_proxy {$IMAGETOOLS_UPSTREAM}
+}
+
+# --- Each app over HTTPS at the server IP + its own port ---
+# The site address is <ip>:<port> so "tls internal" mints a cert with the server IP
+# in the SAN (trusted once the CA above is installed). `bind 0.0.0.0` makes Caddy
+# actually listen on all of the container's interfaces (it has no <ip> of its own).
+
+{$SERVER_IP}:{$VAULT_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	import vault
+}
+
+{$SERVER_IP}:{$CLOUD_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	import cloud
+}
+
+{$SERVER_IP}:{$PIHOLE_HTTPS} {
+	bind 0.0.0.0
+	tls internal
+	import pihole
+}
+
 {$SERVER_IP}:{$HOME_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	reverse_proxy {$HOME_UPSTREAM}
+	import home
 }
 
 # --- Web tools ---
 {$SERVER_IP}:{$STIRLING_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	import app_offline
-	reverse_proxy {$STIRLING_UPSTREAM}
+	import stirling
 }
 
 {$SERVER_IP}:{$ITTOOLS_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	import app_offline
-	reverse_proxy {$ITTOOLS_UPSTREAM}
+	import ittools
 }
 
 {$SERVER_IP}:{$IMAGETOOLS_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	import app_offline
-	reverse_proxy {$IMAGETOOLS_UPSTREAM}
+	import imagetools
 }
+
+# --- Public access from outside your home network (optional) ---
+# The sites above are LOCAL: the server IP with Caddy's own CA, for use at home. An app can
+# also be made reachable from outside at https://<your domain>:<same port>, with a Let's
+# Encrypt certificate: letsencrypt.caddy defines those public sites (one snippet per app),
+# and `hsctl cert` writes domain.caddy, which switches on the ones you chose, once the
+# certificate exists. No domain.caddy = local only (Caddy then logs "No files matching import
+# glob pattern" — that's expected). See docs/letsencrypt.md.
+import letsencrypt.caddy
+import domain*.caddy

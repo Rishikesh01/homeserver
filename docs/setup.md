@@ -159,6 +159,22 @@ Then open **https://HOST** — that's your dashboard, linking to every app.
 
 On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy around.
 
+### Reaching apps from outside (optional)
+
+Everything above is for use **at home**. To reach an app from outside your home network —
+Vaultwarden, typically — `hsctl cert` gets a public **Let's Encrypt** certificate for your
+domain and serves the apps you pick at `https://<domain>:<port>` too; you forward those ports
+on your router. The local addresses and their certificate stay exactly as they are. Set it up
+from **Admin → 🌍 Public access**, or:
+
+```bash
+hsctl cert config --domain home.example.com --dns cloudflare --public vaultwarden   # asks for the API token
+hsctl cert issue
+```
+
+It renews itself. Full guide — what to forward, what to harden first, reusing the certificate
+for your other services: **[Public access with Let's Encrypt](letsencrypt.md)**.
+
 ---
 
 ## Switching apps on and off
@@ -180,6 +196,7 @@ hsctl up | down | status        # start / stop / show the stack
 hsctl updates                   # check whether newer app images are available (read-only)
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
+hsctl cert status               # public access: what's public, its certificate (see letsencrypt.md)
 hsctl secrets show              # print the generated logins
 hsctl apps                      # list apps; hsctl apps disable stirling switches one off (data kept)
 hsctl backup run | list         # see docs/backup-restore.md

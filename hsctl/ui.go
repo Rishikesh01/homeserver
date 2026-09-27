@@ -97,10 +97,12 @@ func runUI(cmd *cobra.Command, _ []string) error {
 			s.sweepSessions()
 		}
 	}()
+	// Keep the public Let's Encrypt certificate renewed (a no-op without public access).
+	go s.certRenewLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/help", s.handleHelp)
-	mux.HandleFunc("/root.crt", s.handleCert)
+	mux.HandleFunc("/root.crt", s.handleRootCA)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/setup", s.requireAuth(s.handleSetup))
@@ -122,6 +124,8 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/terminal", s.requireAuth(s.handleTerminalPage))
 	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
 	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
+	mux.HandleFunc("/admin/cert", s.requireAuth(s.handleCert))
+	mux.HandleFunc("/admin/cert/config", s.requireAuth(s.handleCertConfig))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
@@ -359,7 +363,9 @@ func (s *uiServer) status() ([]containerStatus, error) {
 	return res, nil
 }
 
-type serviceLink struct{ Name, Icon, Desc, URL string }
+// serviceLink is a home-page tile: the app's local address, plus its public one when it's
+// reachable from outside (cert.go) — "" otherwise.
+type serviceLink struct{ Name, Icon, Desc, URL, Outside string }
 
 type homeData struct {
 	Cfg      Config
@@ -383,14 +389,22 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		if svc.Dir != "" && c.IsDisabled(svc.Dir) {
 			continue
 		}
-		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
+		l := serviceLink{Name: svc.Name, Icon: svc.Icon, Desc: svc.Desc, URL: svc.URL(c.ServerIP)}
+		if svc.Dir != "" && c.IsPublic(svc.Dir) {
+			l.Outside = svc.URL(c.ActiveDomain)
+		}
+		links = append(links, l)
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
 }
 
-type helpData struct{ Body template.HTML }
+type helpData struct {
+	Body   template.HTML
+	Public []publicApp // apps also reachable from outside (cert.go), nil when none
+}
 
-// handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide.
+// handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide, plus
+// the public addresses of any apps reachable from outside.
 func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 	c := s.config()
 	md, err := os.ReadFile(filepath.Join(s.repo, "ONBOARDING.md"))
@@ -404,7 +418,11 @@ func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, helpTmpl, helpData{Body: template.HTML(buf.String())})
+	d := helpData{Body: template.HTML(buf.String())}
+	if c.ActiveDomain != "" {
+		d.Public = publicApps(s.repo, c.ActiveDomain, c.ActivePublic)
+	}
+	render(w, helpTmpl, d)
 }
 
 type adminData struct {
@@ -415,10 +433,12 @@ type adminData struct {
 	Sys        sysStats
 	Backup     backupFreshness
 	SetupDone  bool
+	Cert       certStatus
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d.Cert = loadCertStatus(s.repo, d.Cfg)
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats(s.repo) }()
@@ -474,6 +494,10 @@ func (s *uiServer) runLifecycle(action string) string {
 		order = reversed(services)
 	} else {
 		migrateSharedNetworkEnv(s.repo)
+		var note strings.Builder
+		if reconcileDomain(s.repo, &note); note.Len() > 0 {
+			uiLog.Warn("public access switched off", "why", strings.TrimSpace(note.String()))
+		}
 		if err := ensureEdgeNetwork(); err != nil {
 			return "up: FAILED — " + err.Error()
 		}
@@ -763,8 +787,8 @@ func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(s.getRestore())
 }
 
-// handleCert serves the public root CA (from the saved file, else extracted live).
-func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
+// handleRootCA serves the public root CA (from the saved file, else extracted live).
+func (s *uiServer) handleRootCA(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(s.repo, "caddy-root-ca.crt")
 	if b, err := os.ReadFile(path); err == nil {
 		serveCert(w, b)

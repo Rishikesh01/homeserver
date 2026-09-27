@@ -185,11 +185,16 @@ func cmdUninstall(data, all, yes bool) error {
 
 	fmt.Println("== removing generated config/secrets in the repo ==")
 	generated, _ := filepath.Glob(filepath.Join(repo, "*", ".env"))
-	for _, rel := range []string{".ui-password", "setup.conf", "WELCOME.txt", "caddy-root-ca.crt", "pihole/custom.list", "hsctl/hsctl"} {
+	for _, rel := range []string{".ui-password", "setup.conf", "WELCOME.txt", "caddy-root-ca.crt", "pihole/custom.list", "hsctl/hsctl",
+		acmeEnvFile, domainSites} {
 		generated = append(generated, filepath.Join(repo, rel))
 	}
 	for _, f := range generated {
 		_ = os.Remove(f)
+	}
+	// The Let's Encrypt certificate + account key (letsencrypt/README.md is tracked — kept).
+	for _, sub := range []string{"certificates", "accounts"} {
+		_ = os.RemoveAll(filepath.Join(repo, certDirName, sub))
 	}
 	_ = filepath.WalkDir(repo, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
