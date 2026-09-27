@@ -40,11 +40,36 @@ services:
       ITTOOLS_HTTPS: ${ITTOOLS_HTTPS:-8447}
       IMAGETOOLS_HTTPS: ${IMAGETOOLS_HTTPS:-8448}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The whole caddy/ dir, not just the Caddyfile: it imports letsencrypt.caddy, and
+      # domain.caddy appears here when `hsctl cert` switches your domain on (a directory
+      # mount sees new files, so a reload picks it up without recreating the container).
+      - .:/etc/caddy:ro
       - caddy-data:/data       # issued certs + local CA root — back this up
       - caddy-config:/config
+      # Your domain's Let's Encrypt certificate (hsctl cert), read-only. An empty folder
+      # until you set a domain up.
+      - ../letsencrypt:/letsencrypt:ro
     networks:
       - edge
+
+  # Let's Encrypt client (lego, https://go-acme.github.io/lego) for your own domain — see
+  # docs/letsencrypt.md. Never started by `up`: it's a one-shot tool (the "cert" profile)
+  # that `hsctl cert issue` runs to get the certificate via the DNS-01 challenge, and the
+  # dashboard re-runs twice a day to renew it. It writes to <repo>/letsencrypt as the
+  # folder's owner (hsctl passes --user), so the files stay usable by your other services.
+  lego:
+    image: ${LEGO_IMAGE:-goacme/lego:v5.5.2}
+    profiles: ["cert"]
+    volumes:
+      - ../letsencrypt:/letsencrypt
+      # Your DNS provider's API credentials (KEY=value lines), read by lego --env-file.
+      # Long syntax so a missing file is an error rather than an empty root-owned folder.
+      - type: bind
+        source: ../.acme-env
+        target: /acme.env
+        read_only: true
+        bind:
+          create_host_path: false
 
 volumes:
   caddy-data:

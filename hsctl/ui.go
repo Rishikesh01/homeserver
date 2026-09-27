@@ -97,10 +97,12 @@ func runUI(cmd *cobra.Command, _ []string) error {
 			s.sweepSessions()
 		}
 	}()
+	// Keep your domain's Let's Encrypt certificate renewed (a no-op without one).
+	go s.certRenewLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/help", s.handleHelp)
-	mux.HandleFunc("/root.crt", s.handleCert)
+	mux.HandleFunc("/root.crt", s.handleRootCA)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/setup", s.requireAuth(s.handleSetup))
@@ -122,6 +124,8 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/terminal", s.requireAuth(s.handleTerminalPage))
 	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
 	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
+	mux.HandleFunc("/admin/cert", s.requireAuth(s.handleCert))
+	mux.HandleFunc("/admin/cert/config", s.requireAuth(s.handleCertConfig))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
@@ -383,14 +387,18 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		if svc.Dir != "" && c.IsDisabled(svc.Dir) {
 			continue
 		}
-		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.ServerIP)})
+		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.Host())})
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
 }
 
-type helpData struct{ Body template.HTML }
+type helpData struct {
+	Body   template.HTML
+	Domain string // the Let's Encrypt domain in use, "" for IP only
+}
 
-// handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide.
+// handleHelp renders ONBOARDING.md (with SERVER_IP filled in — your domain when one is in
+// use) as an in-dashboard guide.
 func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 	c := s.config()
 	md, err := os.ReadFile(filepath.Join(s.repo, "ONBOARDING.md"))
@@ -398,13 +406,13 @@ func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "setup guide not available", http.StatusNotFound)
 		return
 	}
-	src := strings.ReplaceAll(string(md), "SERVER_IP", c.ServerIP)
+	src := strings.ReplaceAll(string(md), "SERVER_IP", c.Host())
 	var buf bytes.Buffer
 	if err := markdown.Convert([]byte(src), &buf); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, helpTmpl, helpData{Body: template.HTML(buf.String())})
+	render(w, helpTmpl, helpData{Body: template.HTML(buf.String()), Domain: c.ActiveDomain})
 }
 
 type adminData struct {
@@ -415,10 +423,12 @@ type adminData struct {
 	Sys        sysStats
 	Backup     backupFreshness
 	SetupDone  bool
+	Cert       certStatus
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d.Cert = loadCertStatus(s.repo, d.Cfg)
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats(s.repo) }()
@@ -474,6 +484,10 @@ func (s *uiServer) runLifecycle(action string) string {
 		order = reversed(services)
 	} else {
 		migrateSharedNetworkEnv(s.repo)
+		var note strings.Builder
+		if reconcileDomain(s.repo, &note); note.Len() > 0 {
+			uiLog.Warn("domain switched off", "why", strings.TrimSpace(note.String()))
+		}
 		if err := ensureEdgeNetwork(); err != nil {
 			return "up: FAILED — " + err.Error()
 		}
@@ -763,8 +777,8 @@ func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(s.getRestore())
 }
 
-// handleCert serves the public root CA (from the saved file, else extracted live).
-func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
+// handleRootCA serves the public root CA (from the saved file, else extracted live).
+func (s *uiServer) handleRootCA(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(s.repo, "caddy-root-ca.crt")
 	if b, err := os.ReadFile(path); err == nil {
 		serveCert(w, b)

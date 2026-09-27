@@ -13,13 +13,13 @@ REPO="${2:-/repo}"
 declare -A DIR=(
   [vaultwarden]=vaultwarden
   [nextcloud-db]=nextcloud [nextcloud-redis]=nextcloud [nextcloud-app]=nextcloud
-  [pihole]=pihole [caddy]=caddy [stirling-pdf]=stirling
+  [pihole]=pihole [caddy]=caddy [lego]=caddy [stirling-pdf]=stirling
   [it-tools]=it-tools [imagetools]=imagetools
 )
 declare -A SVC=(
   [vaultwarden]=vaultwarden
   [nextcloud-db]=db [nextcloud-redis]=redis [nextcloud-app]=app
-  [pihole]=pihole [caddy]=caddy [stirling-pdf]=stirling-pdf
+  [pihole]=pihole [caddy]=caddy [lego]=lego [stirling-pdf]=stirling-pdf
   [it-tools]=it-tools [imagetools]=imagetools
 )
 

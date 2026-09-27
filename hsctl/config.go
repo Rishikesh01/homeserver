@@ -26,6 +26,14 @@ type Config struct {
 	// DisabledApps are compose dir names (see apps.go) the admin switched off: `hsctl up`
 	// skips them and the dashboard hides their tiles. Their data volumes are kept.
 	DisabledApps []string
+	// Domain is your own domain for a Let's Encrypt certificate (cert.go): once `hsctl cert`
+	// has one, every app is also served at https://<Domain>:<port>. Empty = IP only.
+	// DNSProvider is the lego DNS provider code that proves you own it (cloudflare, duckdns,
+	// …), and ACMEServer an optional CA override ("letsencrypt-staging" to test).
+	Domain, DNSProvider, ACMEServer string
+	// ActiveDomain is the domain Caddy actually serves right now (from caddy/domain.caddy,
+	// which exists only while its certificate does) — "" when it serves the IP alone.
+	ActiveDomain string
 }
 
 const confFile = "setup.conf"
@@ -109,6 +117,9 @@ func overlayFromConf(c *Config, repo string) {
 	c.PiholeDNSBind = get("PIHOLE_DNS_BIND", c.PiholeDNSBind)
 	c.VWSignupsAllowed = get("VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")) == "true"
 	c.DisabledApps = splitCSV(get("DISABLED_APPS", ""))
+	c.Domain = get("DOMAIN", c.Domain)
+	c.DNSProvider = get("DNS_PROVIDER", c.DNSProvider)
+	c.ACMEServer = get("ACME_SERVER", c.ACMEServer)
 }
 
 // overlayFromEnv reflects the actual deployed .env files into c (so config matches a
@@ -123,6 +134,7 @@ func overlayFromEnv(c *Config, repo string) {
 			c.UIPort = v
 		}
 	}
+	c.ActiveDomain = activeDomain(repo)
 	if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
 		if _, ok := kv["VW_SIGNUPS_ALLOWED"]; ok {
 			c.VWSignupsAllowed = kv["VW_SIGNUPS_ALLOWED"] == "true"
@@ -136,6 +148,15 @@ func overlayFromEnv(c *Config, repo string) {
 			c.PiholeDNSBind = v
 		}
 	}
+}
+
+// Host is the address the apps are reached at: your own domain while Caddy serves it
+// (see cert.go), else the server's LAN IP.
+func (c Config) Host() string {
+	if c.ActiveDomain != "" {
+		return c.ActiveDomain
+	}
+	return c.ServerIP
 }
 
 // portFromUpstream parses "host.docker.internal:8082" -> 8082.
@@ -156,6 +177,7 @@ func (c Config) Save(repo string) error {
 		{"PIHOLE_DNS_BIND", c.PiholeDNSBind},
 		{"VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
 		{"DISABLED_APPS", strings.Join(c.DisabledApps, ",")},
+		{"DOMAIN", c.Domain}, {"DNS_PROVIDER", c.DNSProvider}, {"ACME_SERVER", c.ACMEServer},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
 	}

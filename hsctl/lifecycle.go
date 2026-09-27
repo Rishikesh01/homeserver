@@ -98,6 +98,7 @@ func cmdUp() error {
 		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
 	}
 	migrateSharedNetworkEnv(repoDir())
+	reconcileDomain(repoDir(), os.Stdout)
 	if err := ensureEdgeNetwork(); err != nil {
 		return err
 	}

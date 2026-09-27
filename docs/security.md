@@ -72,6 +72,8 @@ matters:
 | `backup.conf` | `0600` | backup destination + retention |
 | `.restic-password` | `0600` | **the backup encryption password** |
 | `.backup-env` | `0600` | cloud credentials for the off-site replica (S3 keys) |
+| `.acme-env` | `0600` | DNS API token for your domain's Let's Encrypt certificate (only if you use one) |
+| `letsencrypt/` | `0700` dirs, `0600` keys | that certificate's private key + your Let's Encrypt account key |
 | `WELCOME.txt` | `0644` | the human-readable handout of the same logins |
 
 Two things to act on:
@@ -85,6 +87,12 @@ Two things to act on:
 
 The **certificate authority's private key** lives in the `caddy-data` Docker volume. Anyone
 with it could impersonate your sites, so it is included in backups and shouldn't leak.
+
+If you use your own domain ([letsencrypt.md](letsencrypt.md)), `.acme-env` holds a DNS API
+token — the one secret here that reaches **outside** your LAN: whoever has it can change
+that zone's DNS. Scope it to DNS edit on that one zone, and revoke it at the provider if the
+box is ever lost. Getting and renewing the certificate needs **no inbound port** (it's
+proven over DNS), so a domain doesn't change the "don't port-forward" advice below.
 
 ---
 

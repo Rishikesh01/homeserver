@@ -93,6 +93,6 @@ func rootCmd() *cobra.Command {
 	uninstall.Flags().Bool("all", false, "delete the app data volumes AND the backups (asks to type DESTROY)")
 	uninstall.Flags().Bool("yes", false, "skip the confirmation — only for the default, data-keeping tier")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), certCmd(), secretsCmd())
 	return root
 }

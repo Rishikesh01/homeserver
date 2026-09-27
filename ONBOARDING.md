@@ -4,9 +4,14 @@ A short checklist for adding someone (and each of their devices) to the homeserv
 the **one-time certificate step** on every device, then the per-app steps. Hand someone
 this page and they can self-serve most of it.
 
-Everything is reached over HTTPS at the **server's IP + a port** (no names). Replace
-**`SERVER_IP`** below with the server's LAN address (ask your admin; it's also on the
-dashboard). The **dashboard** at `https://SERVER_IP` links to every app.
+Everything is reached over HTTPS at the **server's IP + a port**. Replace **`SERVER_IP`**
+below with the server's LAN address (ask your admin; it's also on the dashboard). The
+**dashboard** at `https://SERVER_IP` links to every app.
+
+> **Does your admin use a domain** (e.g. `home.example.com`, with a Let's Encrypt
+> certificate)? Then use that name in place of the IP address everywhere below and **skip
+> step 1** — every device already trusts the certificate. (The guide on the dashboard,
+> `/help`, fills the domain in for you.)
 
 | | URL |
 |--|--|
@@ -74,7 +79,8 @@ connect**.
 ## Admin notes (server owner)
 
 - Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
-  `http://SERVER_IP/root.crt`.
+  `http://SERVER_IP/root.crt`. To skip it on every device, use your own domain with a Let's
+  Encrypt certificate instead: `docs/letsencrypt.md`.
 - Pi-hole is just a network ad-blocker now — point the router's DHCP DNS at the server to
   ad-block every device (see `docs/setup.md` → "Pi-hole / network-wide ad-blocking").
 - Add an app to the dashboard: add a service folder + a Caddy block (new HTTPS port) + an

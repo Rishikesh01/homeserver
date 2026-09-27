@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"io"
 	"testing"
+	"time"
 )
 
 // TestTemplatesParseAndExecute renders every UI template against representative data.
@@ -59,6 +60,16 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			Stats: "Total Size: 1.2 GiB", Snapshots: "ID  Time\nabc 2026", Msg: "done"}},
 		{"restore", restoreTmpl, restoreData{Snapshots: "ID  Time", Msg: "", ResticOK: true}},
 		{"restore-progress", restoreProgressTmpl, nil},
+		{"home-domain", homeTmpl, homeData{Cfg: Config{ServerIP: "192.168.1.10", ActiveDomain: "home.example.org"}}},
+		{"help-domain", helpTmpl, helpData{Body: "<p>hi</p>", Domain: "home.example.org"}},
+		{"admin-cert-expiring", adminTmpl, adminData{Cfg: Config{ServerIP: "192.168.1.10", ActiveDomain: "home.example.org"},
+			Cert: certStatus{Domain: "home.example.org", Present: true, NotBefore: time.Now().Add(-87 * 24 * time.Hour), NotAfter: time.Now().Add(72 * time.Hour)}}},
+		{"cert-empty", certTmpl, certPageData{Cfg: Config{ServerIP: "192.168.1.10", ACMEEmail: "you@example.com"}}},
+		{"cert", certTmpl, certPageData{Cfg: Config{ServerIP: "192.168.1.10", Domain: "home.example.org", DNSProvider: "cloudflare", ActiveDomain: "home.example.org"},
+			St: certStatus{Domain: "home.example.org", Provider: "cloudflare", Active: "home.example.org", HasCreds: true, Present: true,
+				CertPath: "/opt/homeserver/letsencrypt/certificates/home.example.org.crt", Names: []string{"home.example.org", "*.home.example.org"},
+				Issuer: "(STAGING) Pseudo Plum E5", Staging: true, NotAfter: time.Now().Add(80 * 24 * time.Hour)},
+			CredKeys: []string{"CF_DNS_API_TOKEN"}, Providers: []string{"cloudflare", "duckdns"}, Msg: "Saved.", Err: "oops"}},
 	}
 
 	for _, tc := range cases {

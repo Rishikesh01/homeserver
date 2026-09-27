@@ -159,6 +159,20 @@ Then open **https://HOST** — that's your dashboard, linking to every app.
 
 On the server itself, `hsctl get-ca` writes `caddy-root-ca.crt` for you to copy around.
 
+### Or: your own domain, and skip this step
+
+If you own a domain, `hsctl cert` gets a free **Let's Encrypt** certificate for it and serves
+every app at `https://<domain>:<port>` as well — trusted by every device out of the box, so
+nobody installs `root.crt`. Set it up from **Admin → 🔒 Domain & HTTPS**, or:
+
+```bash
+hsctl cert config --domain home.example.com --dns cloudflare   # asks for the API token
+hsctl cert issue
+```
+
+It renews itself. Full guide, including reusing the certificate for your other services:
+**[Your own domain + Let's Encrypt](letsencrypt.md)**.
+
 ---
 
 ## Switching apps on and off
@@ -180,6 +194,7 @@ hsctl up | down | status        # start / stop / show the stack
 hsctl updates                   # check whether newer app images are available (read-only)
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
+hsctl cert status               # your domain's Let's Encrypt certificate (see letsencrypt.md)
 hsctl secrets show              # print the generated logins
 hsctl apps                      # list apps; hsctl apps disable stirling switches one off (data kept)
 hsctl backup run | list         # see docs/backup-restore.md

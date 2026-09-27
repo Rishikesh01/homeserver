@@ -34,6 +34,10 @@ hsctl updates           # check whether newer app images are available (read-onl
 hsctl images            # check every pinned app image runs on amd64 AND arm64
 hsctl install           # dashboard as a systemd service; on a fresh box also starts Caddy + opens the setup wizard
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
+hsctl cert config       # your own domain: set it + the DNS provider (and its API token)
+hsctl cert issue        # get its Let's Encrypt certificate (or renew if due) and serve the domain
+hsctl cert status       # what the certificate covers and when it expires
+hsctl cert off          # back to the IP address only (keeps the certificate files)
 hsctl secrets show      # print the generated logins (read from the .env files)
 hsctl apps              # list apps; `apps enable|disable NAME` switches one on/off (data kept)
 hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
@@ -127,7 +131,7 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
   The page shows **system health** — CPU, memory, root and backup disk space, per-disk SMART
   status (via `smartctl`, if installed) and how long ago the last backup ran, flagged when it
   goes stale — then the container table with Start all / Restart / Stop all and **Shut down
-  server** (a graceful power-off; the apps auto-start again on next boot). Plus four tools:
+  server** (a graceful power-off; the apps auto-start again on next boot). Plus these tools:
   - **🧰 Commands** (`/admin/commands`) — every `hsctl` command as an explained card with a
     Run button; output streams live. Each maps to a fixed argument list (the browser only
     sends a slug), so there's no command-injection surface. Destructive ones are flagged red
@@ -135,6 +139,9 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
   - **💽 Drives** (`/admin/devices`) — lists the attached disks (`lsblk`) and mounts one with
     a click; the mount directory is pre-filled with a suggestion under `/mnt` and you can edit
     it. Plus Eject. Mounts are one-shot — no `/etc/fstab` changes, so they clear on reboot.
+  - **🔒 Domain & HTTPS** (`/admin/cert`) — your own domain with a Let's Encrypt certificate:
+    settings + DNS API credentials, streamed **Get certificate**, expiry status. The dashboard
+    also renews it on its own, checking twice a day ([docs/letsencrypt.md](../docs/letsencrypt.md)).
   - **💾 Backups** (`/admin/backup`) — destination, retention and off-site replica, live status
     (restic version, `REQUIRE_MOUNT` guard, repo size), and streamed Initialize / Back up /
     Prune / Self-test / Copy off-site, plus the destructive **Restore**.
@@ -156,4 +163,6 @@ install` does the same for the dashboard process. For the nightly backup timer t
 `setup.conf` (your settings, `0600`) · `WELCOME.txt` (the logins handout — `0644`, so delete
 it once you've saved them) · `.ui-password` (dashboard admin, `0600`) · `backup.conf` (backup
 destination, `0600`) · `.restic-password` (`0600` — back this up separately!) · `.backup-env`
-(cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`).
+(cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`) · `.acme-env`
+(DNS API credentials for your domain, `0600`) · `letsencrypt/` (its certificate, from
+`cert issue`) · `caddy/domain.caddy` (serves the domain while the certificate exists).

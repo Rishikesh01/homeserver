@@ -30,14 +30,31 @@ so it never touches the LAN — that's what keeps every app HTTPS-only.
 
 ## 2. The Caddy block
 
-In [`caddy/Caddyfile`](../caddy/Caddyfile), add an HTTPS site on a new port, following the
-pattern of the existing blocks:
+In [`caddy/Caddyfile`](../caddy/Caddyfile), add a snippet saying what the app's site does,
+and an HTTPS site on a new port that imports it, following the pattern of the existing ones:
 
 ```caddyfile
+(myapp) {
+	import app_offline
+	reverse_proxy {$MYAPP_UPSTREAM}
+}
+
 {$SERVER_IP}:{$MYAPP_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	reverse_proxy {$MYAPP_UPSTREAM}
+	import myapp
+}
+```
+
+Give it a twin in [`caddy/letsencrypt.caddy`](../caddy/letsencrypt.caddy) too, so it's also
+served on your own domain if you use one ([letsencrypt.md](letsencrypt.md)) — same port,
+same snippet, the Let's Encrypt certificate (`go test` checks the two files agree):
+
+```caddyfile
+{args[0]}:{$MYAPP_HTTPS} {
+	bind 0.0.0.0
+	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+	import myapp
 }
 ```
 
