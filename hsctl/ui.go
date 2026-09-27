@@ -97,7 +97,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 			s.sweepSessions()
 		}
 	}()
-	// Keep your domain's Let's Encrypt certificate renewed (a no-op without one).
+	// Keep the public Let's Encrypt certificate renewed (a no-op without public access).
 	go s.certRenewLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
@@ -363,7 +363,9 @@ func (s *uiServer) status() ([]containerStatus, error) {
 	return res, nil
 }
 
-type serviceLink struct{ Name, Icon, Desc, URL string }
+// serviceLink is a home-page tile: the app's local address, plus its public one when it's
+// reachable from outside (cert.go) — "" otherwise.
+type serviceLink struct{ Name, Icon, Desc, URL, Outside string }
 
 type homeData struct {
 	Cfg      Config
@@ -387,18 +389,22 @@ func (s *uiServer) handleHome(w http.ResponseWriter, r *http.Request) {
 		if svc.Dir != "" && c.IsDisabled(svc.Dir) {
 			continue
 		}
-		links = append(links, serviceLink{svc.Name, svc.Icon, svc.Desc, svc.URL(c.Host())})
+		l := serviceLink{Name: svc.Name, Icon: svc.Icon, Desc: svc.Desc, URL: svc.URL(c.ServerIP)}
+		if svc.Dir != "" && c.IsPublic(svc.Dir) {
+			l.Outside = svc.URL(c.ActiveDomain)
+		}
+		links = append(links, l)
 	}
 	render(w, homeTmpl, homeData{Cfg: c, Services: links})
 }
 
 type helpData struct {
 	Body   template.HTML
-	Domain string // the Let's Encrypt domain in use, "" for IP only
+	Public []publicApp // apps also reachable from outside (cert.go), nil when none
 }
 
-// handleHelp renders ONBOARDING.md (with SERVER_IP filled in — your domain when one is in
-// use) as an in-dashboard guide.
+// handleHelp renders ONBOARDING.md (with SERVER_IP filled in) as an in-dashboard guide, plus
+// the public addresses of any apps reachable from outside.
 func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 	c := s.config()
 	md, err := os.ReadFile(filepath.Join(s.repo, "ONBOARDING.md"))
@@ -406,13 +412,17 @@ func (s *uiServer) handleHelp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "setup guide not available", http.StatusNotFound)
 		return
 	}
-	src := strings.ReplaceAll(string(md), "SERVER_IP", c.Host())
+	src := strings.ReplaceAll(string(md), "SERVER_IP", c.ServerIP)
 	var buf bytes.Buffer
 	if err := markdown.Convert([]byte(src), &buf); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, helpTmpl, helpData{Body: template.HTML(buf.String()), Domain: c.ActiveDomain})
+	d := helpData{Body: template.HTML(buf.String())}
+	if c.ActiveDomain != "" {
+		d.Public = publicApps(s.repo, c.ActiveDomain, c.ActivePublic)
+	}
+	render(w, helpTmpl, d)
 }
 
 type adminData struct {
@@ -486,7 +496,7 @@ func (s *uiServer) runLifecycle(action string) string {
 		migrateSharedNetworkEnv(s.repo)
 		var note strings.Builder
 		if reconcileDomain(s.repo, &note); note.Len() > 0 {
-			uiLog.Warn("domain switched off", "why", strings.TrimSpace(note.String()))
+			uiLog.Warn("public access switched off", "why", strings.TrimSpace(note.String()))
 		}
 		if err := ensureEdgeNetwork(); err != nil {
 			return "up: FAILED — " + err.Error()

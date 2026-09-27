@@ -51,17 +51,16 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Home server</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🏠 Home server</h1>
-{{if .Cfg.ActiveDomain}}<p class="sub">Your private apps at <b>{{.Cfg.ActiveDomain}}</b>.</p>
-{{else}}<p class="sub">Your private apps. New device? Install the certificate first.</p>
+<p class="sub">Your private apps. New device? Install the certificate first.</p>
 
 <div class="note"><b>First time on this device:</b> open
 <a href="/root.crt">Install the certificate</a> so the apps below load without warnings.</div>
-{{end}}
+
 <div class="grid">
   {{range .Services}}<a class="card" href="{{.URL}}"><h3>{{.Icon}} {{.Name}}</h3>
-    <p>{{.Desc}}</p></a>
-  {{end}}{{if not .Cfg.ActiveDomain}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
-    <p>Install this once per device so the apps load without warnings.</p></a>{{end}}
+    <p>{{.Desc}}</p>{{if .Outside}}<p style="margin-top:6px">🌍 Away from home: <code>{{.Outside}}</code></p>{{end}}</a>
+  {{end}}<a class="card" href="/root.crt"><h3>📜 Certificate</h3>
+    <p>Install this once per device so the apps load without warnings.</p></a>
   <a class="card" href="/help"><h3>📖 Setup guide</h3>
     <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
   <a class="card" href="/admin/backup"><h3>💾 Backup &amp; restore</h3>
@@ -74,12 +73,12 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>hsctl admin</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>⚙️ Admin</h1>
-<p class="sub">Server {{.Cfg.ServerIP}}{{if .Cfg.ActiveDomain}} · {{.Cfg.ActiveDomain}}{{end}} · timezone {{.Cfg.TZ}}</p>
+<p class="sub">Server {{.Cfg.ServerIP}}{{if .Cfg.ActiveDomain}} · public at {{.Cfg.ActiveDomain}}{{end}} · timezone {{.Cfg.TZ}}</p>
 
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
 {{if not .SetupDone}}<div class="note"><b>Setup isn't finished</b> — the apps aren't configured yet. <a href="/setup">Continue the setup wizard →</a></div>{{end}}
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
-{{if .Cert.Expiring}}<div class="banner"><b>Your domain's certificate expires in {{.Cert.DaysLeft}} days</b> and automatic renewal hasn't managed it. <a href="/admin/cert">Domain &amp; HTTPS →</a></div>{{end}}
+{{if .Cert.Expiring}}<div class="banner"><b>The public certificate expires in {{.Cert.DaysLeft}} days</b> and automatic renewal hasn't managed it. <a href="/admin/cert">Public access →</a></div>{{end}}
 
 <div class="tools">
   <a class="tool" href="/admin/apps"><div class="ico">🧩</div><div class="t">Apps</div></a>
@@ -87,7 +86,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
-  <a class="tool" href="/admin/cert"><div class="ico">🔒</div><div class="t">Domain &amp; HTTPS</div></a>
+  <a class="tool" href="/admin/cert"><div class="ico">🌍</div><div class="t">Public access</div></a>
   <a class="tool" href="/admin/terminal"><div class="ico">⌨️</div><div class="t">Terminal</div></a>
 </div>
 
@@ -279,7 +278,7 @@ const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <p><a href="/">← Dashboard</a></p>
-{{if .Domain}}<div class="flash">This server uses <b>{{.Domain}}</b> with a Let's Encrypt certificate that every device already trusts — <b>skip step 1</b> (installing the certificate) and use the addresses below as they are.</div>{{end}}
+{{if .Public}}<div class="flash"><b>Away from home</b>, these apps are also reachable at their public address — no certificate to install for those: {{range $i, $a := .Public}}{{if $i}} · {{end}}{{$a.Name}} <code>{{$a.URL}}</code>{{end}}. At home, use the addresses below.</div>{{end}}
 <div class="md">{{.Body}}</div>
 <p class="foot"><a href="/">← Back to dashboard</a></p>
 </div></body></html>`
@@ -455,39 +454,43 @@ addEventListener('resize',sendResize);
 </div></body></html>`
 
 const certTmpl = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Domain &amp; HTTPS</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Public access</title>
 <style>{{css}}
 label{display:block;margin:12px 0 4px;font-weight:600}.hint{color:var(--muted);font-size:13.5px;margin:2px 0 0}
 textarea.in{min-height:80px;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace}
 </style></head><body><div class="wrap">
-<h1>🔒 Domain &amp; HTTPS</h1>
-<p class="sub">Use your own domain with a free Let's Encrypt certificate — every device and app trusts it out of the box, no root.crt to install.</p>
+<h1>🌍 Public access</h1>
+<p class="sub">Reach chosen apps from outside your home network at your own domain, with a free Let's Encrypt certificate. At home nothing changes: every app stays at <code>https://{{.Cfg.ServerIP}}:&lt;port&gt;</code> with the server's own certificate.</p>
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
 {{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
-{{if .St.Expiring}}<div class="banner"><b>The certificate expires in {{.St.DaysLeft}} days</b> and automatic renewal hasn't managed it — press <b>Get certificate</b> to see why.</div>{{end}}
+{{if .St.Expiring}}<div class="banner"><b>The public certificate expires in {{.St.DaysLeft}} days</b> and automatic renewal hasn't managed it — press <b>Get certificate</b> to see why.</div>{{end}}
 
 <h3>Status</h3>
 <div class="kv">
-  <div class="k">Serving</div><div>{{if .St.Active}}<span class="tag ok">https://{{.St.Active}}</span> and https://{{.Cfg.ServerIP}}, each app on its usual port{{else}}https://{{.Cfg.ServerIP}} only (Caddy's own certificate — devices need root.crt){{end}}</div>
-  <div class="k">Domain</div><div>{{if .St.Domain}}<code>{{.St.Domain}}</code> and <code>*.{{.St.Domain}}</code> · DNS provider <code>{{.St.Provider}}</code>{{else}}none yet — fill in the form below{{end}}</div>
-  {{if .St.Domain}}<div class="k">Certificate</div><div>{{if .St.Err}}<span class="tag bad">unreadable</span> {{.St.Err}}{{else if .St.Present}}{{if .St.Expiring}}<span class="tag bad">{{.St.DaysLeft}} days left</span>{{else}}<span class="tag ok">valid</span>{{end}} until {{.St.Expiry}} · {{.St.Issuer}}{{if .St.Staging}} <span class="tag bad">STAGING — not trusted</span>{{end}}
-    <div class="hint">Renewed automatically (the dashboard checks twice a day). Files: <code>{{.St.CertPath}}</code> and its <code>.key</code> — use them for other services too.</div>{{else}}none yet — press <b>Get certificate</b>{{end}}</div>{{end}}
+  <div class="k">At home</div><div>https://{{.Cfg.ServerIP}}:&lt;port&gt; for every app (server's own certificate) — always on</div>
+  <div class="k">From outside</div><div>{{if .St.Live}}{{range .St.Live}}<div><span class="tag ok">{{.Name}}</span> <code>{{.URL}}</code> — forward port <b>{{.Port}}</b> to {{$.Cfg.ServerIP}}</div>{{end}}{{else}}nothing is public{{if .St.Domain}} yet — press <b>Get certificate</b>{{end}}{{end}}</div>
+  {{if .St.Domain}}<div class="k">Certificate</div><div>{{if .St.Err}}<span class="tag bad">unreadable</span> {{.St.Err}}{{else if .St.Present}}{{if .St.Expiring}}<span class="tag bad">{{.St.DaysLeft}} days left</span>{{else}}<span class="tag ok">valid</span>{{end}} until {{.St.Expiry}} · <code>{{.St.Domain}}</code> + <code>*.{{.St.Domain}}</code> · {{.St.Issuer}}{{if .St.Staging}} <span class="tag bad">STAGING — not trusted</span>{{end}}
+    <div class="hint">Renewed automatically (the dashboard checks twice a day). Files: <code>{{.St.CertPath}}</code> and its <code>.key</code> — use them for your other services too.</div>{{else}}none yet{{end}}</div>{{end}}
 </div>
 
 <h3>Get the certificate</h3>
-<p class="hint">Asks Let's Encrypt for a certificate covering your domain and <code>*.</code>your domain, proving you own it with a temporary DNS record made through your DNS provider's API. Takes a minute or two; once it's there, every app is also served at your domain. Safe to press again — it only renews when due.</p>
+<p class="hint">Asks Let's Encrypt for a certificate covering your domain and <code>*.</code>your domain, proving you own it with a temporary DNS record made through your DNS provider's API (no port needs to be open for that). Takes a minute or two; then the apps you picked are served publicly. Safe to press again — it only renews when due.</p>
 <p>
 <button class="btn green" data-slug="cert-issue" data-confirm="" data-reload="1"{{if not .St.Domain}} disabled{{end}}>Get certificate</button>
 <button class="btn gray" data-slug="cert-status" data-confirm="">Show details</button>
-{{if .St.Active}}<button class="btn gray" data-slug="cert-off" data-confirm="Stop serving {{.St.Active}}? The apps stay reachable at https://{{.Cfg.ServerIP}}:<port>, which needs root.crt on each device. The certificate files are kept." data-reload="1">Turn off</button>{{end}}
+{{if .St.Active}}<button class="btn gray" data-slug="cert-off" data-confirm="End public access? The apps stay reachable at home as before. The certificate files are kept." data-reload="1">Turn off</button>{{end}}
 </p>
 <div id="out" class="out">Output appears here.</div>
 
 <h3 style="margin-top:24px">Settings</h3>
 <form method="post" action="/admin/cert/config">
-  <label for="domain">Your domain</label>
+  <label for="domain">Public domain</label>
   <input class="in" id="domain" name="domain" value="{{.Cfg.Domain}}" placeholder="home.example.com" required>
-  <p class="hint">A domain (or subdomain) you own. Point it at this server with a DNS record at your provider — an A record to <code>{{.Cfg.ServerIP}}</code>, or your public address if you forward ports. Apps are then at <code>https://{{if .Cfg.Domain}}{{.Cfg.Domain}}{{else}}home.example.com{{end}}:8443</code> and so on.</p>
+  <p class="hint">A domain (or subdomain) you own, pointed at your <b>public</b> IP address by a DNS record at your provider (a dynamic-DNS name works too).</p>
+
+  <label>Apps to reach from outside</label>
+  {{range .Apps}}<label style="font-weight:400;margin:4px 0"><input type="checkbox" name="public" value="{{.Dir}}" {{if .Enabled}}checked{{end}}> {{.Icon}} <b>{{.Name}}</b> <span class="hint" style="display:inline">— {{.Desc}}</span></label>
+  {{end}}<p class="hint">Each one is served at <code>https://&lt;domain&gt;:&lt;its port&gt;</code>; forward exactly those ports on your router to {{.Cfg.ServerIP}}. This dashboard is never public — it's a root shell on the server.</p>
 
   <label for="dns">DNS provider</label>
   <input class="in" id="dns" name="dns" value="{{.Cfg.DNSProvider}}" placeholder="cloudflare" list="providers" required>

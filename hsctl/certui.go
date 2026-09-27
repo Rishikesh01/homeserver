@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -52,14 +53,23 @@ func lastLines(s string, n int) string {
 type certPageData struct {
 	Cfg       Config
 	St        certStatus
-	CredKeys  []string // names saved in .acme-env — never the values
-	Providers []string // providers with known credential names, for the form's suggestions
+	Apps      []appInfo // the public-access checkboxes: Enabled = chosen to be public
+	CredKeys  []string  // names saved in .acme-env — never the values
+	Providers []string  // providers with known credential names, for the form's suggestions
 	Msg, Err  string
 }
 
 func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
 	c := s.config()
 	d := certPageData{Cfg: c, St: loadCertStatus(s.repo, c), Msg: r.URL.Query().Get("msg"), Err: r.URL.Query().Get("err")}
+	public := c.PublicApps
+	if len(public) == 0 {
+		public = []string{"vaultwarden"} // the suggestion for a first setup
+	}
+	for _, a := range listApps(s.repo, c, false) {
+		a.Enabled = slices.Contains(public, a.Dir)
+		d.Apps = append(d.Apps, a)
+	}
 	if creds, err := acmeCredentials(s.repo); err == nil {
 		for k := range creds {
 			d.CredKeys = append(d.CredKeys, k)
@@ -124,6 +134,12 @@ func (s *uiServer) handleCertConfig(w http.ResponseWriter, r *http.Request) {
 		fail(err)
 		return
 	}
+	_ = r.ParseForm()
+	public := r.Form["public"]
+	if err := validPublicApps(public); err != nil {
+		fail(err)
+		return
+	}
 	// Check the provider exists (and learn its variables for a fresh .acme-env) only when it
 	// changed — it runs a container.
 	help := ""
@@ -134,7 +150,7 @@ func (s *uiServer) handleCertConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	c.Domain, c.DNSProvider = domain, provider
+	c.Domain, c.DNSProvider, c.PublicApps = domain, provider, public
 	c.ACMEEmail = strings.TrimSpace(r.FormValue("email"))
 	c.ACMEServer = strings.TrimSpace(r.FormValue("server"))
 	if err := c.Save(s.repo); err != nil {
@@ -158,7 +174,8 @@ func (s *uiServer) handleCertConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	uiLog.Info("domain settings saved", "domain", domain, "provider", provider, "credentials", strings.Join(keys, ","), "from", remoteIP(r))
+	uiLog.Info("public access settings saved", "domain", domain, "public", strings.Join(public, ","), "provider", provider,
+		"credentials", strings.Join(keys, ","), "from", remoteIP(r))
 	msg := "Saved. Now press “Get certificate”."
 	if have, _ := acmeCredentials(s.repo); len(have) == 0 {
 		msg = "Saved — but there are no DNS API credentials yet: add them below, then press “Get certificate”."

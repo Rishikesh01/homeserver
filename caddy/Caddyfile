@@ -1,5 +1,5 @@
 {
-	# Unused by Caddy itself: IP certs come from its internal CA, and your own domain's
+	# Unused by Caddy itself: the local certs come from its internal CA, and the public
 	# Let's Encrypt certificate (if any) is fetched by `hsctl cert`, not by Caddy.
 	email {$ACME_EMAIL}
 	# Browsers don't send SNI for a bare IP, so without this the handshake fails with
@@ -27,20 +27,20 @@
 # --- When an app isn't running ---
 # An app can be switched off (Admin → Apps / `hsctl apps disable`) or simply still be starting.
 # Its port stays ours either way; rather than a bare "502 Bad Gateway", explain and point
-# back to the dashboard — on whichever address (IP or your domain) the visitor used.
+# back to the dashboard.
 (app_offline) {
 	handle_errors {
 		@down expression `{err.status_code} == 502`
 		handle @down {
 			header Content-Type "text/html; charset=utf-8"
-			respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Not running</title><body style="font:16px/1.5 system-ui,sans-serif;background:#0f1115;color:#e7e9ee;margin:0;padding:40px 20px;text-align:center"><h1 style="font-size:24px">This app isn't running right now</h1><p style="color:#9aa3b2;max-width:36em;margin:0 auto 22px">It may have been switched off by your admin, or it's still starting up — try again in a minute.</p><p><a href="https://{host}/" style="color:#4f8cff">Back to the dashboard</a></p></body>` 503
+			respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Not running</title><body style="font:16px/1.5 system-ui,sans-serif;background:#0f1115;color:#e7e9ee;margin:0;padding:40px 20px;text-align:center"><h1 style="font-size:24px">This app isn't running right now</h1><p style="color:#9aa3b2;max-width:36em;margin:0 auto 22px">It may have been switched off by your admin, or it's still starting up — try again in a minute.</p><p><a href="https://{$SERVER_IP}/" style="color:#4f8cff">Back to the dashboard</a></p></body>` 503
 		}
 	}
 }
 
 # --- What each app's site does ---
-# One snippet per app, imported by its site below and — if you use your own domain — by its
-# twin in letsencrypt.caddy, so both addresses always behave the same.
+# One snippet per app, imported by its local site below and — if you make the app public — by
+# its public site in letsencrypt.caddy, so both addresses always behave the same.
 
 (vault) {
 	import app_offline
@@ -139,9 +139,12 @@
 	import imagetools
 }
 
-# --- Your own domain, with a Let's Encrypt certificate (optional) ---
-# `hsctl cert` writes domain.caddy once it holds a certificate for your domain; that file
-# imports letsencrypt.caddy, which serves every app above at https://<domain>:<same port>
-# too. No domain.caddy = IP only, as above (Caddy logs "No files matching import glob
-# pattern" — that's expected). See docs/letsencrypt.md.
+# --- Public access from outside your home network (optional) ---
+# The sites above are LOCAL: the server IP with Caddy's own CA, for use at home. An app can
+# also be made reachable from outside at https://<your domain>:<same port>, with a Let's
+# Encrypt certificate: letsencrypt.caddy defines those public sites (one snippet per app),
+# and `hsctl cert` writes domain.caddy, which switches on the ones you chose, once the
+# certificate exists. No domain.caddy = local only (Caddy then logs "No files matching import
+# glob pattern" — that's expected). See docs/letsencrypt.md.
+import letsencrypt.caddy
 import domain*.caddy

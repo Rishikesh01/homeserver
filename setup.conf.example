@@ -15,8 +15,9 @@ UI_PORT=8088                    # hsctl dashboard port (Caddy proxies it at http
 PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver already holds :53
 VW_SIGNUPS_ALLOWED=true         # false = invitation-only
 DISABLED_APPS=                  # apps switched off, e.g. stirling,it-tools (data is kept)
-# Your own domain with a Let's Encrypt certificate (optional — docs/letsencrypt.md). Set with
-# `hsctl cert config`; the DNS provider's API credentials go in .acme-env, not here.
-DOMAIN=                         # e.g. home.example.com — empty = IP only
+# Public access from outside, with a Let's Encrypt certificate (optional — docs/letsencrypt.md).
+# Set with `hsctl cert config`; the DNS provider's API credentials go in .acme-env, not here.
+DOMAIN=                         # public domain, e.g. home.example.com — empty = local only
+PUBLIC_APPS=                    # apps reachable from outside, e.g. vaultwarden (never the dashboard)
 DNS_PROVIDER=                   # lego code: cloudflare, duckdns, porkbun, …
 ACME_SERVER=                    # empty = Let's Encrypt; letsencrypt-staging for a test run

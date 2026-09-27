@@ -42,8 +42,9 @@ the backup actually restore?*
 Everything runs over HTTPS **on your LAN, with no public domain**. Caddy runs a private CA
 and issues real certificates for the server's IP. Install the root cert once per device and
 the browser padlock is genuine — which is what makes the Bitwarden and Nextcloud mobile apps
-agree to connect at all. **Own a domain?** `hsctl cert` adds a free Let's Encrypt certificate
-for it (and `*.domain`, reusable by your other services) — nothing to install on any device.
+agree to connect at all. **Need an app from outside?** `hsctl cert` adds a public Let's Encrypt
+certificate for your domain (and `*.domain`, reusable by your other services) and serves the
+apps you pick there — the local certificates stay as they are.
 
 </td>
 <td width="50%" valign="top">
@@ -209,8 +210,9 @@ Full walkthrough: **[docs/setup.md](docs/setup.md)**.
   and nothing serves plaintext HTTP. The exceptions are deliberate: Pi-hole's `:53` (that's
   the point of Pi-hole) and port `:80`, which serves the CA certificate download only.
 - **One HTTPS port per app** (`8443`–`8448`, dashboard on `443`), each with a `tls internal`
-  certificate carrying the server's IP in its SAN — plus, optionally, the same ports on your
-  own domain with a Let's Encrypt certificate ([docs/letsencrypt.md](docs/letsencrypt.md)).
+  certificate carrying the server's IP in its SAN. Optionally, apps you pick are also served
+  publicly at your domain on the same port, with a Let's Encrypt certificate
+  ([docs/letsencrypt.md](docs/letsencrypt.md)) — never the dashboard.
 - **The dashboard runs on the host, not in a container** — it manages Docker and offers a root
   shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, not the LAN
   (if the bridge can't be detected it warns and falls back to all interfaces). Caddy reaches
@@ -231,7 +233,7 @@ hsctl up | down | status          Start / stop / inspect the stack
 hsctl updates                     Check whether newer app images are available (read-only)
 hsctl images                      Check every app image runs on amd64 and arm64 — this machine included
 hsctl get-ca                      Write caddy-root-ca.crt to install on devices
-hsctl cert config | issue | status | off   Let's Encrypt certificate for your own domain
+hsctl cert config | issue | status | off   Public access from outside (Let's Encrypt cert for your domain)
 hsctl ui                          Serve the web dashboard
 hsctl secrets show                Print the generated logins (read from the .env files)
 hsctl apps [enable|disable NAME]  List apps / switch one on or off (data kept; also Admin → Apps)
@@ -302,7 +304,7 @@ Details: **[docs/backup-restore.md](docs/backup-restore.md)**.
 | [docs/setup.md](docs/setup.md) | Prerequisites, install, certificates, day-to-day, Pi-hole DNS |
 | [docs/security.md](docs/security.md) | Threat model, hardening, where secrets live, rotating passwords |
 | [docs/backup-restore.md](docs/backup-restore.md) | Backups, the verify drill, off-site replica, disaster recovery |
-| [docs/letsencrypt.md](docs/letsencrypt.md) | Your own domain with a Let's Encrypt certificate — and reusing it for other services |
+| [docs/letsencrypt.md](docs/letsencrypt.md) | Public access from outside with a Let's Encrypt certificate — and reusing it for other services |
 | [docs/configuration.md](docs/configuration.md) | Every configurable value, in one place |
 | [docs/adding-an-app.md](docs/adding-an-app.md) | Add your own service to the stack and dashboard |
 | [ONBOARDING.md](ONBOARDING.md) | The page you hand to a new person or device |
@@ -328,8 +330,9 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the details, and
 ## 🔒 Security
 
 > [!WARNING]
-> This is designed for a **LAN only** — don't port-forward it. The threat model and
-> hardening checklist are in **[docs/security.md](docs/security.md)**.
+> This is designed for your **LAN** — don't port-forward it, except the port of an app you've
+> deliberately made public ([docs/letsencrypt.md](docs/letsencrypt.md)), and never the
+> dashboard. The threat model and hardening checklist are in **[docs/security.md](docs/security.md)**.
 
 ---
 

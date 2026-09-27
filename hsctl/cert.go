@@ -24,27 +24,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Let's Encrypt for your own domain. Out of the box every app is served at
-// https://<LAN IP>:<port> with a certificate from Caddy's private CA, which each device has to
-// trust by hand (root.crt). With a domain you own, `hsctl cert` gets a real Let's Encrypt
-// certificate for <domain> and *.<domain>, and Caddy serves the same apps at
-// https://<domain>:<port> as well — trusted by every device and app out of the box. The IP
-// addresses keep working exactly as before.
+// Public access from outside the home network, with a Let's Encrypt certificate.
 //
+// Two kinds of certificate, side by side:
+//   - LOCAL (always): at home every app is https://<LAN IP>:<port>, with a certificate from
+//     Caddy's own CA (`tls internal`) — Let's Encrypt can't issue for a private IP. Devices
+//     trust it once via root.crt. Nothing here changes that.
+//   - PUBLIC (optional): the apps you pick are also served at https://<your domain>:<same port>
+//     with a Let's Encrypt certificate for <domain> and *.<domain>, for reaching them from
+//     outside (the domain points at your public IP; you forward those ports on the router).
+//     The dashboard is never public — it's a root shell on the server.
+//
+// How:
 //   - lego (the one-shot "lego" service in caddy/docker-compose.yml) solves the DNS-01
 //     challenge through your DNS provider's API, with the credentials in .acme-env. DNS-01
-//     needs no inbound connection to this machine, and it's the only challenge that can issue
-//     the wildcard your other services can reuse.
+//     needs no port open for the challenge, and it's the only challenge that can issue the
+//     wildcard your other services can reuse.
 //   - The certificate lands in <repo>/letsencrypt/certificates/<domain>.crt + .key. lego runs
 //     as the folder's owner, so the files belong to you, not root, and other services can use
 //     them too.
-//   - Only once that certificate exists does hsctl write caddy/domain.caddy (which switches
-//     on the domain's sites in caddy/letsencrypt.caddy) and reload Caddy. That ordering is
-//     load-bearing: Caddy refuses to start at all if a certificate file it's told to load is
-//     missing, which would take the IP sites — and this dashboard — down with it. So every
-//     `hsctl up` (and every renewal check) removes domain.caddy again if its certificate is gone.
-//   - Vaultwarden's DOMAIN moves to the domain (it has one canonical address) and Nextcloud
-//     gains it as a trusted domain.
+//   - Only once that certificate exists does hsctl write caddy/domain.caddy (which switches on
+//     the chosen apps' public sites from caddy/letsencrypt.caddy) and reload Caddy. That
+//     ordering is load-bearing: Caddy refuses to start at all if a certificate file it's told
+//     to load is missing, which would take the local sites — and this dashboard — down with
+//     it. So every `hsctl up` (and every renewal check) removes domain.caddy again if its
+//     certificate is gone.
+//   - A public Vaultwarden gets the domain as its DOMAIN (it has one canonical address, and
+//     the Bitwarden apps that roam in and out of the house need the public one); a public
+//     Nextcloud gains it as a trusted domain.
 //   - The dashboard re-runs lego twice a day; lego only contacts Let's Encrypt when the
 //     certificate is due, and hsctl reloads Caddy whenever the file actually changed.
 
@@ -118,25 +125,58 @@ func fileHash(path string) string {
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
-// domainSitesContent is caddy/domain.caddy for domain.
-func domainSitesContent(domain string) string {
-	return "# Written by `hsctl cert`: serve every app at https://" + domain + ":<port> too, with its\n" +
-		"# Let's Encrypt certificate (see letsencrypt.caddy). Don't edit — `hsctl cert off` removes it.\n" +
-		"import letsencrypt.caddy " + domain + "\n"
+// domainSitesContent is caddy/domain.caddy: a public site for each app, on domain.
+func domainSitesContent(domain string, apps []string) string {
+	var b strings.Builder
+	b.WriteString("# Written by `hsctl cert`: the apps reachable from outside at https://" + domain + ":<port>,\n" +
+		"# with its Let's Encrypt certificate (see letsencrypt.caddy). Don't edit — `hsctl cert off` removes it.\n")
+	for _, a := range apps {
+		b.WriteString("import public_" + a + " " + domain + "\n")
+	}
+	return b.String()
 }
 
-// activeDomain is the domain caddy/domain.caddy switches on, or "" when there's no such file.
-func activeDomain(repo string) string {
+// activePublic reads caddy/domain.caddy: the domain Caddy serves publicly and the apps it
+// serves there. "" and nil when the file doesn't exist (everything is local only).
+func activePublic(repo string) (domain string, apps []string) {
 	b, err := os.ReadFile(filepath.Join(repo, domainSites))
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		if f := strings.Fields(line); len(f) == 3 && f[0] == "import" && f[1] == "letsencrypt.caddy" {
-			return f[2]
+		f := strings.Fields(line)
+		if len(f) != 3 || f[0] != "import" || !strings.HasPrefix(f[1], "public_") {
+			continue
+		}
+		domain = f[2]
+		apps = append(apps, strings.TrimPrefix(f[1], "public_"))
+	}
+	return domain, apps
+}
+
+// publicURL is where app (a compose dir) is reached on host — its dashboard tile's port and
+// path. ok is false for an app without a tile.
+func publicURL(repo, app, host string) (url string, ok bool) {
+	for _, t := range LoadServices(repo) {
+		if t.Dir == app {
+			return t.URL(host), true
 		}
 	}
-	return ""
+	return "", false
+}
+
+// validPublicApps checks a list of apps to make public against the registry. The dashboard
+// can't be one: it isn't an app, and it's a root shell.
+func validPublicApps(apps []string) error {
+	if len(apps) == 0 {
+		return fmt.Errorf("pick at least one app to reach from outside, e.g. vaultwarden")
+	}
+	for _, a := range apps {
+		if !validApp(a) {
+			return fmt.Errorf("unknown app %q — one of: %s", a, strings.Join(appDirs(), ", "))
+		}
+	}
+	return nil
 }
 
 // ---- validation ----------------------------------------------------------------
@@ -427,12 +467,13 @@ func vaultURL(repo, host string) string {
 
 // setVaultwardenDomain points Vaultwarden's DOMAIN at url and recreates it if it's running
 // (a new env needs a new container). Vaultwarden has ONE canonical address — its links,
-// passkey/WebAuthn origin and CORS all follow DOMAIN — so it moves with the domain.
+// passkey/WebAuthn origin and CORS all follow DOMAIN — so when it's public it takes the public
+// one: that's what the Bitwarden apps, which roam in and out of the house, are set to.
 func setVaultwardenDomain(repo, url string, out io.Writer) error {
 	env := filepath.Join(repo, "vaultwarden", ".env")
 	kv, err := readKV(env)
 	if err != nil || kv["VW_DOMAIN"] == url {
-		return nil // not set up yet (Generate will use Host()), or already right
+		return nil // not set up yet (Generate picks the right one), or already right
 	}
 	if err := setEnvKey(env, "VW_DOMAIN", url); err != nil {
 		return err
@@ -501,17 +542,22 @@ func parseTrustedDomains(raw string) (domains []string, next int) {
 	return domains, next
 }
 
-// applyDomain serves c.Domain (whose certificate must exist): writes caddy/domain.caddy and
-// reloads Caddy when it changed or the certificate was renewed, then moves Vaultwarden and
-// Nextcloud over. Idempotent — the renewal loop calls it every time, which also heals a
-// `setup --force` that reset VW_DOMAIN. If Caddy rejects the new config, domain.caddy is
-// removed again, so the next Caddy start can't fail on it.
+// applyDomain makes c.PublicApps reachable from outside at c.Domain (whose certificate must
+// exist): writes caddy/domain.caddy and reloads Caddy when it changed or the certificate was
+// renewed, then points Vaultwarden at the public address if it's public (else back at the IP)
+// and adds the domain to a public Nextcloud's trusted domains. Idempotent — the renewal loop
+// calls it every time, which also heals a `setup --force` that reset VW_DOMAIN. If Caddy
+// rejects the new config, domain.caddy is put back as it was, so the next Caddy start can't
+// fail on it.
 func applyDomain(repo string, c Config, renewed bool, out io.Writer) error {
+	if err := validPublicApps(c.PublicApps); err != nil {
+		return err
+	}
 	if !certPresent(repo, c.Domain) {
 		return fmt.Errorf("no certificate for %s yet — run: hsctl cert issue", c.Domain)
 	}
 	sites := filepath.Join(repo, domainSites)
-	want := domainSitesContent(c.Domain)
+	want := domainSitesContent(c.Domain, c.PublicApps)
 	cur, _ := os.ReadFile(sites)
 	changed := string(cur) != want
 	if changed {
@@ -531,22 +577,28 @@ func applyDomain(repo string, c Config, renewed bool, out io.Writer) error {
 			return err
 		}
 		if changed {
-			fmt.Fprintf(out, "Caddy: now serving https://%s (every app, same ports)\n", c.Domain)
+			fmt.Fprintf(out, "Caddy: serving %s publicly at %s (the local addresses are unchanged)\n", strings.Join(c.PublicApps, ", "), c.Domain)
 		} else {
 			fmt.Fprintln(out, "Caddy: reloaded with the renewed certificate")
 		}
 	}
 	var errs []error
-	if err := setVaultwardenDomain(repo, vaultURL(repo, c.Domain), out); err != nil {
+	vwHost := c.ServerIP
+	if slices.Contains(c.PublicApps, "vaultwarden") {
+		vwHost = c.Domain
+	}
+	if err := setVaultwardenDomain(repo, vaultURL(repo, vwHost), out); err != nil {
 		errs = append(errs, err)
 	}
-	if err := addNextcloudTrustedDomain(repo, c.Domain, out); err != nil {
-		errs = append(errs, err)
+	if slices.Contains(c.PublicApps, "nextcloud") {
+		if err := addNextcloudTrustedDomain(repo, c.Domain, out); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }
 
-// dropDomain stops serving the domain: removes caddy/domain.caddy, reloads Caddy and points
+// dropDomain ends public access: removes caddy/domain.caddy, reloads Caddy and points
 // Vaultwarden back at the IP. The certificate files stay (a later `hsctl cert issue` reuses
 // them), and so does the domain in Nextcloud's trusted list, where it's harmless.
 func dropDomain(repo string, c Config, out io.Writer) error {
@@ -558,23 +610,30 @@ func dropDomain(repo string, c Config, out io.Writer) error {
 		if err := reloadCaddy(repo); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "Caddy: serving the IP address only again")
+		fmt.Fprintln(out, "Caddy: nothing is served publicly any more (local addresses unchanged)")
 	}
 	return setVaultwardenDomain(repo, vaultURL(repo, c.ServerIP), out)
 }
 
 // reconcileDomain runs before the stack starts: if caddy/domain.caddy points at a
 // certificate that isn't there (letsencrypt/ was deleted, or a restore brought back the
-// config without it), drop the domain rather than let Caddy — and so the whole front door —
-// fail to start.
+// config without it), end public access rather than let Caddy — and so the whole front door,
+// local sites included — fail to start.
 func reconcileDomain(repo string, out io.Writer) {
-	d := activeDomain(repo)
-	if d == "" || certPresent(repo, d) {
+	d, _ := activePublic(repo)
+	switch {
+	case !fileExists(filepath.Join(repo, domainSites)) || (d != "" && certPresent(repo, d)):
 		return
+	case d == "":
+		// hsctl owns this file; one it can't read (hand-edited, or from another version) is
+		// as likely to break Caddy's start as one pointing at a missing certificate.
+		fmt.Fprintf(out, "warning: %s isn't in the form hsctl writes — removed it, so public access is off\n"+
+			"  (local access is unaffected). Turn it back on with: hsctl cert issue\n", domainSites)
+	default:
+		crt, _ := certFiles(repo, d)
+		fmt.Fprintf(out, "warning: the certificate for %s is missing (%s) — public access is off, local access is unaffected.\n"+
+			"  Get it again with: hsctl cert issue\n", d, crt)
 	}
-	crt, _ := certFiles(repo, d)
-	fmt.Fprintf(out, "warning: the certificate for %s is missing (%s) — serving the IP address only.\n"+
-		"  Get it again with: hsctl cert issue\n", d, crt)
 	c := LoadConfig(repo)
 	c.Normalize()
 	if err := dropDomain(repo, c, out); err != nil {
@@ -603,11 +662,37 @@ func renewCert(repo string, out io.Writer) (renewed bool, err error) {
 
 // ---- status ------------------------------------------------------------------------
 
-// certStatus is what the CLI and the dashboard show about the domain + certificate.
+// publicApp is one app reachable from outside: its tile name, public URL and the port to
+// forward on the router.
+type publicApp struct {
+	Dir, Name, URL string
+	Port           int
+}
+
+// publicApps describes dirs as served on domain, using their dashboard tiles.
+func publicApps(repo, domain string, dirs []string) []publicApp {
+	tiles := map[string]Service{}
+	for _, t := range LoadServices(repo) {
+		tiles[t.Dir] = t
+	}
+	var out []publicApp
+	for _, d := range dirs {
+		p := publicApp{Dir: d, Name: d}
+		if t, ok := tiles[d]; ok {
+			p.Name, p.URL, p.Port = t.Name, t.URL(domain), t.HTTPSPort
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// certStatus is what the CLI and the dashboard show about public access + its certificate.
 type certStatus struct {
 	Domain, Provider, Server, Email string
-	Active                          string // domain Caddy serves now ("" = IP only)
-	HasCreds                        bool   // .acme-env has at least one value
+	PublicApps                      []string    // configured to be public
+	Active                          string      // domain Caddy serves publicly now ("" = local only)
+	Live                            []publicApp // what Caddy serves publicly now
+	HasCreds                        bool        // .acme-env has at least one value
 	CertPath                        string
 	Present                         bool
 	Names                           []string
@@ -618,7 +703,11 @@ type certStatus struct {
 }
 
 func loadCertStatus(repo string, c Config) certStatus {
-	st := certStatus{Domain: c.Domain, Provider: c.DNSProvider, Server: c.ACMEServer, Email: acmeEmail(c.ACMEEmail), Active: c.ActiveDomain}
+	st := certStatus{Domain: c.Domain, Provider: c.DNSProvider, Server: c.ACMEServer, Email: acmeEmail(c.ACMEEmail),
+		PublicApps: c.PublicApps, Active: c.ActiveDomain}
+	if c.ActiveDomain != "" {
+		st.Live = publicApps(repo, c.ActiveDomain, c.ActivePublic)
+	}
 	creds, _ := acmeCredentials(repo)
 	st.HasCreds = len(creds) > 0
 	d := c.Domain
@@ -656,16 +745,18 @@ func (s certStatus) Expiring() bool {
 func (s certStatus) Expiry() string { return s.NotAfter.Local().Format("2 Jan 2006") }
 
 func printCertStatus(w io.Writer, st certStatus, serverIP string) {
+	fmt.Fprintf(w, "local         https://%s:<port> for every app, with Caddy's own CA (root.crt) — always on\n", serverIP)
 	if st.Domain == "" && st.Active == "" {
-		fmt.Fprintf(w, "No domain set up — the apps are served at https://%s:<port> with Caddy's own CA.\n", serverIP)
-		fmt.Fprintln(w, "To use a Let's Encrypt certificate for your own domain: hsctl cert config (see docs/letsencrypt.md)")
+		fmt.Fprintln(w, "public        off — to reach apps from outside with a Let's Encrypt certificate: hsctl cert config")
+		fmt.Fprintln(w, "              (see docs/letsencrypt.md)")
 		return
 	}
 	if st.Domain == "" {
-		fmt.Fprintf(w, "domain        none configured, but Caddy still serves %s — run: hsctl cert off\n", st.Active)
+		fmt.Fprintf(w, "public        no domain configured, but Caddy still serves %s publicly — run: hsctl cert off\n", st.Active)
 		return
 	}
-	fmt.Fprintf(w, "domain        %s (and *.%s)\n", st.Domain, st.Domain)
+	fmt.Fprintf(w, "domain        %s (the certificate also covers *.%s)\n", st.Domain, st.Domain)
+	fmt.Fprintf(w, "public apps   %s\n", strings.Join(st.PublicApps, ", "))
 	fmt.Fprintf(w, "DNS provider  %s — credentials %s\n", st.Provider, boolStr(st.HasCreds, "set in "+acmeEnvFile, "MISSING from "+acmeEnvFile))
 	if st.Server != "" {
 		fmt.Fprintf(w, "ACME server   %s\n", st.Server)
@@ -683,34 +774,38 @@ func printCertStatus(w io.Writer, st certStatus, serverIP string) {
 	}
 	switch {
 	case st.Active == "":
-		fmt.Fprintf(w, "serving       https://%s:<port> only (the domain switches on once its certificate exists)\n", serverIP)
+		fmt.Fprintln(w, "public now    nothing yet (switches on once the certificate exists)")
 	case st.Active != st.Domain:
-		fmt.Fprintf(w, "serving       https://%s:<port> — still the OLD domain until hsctl cert issue gets %s's certificate\n", st.Active, st.Domain)
+		fmt.Fprintf(w, "public now    still the OLD domain %s, until hsctl cert issue gets %s's certificate\n", st.Active, st.Domain)
 	default:
-		fmt.Fprintf(w, "serving       https://%s:<port> (and https://%s:<port>)\n", st.Active, serverIP)
+		fmt.Fprintf(w, "public now    (forward each port on your router to %s)\n", serverIP)
+		for _, a := range st.Live {
+			fmt.Fprintf(w, "  %-11s %s   port %d\n", a.Name, a.URL, a.Port)
+		}
 	}
 }
 
 // ---- CLI: hsctl cert ------------------------------------------------------------------
 
 func certCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "cert", Short: "Let's Encrypt certificate for your own domain (see docs/letsencrypt.md)"}
+	cmd := &cobra.Command{Use: "cert", Short: "Public access from outside, with a Let's Encrypt certificate (see docs/letsencrypt.md)"}
 
-	cfg := &cobra.Command{Use: "config", Short: "Set the domain + DNS provider (and its API credentials)", Args: cobra.NoArgs, RunE: runCertConfig}
-	cfg.Flags().String("domain", "", "your domain, e.g. home.example.com (the certificate also covers *.<domain>)")
+	cfg := &cobra.Command{Use: "config", Short: "Set the public domain, the apps to make public, and the DNS provider (+ API credentials)", Args: cobra.NoArgs, RunE: runCertConfig}
+	cfg.Flags().String("domain", "", "your public domain, e.g. home.example.com (the certificate also covers *.<domain>)")
+	cfg.Flags().String("public", "", "apps reachable from outside, comma-separated (default vaultwarden) — the dashboard never is")
 	cfg.Flags().String("dns", "", "DNS provider code, e.g. cloudflare, duckdns, porkbun (lego's list: https://go-acme.github.io/lego/dns/)")
 	cfg.Flags().String("email", "", "contact email for your Let's Encrypt account (optional)")
 	cfg.Flags().String("server", "", `ACME server: "letsencrypt-staging" to test, "" for Let's Encrypt`)
 
 	issue := &cobra.Command{Use: "issue", Aliases: []string{"renew"}, Args: cobra.NoArgs,
-		Short: "Get the certificate (or renew it if due) and serve the domain — safe to repeat",
+		Short: "Get the certificate (or renew it if due) and serve the public apps — safe to repeat",
 		RunE: func(c *cobra.Command, _ []string) error {
 			force, _ := c.Flags().GetBool("force")
 			return runCertIssue(force)
 		}}
 	issue.Flags().Bool("force", false, "renew even if the certificate isn't due (counts against Let's Encrypt's rate limits)")
 
-	status := &cobra.Command{Use: "status", Short: "Show the domain, the certificate and when it expires", Args: cobra.NoArgs,
+	status := &cobra.Command{Use: "status", Short: "Show what's public, the certificate and when it expires", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			repo, err := requireRepoDir()
 			if err != nil {
@@ -722,7 +817,7 @@ func certCmd() *cobra.Command {
 			return nil
 		}}
 
-	off := &cobra.Command{Use: "off", Short: "Stop serving the domain (back to the IP address only); keeps the certificate files", Args: cobra.NoArgs,
+	off := &cobra.Command{Use: "off", Short: "End public access (local access is unaffected); keeps the certificate files", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			repo, err := requireRepoDir()
 			if err != nil {
@@ -737,8 +832,8 @@ func certCmd() *cobra.Command {
 			if err := c.Save(repo); err != nil {
 				return err
 			}
-			fmt.Printf("Domain off — the apps are at https://%s:<port> again and renewals have stopped.\n", c.ServerIP)
-			fmt.Println("Devices need root.crt again for those addresses (see ONBOARDING.md).")
+			fmt.Printf("Public access off and renewals stopped. At home everything stays at https://%s:<port>.\n", c.ServerIP)
+			fmt.Println("Remove the port forwards from your router too.")
 			return nil
 		}}
 
@@ -759,12 +854,23 @@ func runCertConfig(cmd *cobra.Command, _ []string) error {
 			*dst, _ = f.GetString(name)
 		}
 	}
+	if f.Changed("public") {
+		v, _ := f.GetString("public")
+		c.PublicApps = splitCSV(v)
+	}
+	if len(c.PublicApps) == 0 {
+		c.PublicApps = []string{"vaultwarden"}
+	}
 	// On a terminal, ask for whatever wasn't given as a flag.
 	tty := isTTY()
 	if tty && !(f.Changed("domain") && f.Changed("dns")) {
-		fmt.Println("== Your own domain (Enter accepts each [default]) ==")
+		fmt.Println("== Public access from outside (Enter accepts each [default]) ==")
 		if !f.Changed("domain") {
-			c.Domain = ask("Domain (the certificate covers it and *.<domain>)", c.Domain)
+			c.Domain = ask("Public domain (the certificate covers it and *.<domain>)", c.Domain)
+		}
+		if !f.Changed("public") {
+			fmt.Printf("  Apps: %s (the dashboard is never public)\n", strings.Join(appDirs(), ", "))
+			c.PublicApps = splitCSV(ask("Apps to reach from outside (comma-separated)", strings.Join(c.PublicApps, ",")))
 		}
 		if !f.Changed("dns") {
 			if c.DNSProvider == "" {
@@ -781,6 +887,9 @@ func runCertConfig(cmd *cobra.Command, _ []string) error {
 	if c.Domain, err = normalizeDomain(c.Domain); err != nil {
 		return err
 	}
+	if err := validPublicApps(c.PublicApps); err != nil {
+		return fmt.Errorf("--public: %w", err)
+	}
 	c.DNSProvider = strings.ToLower(strings.TrimSpace(c.DNSProvider))
 	if !providerRE.MatchString(c.DNSProvider) {
 		return fmt.Errorf("--dns: give lego's provider code, e.g. cloudflare (list: https://go-acme.github.io/lego/dns/)")
@@ -792,7 +901,8 @@ func runCertConfig(cmd *cobra.Command, _ []string) error {
 	if err := c.Save(repo); err != nil {
 		return err
 	}
-	fmt.Printf("Saved domain %s (DNS provider %s) to %s\n", c.Domain, c.DNSProvider, confFile)
+	fmt.Printf("Saved: %s reachable from outside at %s (DNS provider %s), in %s\n",
+		strings.Join(c.PublicApps, ", "), c.Domain, c.DNSProvider, confFile)
 
 	envPath := filepath.Join(repo, acmeEnvFile)
 	if !fileExists(envPath) {
@@ -861,21 +971,50 @@ func runCertIssue(force bool) error {
 		return err
 	}
 	fmt.Println()
-	fmt.Println("== serving the domain ==")
+	fmt.Println("== public access ==")
 	if err := applyDomain(repo, c, renewed, os.Stdout); err != nil {
 		return err
 	}
 	c = LoadConfig(repo)
 	c.Normalize()
 	st := loadCertStatus(repo, c)
-	fmt.Printf("\nDone: %s — valid until %s (%d days). The dashboard renews it automatically.\n",
+	fmt.Printf("\nDone: certificate for %s — valid until %s (%d days). The dashboard renews it automatically.\n",
 		strings.Join(st.Names, ", "), st.Expiry(), st.DaysLeft())
 	if st.Staging {
 		fmt.Println("This is a STAGING certificate (not trusted by browsers) — for the real one:\n  hsctl cert config --server \"\" && hsctl cert issue")
 	}
-	fmt.Printf("Open https://%s/ — every app is on its usual port, e.g. Vaultwarden at %s\n", c.Domain, vaultURL(repo, c.Domain))
-	if _, err := net.LookupHost(c.Domain); err != nil {
-		fmt.Printf("\nnote: %s doesn't resolve yet — add a DNS record for it pointing at this server (%s).\n", c.Domain, c.ServerIP)
+	fmt.Printf("\nFrom outside, once your router forwards each port below (TCP) to %s:\n", c.ServerIP)
+	for _, a := range st.Live {
+		fmt.Printf("  %-11s %s   port %d\n", a.Name, a.URL, a.Port)
+	}
+	fmt.Printf("At home nothing changes: every app stays at https://%s:<port>.\n", c.ServerIP)
+	for _, n := range publicNotes(c, resolveHost(c.Domain)) {
+		fmt.Println("\nnote: " + n)
 	}
 	return nil
+}
+
+// resolveHost looks name up (nil on failure) — a variable so tests needn't touch DNS.
+var resolveHost = func(name string) []net.IP {
+	ips, _ := net.LookupIP(name)
+	return ips
+}
+
+// publicNotes are the checks worth pointing out once apps are public: the domain has to
+// resolve to your public address (a LAN address can't be reached from outside), and a public
+// Vaultwarden with open signups lets anyone on the internet create an account.
+func publicNotes(c Config, ips []net.IP) []string {
+	var notes []string
+	switch {
+	case len(ips) == 0:
+		notes = append(notes, fmt.Sprintf("%s doesn't resolve yet — add a DNS record pointing it at your public IP address.", c.Domain))
+	case slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.IsPrivate() || ip.IsLoopback() }):
+		notes = append(notes, fmt.Sprintf("%s resolves to a private address (%v) — outside your network it must point at your public IP.", c.Domain, ips))
+	}
+	if slices.Contains(c.PublicApps, "vaultwarden") && c.VWSignupsAllowed {
+		notes = append(notes, "Vaultwarden allows open signups, so anyone on the internet could now create an account.\n"+
+			"  Once your family has signed up, switch it off: set VW_SIGNUPS_ALLOWED=false in vaultwarden/.env and\n"+
+			"  in setup.conf, then: cd vaultwarden && docker compose up -d")
+	}
+	return notes
 }

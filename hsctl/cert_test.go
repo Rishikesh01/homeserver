@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,76 +58,117 @@ func TestAcmeEmail(t *testing.T) {
 	}
 }
 
-// TestDomainSitesRoundTrip: what applyDomain writes is what activeDomain (and so Config's
-// ActiveDomain) reads back; no file = no domain.
+// TestDomainSitesRoundTrip: what applyDomain writes is what activePublic (and so Config's
+// ActiveDomain/ActivePublic) reads back; no file = nothing public.
 func TestDomainSitesRoundTrip(t *testing.T) {
 	repo := t.TempDir()
-	if got := activeDomain(repo); got != "" {
-		t.Fatalf("activeDomain with no file = %q", got)
+	if d, apps := activePublic(repo); d != "" || apps != nil {
+		t.Fatalf("activePublic with no file = %q %v", d, apps)
 	}
 	os.MkdirAll(filepath.Join(repo, "caddy"), 0755)
-	if err := os.WriteFile(filepath.Join(repo, domainSites), []byte(domainSitesContent("home.example.org")), 0644); err != nil {
-		t.Fatal(err)
+	content := domainSitesContent("home.example.org", []string{"vaultwarden", "it-tools"})
+	if !strings.HasPrefix(content, "#") || !strings.Contains(content, "\nimport public_vaultwarden home.example.org\nimport public_it-tools home.example.org\n") {
+		t.Fatalf("domain.caddy content:\n%s", content)
 	}
-	if got := activeDomain(repo); got != "home.example.org" {
-		t.Fatalf("activeDomain = %q", got)
+	os.WriteFile(filepath.Join(repo, domainSites), []byte(content), 0644)
+	if d, apps := activePublic(repo); d != "home.example.org" || !slices.Equal(apps, []string{"vaultwarden", "it-tools"}) {
+		t.Fatalf("activePublic = %q %v", d, apps)
 	}
 }
 
-// TestLetsencryptSitesMirrorCaddyfile guards against drift between the two Caddy files: every
-// app site the Caddyfile serves at the IP must have a twin in letsencrypt.caddy on the same
-// port with the same handling, using the Let's Encrypt certificate — and nothing more.
-func TestLetsencryptSitesMirrorCaddyfile(t *testing.T) {
-	sites := func(path, addr string) map[string]string {
-		b, err := os.ReadFile(path)
+// TestPublicSnippetsMirrorCaddyfile guards against drift between the two Caddy files: every
+// app's local site in the Caddyfile must have a public_<app dir> snippet in letsencrypt.caddy
+// serving the same port with the same handling on the Let's Encrypt certificate, and the
+// dashboard (the "home" site) must have none — it's a root shell.
+func TestPublicSnippetsMirrorCaddyfile(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "caddy", name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		// "<addr>:{$PORT} {" … "import <snippet>" … "}" — port var -> snippet.
-		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(addr) + `:\{\$(\w+)\} \{\n((?:\t.*\n)+)\}`)
-		out := map[string]string{}
-		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
-			body := m[2]
-			var snippet string
-			for _, l := range strings.Split(body, "\n") {
-				if f := strings.Fields(l); len(f) == 2 && f[0] == "import" {
-					snippet = f[1]
-				}
+		return string(b)
+	}
+	caddyfile, le := read("Caddyfile"), read("letsencrypt.caddy")
+	importOf := func(body string) string {
+		for _, l := range strings.Split(body, "\n") {
+			if f := strings.Fields(l); len(f) == 2 && f[0] == "import" {
+				return f[1]
 			}
-			if addr == "{args[0]}" && !strings.Contains(body, "\ttls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key\n") {
-				t.Errorf("letsencrypt.caddy: the %s site doesn't load the Let's Encrypt certificate", m[1])
-			}
-			if addr == "{$SERVER_IP}" && !strings.Contains(body, "\ttls internal\n") {
-				t.Errorf("Caddyfile: the %s site doesn't use tls internal", m[1])
-			}
-			out[m[1]] = snippet
 		}
-		return out
+		return ""
 	}
-	ip := sites(filepath.Join("..", "caddy", "Caddyfile"), "{$SERVER_IP}")
-	le := sites(filepath.Join("..", "caddy", "letsencrypt.caddy"), "{args[0]}")
-	if len(ip) < 7 {
-		t.Fatalf("found only %d IP sites in the Caddyfile — has its layout changed? %v", len(ip), ip)
-	}
-	for port, snippet := range ip {
-		if snippet == "" {
-			t.Errorf("Caddyfile: the %s site doesn't import a per-app snippet", port)
+	// local sites: port var -> snippet
+	local := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?m)^\{\$SERVER_IP\}:\{\$(\w+)\} \{\n((?:\t.*\n)+)\}`).FindAllStringSubmatch(caddyfile, -1) {
+		if !strings.Contains(m[2], "\ttls internal\n") {
+			t.Errorf("Caddyfile: the %s site doesn't use tls internal", m[1])
 		}
-		if le[port] != snippet {
-			t.Errorf("letsencrypt.caddy: the %s site imports %q, want %q (its twin in the Caddyfile)", port, le[port], snippet)
+		local[m[1]] = importOf(m[2])
+	}
+	if len(local) < 7 {
+		t.Fatalf("found only %d local sites in the Caddyfile — has its layout changed? %v", len(local), local)
+	}
+	// public snippets: app dir -> (port var, snippet)
+	type site struct{ port, snippet string }
+	public := map[string]site{}
+	for _, m := range regexp.MustCompile(`(?m)^\(public_([\w-]+)\) \{\n\t\{args\[0\]\}:\{\$(\w+)\} \{\n((?:\t\t.*\n)+)\t\}\n\}`).FindAllStringSubmatch(le, -1) {
+		if !strings.Contains(m[3], "\t\ttls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key\n") {
+			t.Errorf("letsencrypt.caddy: public_%s doesn't load the Let's Encrypt certificate", m[1])
+		}
+		public[m[1]] = site{m[2], importOf(m[3])}
+	}
+	for _, dir := range appDirs() {
+		p, ok := public[dir]
+		if !ok {
+			t.Errorf("letsencrypt.caddy: no public_%s snippet — that app couldn't be made public", dir)
+			continue
+		}
+		if local[p.port] != p.snippet {
+			t.Errorf("letsencrypt.caddy: public_%s serves {$%s} with %q, but the Caddyfile's local site there uses %q", dir, p.port, p.snippet, local[p.port])
 		}
 	}
-	for port := range le {
-		if _, ok := ip[port]; !ok {
-			t.Errorf("letsencrypt.caddy: %s has no IP site in the Caddyfile", port)
+	for dir, p := range public {
+		if !validApp(dir) {
+			t.Errorf("letsencrypt.caddy: public_%s isn't an app hsctl knows", dir)
+		}
+		if p.port == "HOME_HTTPS" {
+			t.Errorf("letsencrypt.caddy: public_%s would put the dashboard (a root shell) on the internet", dir)
 		}
 	}
-	caddyfile, _ := os.ReadFile(filepath.Join("..", "caddy", "Caddyfile"))
-	if !strings.Contains(string(caddyfile), "\nimport domain*.caddy\n") {
-		t.Error("the Caddyfile no longer imports domain*.caddy — the domain switch would do nothing")
+	for _, want := range []string{"\nimport letsencrypt.caddy\n", "\nimport domain*.caddy\n"} {
+		if !strings.Contains(caddyfile, want) {
+			t.Errorf("the Caddyfile no longer has %q — public access would do nothing", strings.TrimSpace(want))
+		}
 	}
-	if !strings.HasPrefix(domainSitesContent("x.example.org"), "#") || !strings.Contains(domainSitesContent("x.example.org"), "\nimport letsencrypt.caddy x.example.org\n") {
-		t.Error("domainSitesContent doesn't import letsencrypt.caddy with the domain")
+}
+
+func TestValidPublicApps(t *testing.T) {
+	if err := validPublicApps([]string{"vaultwarden", "nextcloud"}); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range [][]string{nil, {"caddy"}, {"home"}, {"vaultwarden", "nope"}} {
+		if validPublicApps(bad) == nil {
+			t.Errorf("validPublicApps(%v) accepted it", bad)
+		}
+	}
+}
+
+func TestPublicNotes(t *testing.T) {
+	c := Config{Domain: "home.example.org", PublicApps: []string{"vaultwarden"}, VWSignupsAllowed: true}
+	notes := strings.Join(publicNotes(c, nil), "\n")
+	if !strings.Contains(notes, "doesn't resolve") || !strings.Contains(notes, "open signups") {
+		t.Errorf("unresolved + open signups:\n%s", notes)
+	}
+	if n := strings.Join(publicNotes(c, []net.IP{net.ParseIP("192.168.1.10")}), "\n"); !strings.Contains(n, "private address") {
+		t.Errorf("a LAN address should be flagged:\n%s", n)
+	}
+	c.VWSignupsAllowed = false
+	if n := publicNotes(c, []net.IP{net.ParseIP("203.0.113.7")}); len(n) != 0 {
+		t.Errorf("public IP, signups off — nothing to say, got %v", n)
+	}
+	c.PublicApps, c.VWSignupsAllowed = []string{"nextcloud"}, true
+	if n := publicNotes(c, []net.IP{net.ParseIP("203.0.113.7")}); len(n) != 0 {
+		t.Errorf("signups only matter when Vaultwarden is public, got %v", n)
 	}
 }
 
@@ -196,21 +238,21 @@ func TestParseCredentialLines(t *testing.T) {
 func TestConfigDomainRoundTrip(t *testing.T) {
 	repo := t.TempDir()
 	c := Config{ServerIP: "192.168.1.10", TZ: "Etc/UTC", UIPort: 8088, Domain: "home.example.org",
-		DNSProvider: "cloudflare", ACMEServer: "letsencrypt-staging"}
+		DNSProvider: "cloudflare", ACMEServer: "letsencrypt-staging", PublicApps: []string{"vaultwarden", "nextcloud"}}
 	if err := c.Save(repo); err != nil {
 		t.Fatal(err)
 	}
 	got := LoadConfig(repo)
-	if got.Domain != c.Domain || got.DNSProvider != c.DNSProvider || got.ACMEServer != c.ACMEServer {
+	if got.Domain != c.Domain || got.DNSProvider != c.DNSProvider || got.ACMEServer != c.ACMEServer || !slices.Equal(got.PublicApps, c.PublicApps) {
 		t.Errorf("round trip: %+v", got)
 	}
-	if got.ActiveDomain != "" || got.Host() != "192.168.1.10" {
-		t.Errorf("no domain.caddy yet, but ActiveDomain=%q Host=%q", got.ActiveDomain, got.Host())
+	if got.ActiveDomain != "" || got.IsPublic("vaultwarden") {
+		t.Errorf("no domain.caddy yet, but ActiveDomain=%q, vaultwarden public=%v", got.ActiveDomain, got.IsPublic("vaultwarden"))
 	}
 	os.MkdirAll(filepath.Join(repo, "caddy"), 0755)
-	os.WriteFile(filepath.Join(repo, domainSites), []byte(domainSitesContent("home.example.org")), 0644)
-	if got = LoadConfig(repo); got.Host() != "home.example.org" {
-		t.Errorf("Host() = %q with the domain switched on", got.Host())
+	os.WriteFile(filepath.Join(repo, domainSites), []byte(domainSitesContent("home.example.org", []string{"vaultwarden"})), 0644)
+	if got = LoadConfig(repo); !got.IsPublic("vaultwarden") || got.IsPublic("nextcloud") {
+		t.Errorf("with only Vaultwarden switched on: vaultwarden=%v nextcloud=%v", got.IsPublic("vaultwarden"), got.IsPublic("nextcloud"))
 	}
 }
 
@@ -275,7 +317,7 @@ func TestApplyAndReconcileDomain(t *testing.T) {
 	os.WriteFile(filepath.Join(repo, "caddy/.env"), []byte("SERVER_IP=192.168.1.10\nVAULT_HTTPS=9443\n"), 0600)
 	os.WriteFile(filepath.Join(repo, "vaultwarden/.env"), []byte("VW_DOMAIN=https://192.168.1.10:9443\nVW_ADMIN_TOKEN=x\n"), 0600)
 	os.WriteFile(filepath.Join(repo, "nextcloud/.env"), []byte("NC_TRUSTED_DOMAINS=192.168.1.10\n"), 0600)
-	c := Config{ServerIP: "192.168.1.10", Domain: "home.example.org", DNSProvider: "cloudflare"}
+	c := Config{ServerIP: "192.168.1.10", Domain: "home.example.org", DNSProvider: "cloudflare", PublicApps: []string{"nextcloud"}}
 	if err := c.Save(repo); err != nil {
 		t.Fatal(err)
 	}
@@ -288,13 +330,23 @@ func TestApplyAndReconcileDomain(t *testing.T) {
 	}
 
 	writeTestCert(t, repo, "home.example.org", "E7", time.Now().Add(90*24*time.Hour))
+	// Only Nextcloud public: Vaultwarden keeps its local address.
 	if err := applyDomain(repo, c, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if got := activeDomain(repo); got != "home.example.org" {
-		t.Errorf("active domain = %q", got)
+	if d, apps := activePublic(repo); d != "home.example.org" || !slices.Equal(apps, []string{"nextcloud"}) {
+		t.Errorf("public = %q %v", d, apps)
 	}
 	vw, _ := readKV(filepath.Join(repo, "vaultwarden/.env"))
+	if vw["VW_DOMAIN"] != "https://192.168.1.10:9443" {
+		t.Errorf("Vaultwarden isn't public, yet VW_DOMAIN = %q", vw["VW_DOMAIN"])
+	}
+	// Vaultwarden made public too: its one canonical address becomes the public one.
+	c.PublicApps = []string{"vaultwarden", "nextcloud"}
+	if err := applyDomain(repo, c, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	vw, _ = readKV(filepath.Join(repo, "vaultwarden/.env"))
 	if vw["VW_DOMAIN"] != "https://home.example.org:9443" || vw["VW_ADMIN_TOKEN"] != "x" {
 		t.Errorf("vaultwarden/.env = %v", vw)
 	}
@@ -319,23 +371,43 @@ func TestApplyAndReconcileDomain(t *testing.T) {
 	if vw, _ = readKV(filepath.Join(repo, "vaultwarden/.env")); vw["VW_DOMAIN"] != "https://192.168.1.10:9443" {
 		t.Errorf("VW_DOMAIN not moved back to the IP: %q", vw["VW_DOMAIN"])
 	}
+
+	// A domain.caddy hsctl can't read (hand-edited, another version's format) goes too.
+	os.WriteFile(filepath.Join(repo, domainSites), []byte("import letsencrypt.caddy home.example.org\n"), 0644)
+	reconcileDomain(repo, io.Discard)
+	if fileExists(filepath.Join(repo, domainSites)) {
+		t.Error("reconcileDomain kept a domain.caddy it couldn't parse")
+	}
 }
 
-// TestGenerateUsesActiveDomain: a (re)generated vaultwarden/nextcloud .env follows the domain
-// Caddy serves, so `setup --force` can't point Vaultwarden back at the IP behind its back.
-func TestGenerateUsesActiveDomain(t *testing.T) {
-	repo := t.TempDir()
-	for _, d := range []string{"caddy", "vaultwarden", "nextcloud", "pihole"} {
-		os.MkdirAll(filepath.Join(repo, d), 0755)
-	}
-	c := Config{ServerIP: "192.168.1.10", TZ: "Etc/UTC", UIPort: 8088, PiholeDNSBind: "0.0.0.0", ActiveDomain: "home.example.org"}
-	if _, err := c.Generate(repo, false); err != nil {
-		t.Fatal(err)
-	}
-	vw, _ := readKV(filepath.Join(repo, "vaultwarden/.env"))
-	nc, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
-	if vw["VW_DOMAIN"] != "https://home.example.org:8443" || nc["NC_TRUSTED_DOMAINS"] != "192.168.1.10 home.example.org" {
-		t.Errorf("VW_DOMAIN=%q NC_TRUSTED_DOMAINS=%q", vw["VW_DOMAIN"], nc["NC_TRUSTED_DOMAINS"])
+// TestGenerateFollowsPublicApps: a (re)generated vaultwarden/nextcloud .env uses the public
+// domain for exactly the apps Caddy serves publicly, so `setup --force` can't point a public
+// Vaultwarden back at the IP behind its back — nor a local-only one at the domain.
+func TestGenerateFollowsPublicApps(t *testing.T) {
+	for _, tc := range []struct {
+		public     []string
+		vw, ncHost string
+	}{
+		{nil, "https://192.168.1.10:8443", "192.168.1.10"},
+		{[]string{"vaultwarden"}, "https://home.example.org:8443", "192.168.1.10"},
+		{[]string{"nextcloud"}, "https://192.168.1.10:8443", "192.168.1.10 home.example.org"},
+	} {
+		repo := t.TempDir()
+		for _, d := range []string{"caddy", "vaultwarden", "nextcloud", "pihole"} {
+			os.MkdirAll(filepath.Join(repo, d), 0755)
+		}
+		c := Config{ServerIP: "192.168.1.10", TZ: "Etc/UTC", UIPort: 8088, PiholeDNSBind: "0.0.0.0"}
+		if tc.public != nil {
+			c.ActiveDomain, c.ActivePublic = "home.example.org", tc.public
+		}
+		if _, err := c.Generate(repo, false); err != nil {
+			t.Fatal(err)
+		}
+		vw, _ := readKV(filepath.Join(repo, "vaultwarden/.env"))
+		nc, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
+		if vw["VW_DOMAIN"] != tc.vw || nc["NC_TRUSTED_DOMAINS"] != tc.ncHost {
+			t.Errorf("public %v: VW_DOMAIN=%q NC_TRUSTED_DOMAINS=%q", tc.public, vw["VW_DOMAIN"], nc["NC_TRUSTED_DOMAINS"])
+		}
 	}
 }
 

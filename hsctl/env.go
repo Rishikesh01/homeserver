@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // Secret is a human login surfaced after generation (to save into Vaultwarden).
@@ -30,7 +29,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	vwStored := escapeDollarsForCompose(argon2idPHC(vwToken))
 	if wrote, err := writeEnv("vaultwarden/.env", fmt.Sprintf(
 		"VW_DOMAIN=%s\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\n",
-		vaultURL(repo, c.Host()), vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
+		vaultURL(repo, boolStr(c.IsPublic("vaultwarden"), c.ActiveDomain, c.ServerIP)), vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
 		return nil, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Vaultwarden /admin token (SAVE — not recoverable):", vwToken})
@@ -42,7 +41,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 		"POSTGRES_DB=nextcloud\nPOSTGRES_USER=nextcloud\nPOSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n"+
 			"NC_ADMIN_USER=admin\nNC_ADMIN_PASSWORD=%s\nNC_TRUSTED_DOMAINS=%s\n"+
 			"NC_TRUSTED_PROXIES=172.16.0.0/12\n",
-		genPassword(32), genPassword(32), ncPw, strings.TrimSpace(c.ServerIP+" "+c.ActiveDomain))); err != nil {
+		genPassword(32), genPassword(32), ncPw, c.ServerIP+boolStr(c.IsPublic("nextcloud"), " "+c.ActiveDomain, ""))); err != nil {
 		return nil, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Nextcloud (user 'admin'):", ncPw})

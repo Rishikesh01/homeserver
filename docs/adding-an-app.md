@@ -46,15 +46,18 @@ and an HTTPS site on a new port that imports it, following the pattern of the ex
 }
 ```
 
-Give it a twin in [`caddy/letsencrypt.caddy`](../caddy/letsencrypt.caddy) too, so it's also
-served on your own domain if you use one ([letsencrypt.md](letsencrypt.md)) — same port,
-same snippet, the Let's Encrypt certificate (`go test` checks the two files agree):
+Give it a public site in [`caddy/letsencrypt.caddy`](../caddy/letsencrypt.caddy) too, so it
+can be made reachable from outside ([letsencrypt.md](letsencrypt.md)) — a `public_<dir>`
+snippet: same port, same snippet, the Let's Encrypt certificate (`go test` checks the two
+files agree). It's only served if someone adds the app to `PUBLIC_APPS`:
 
 ```caddyfile
-{args[0]}:{$MYAPP_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import myapp
+(public_myapp) {
+	{args[0]}:{$MYAPP_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import myapp
+	}
 }
 ```
 

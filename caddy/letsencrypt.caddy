@@ -1,52 +1,60 @@
-# Your own domain's sites — the same apps as the Caddyfile, on the same ports, but at
-# https://<your domain>:<port> with a Let's Encrypt certificate instead of the private CA,
-# so devices trust them without installing root.crt.
+# Public sites: an app reachable from OUTSIDE your home network at https://<your domain>:<port>,
+# with a Let's Encrypt certificate. The local sites in the Caddyfile (server IP + Caddy's own
+# CA) are untouched — at home, everything keeps working exactly as before.
 #
-# Don't import this by hand: `hsctl cert` writes domain.caddy (`import letsencrypt.caddy
-# <domain>`) once the certificate exists, so {args[0]} below is your domain. The certificate
-# is <repo>/letsencrypt/certificates/<domain>.crt/.key, mounted read-only at /letsencrypt;
-# hsctl renews it and reloads Caddy. See docs/letsencrypt.md.
+# One snippet per app, named public_<app dir>, taking your domain as {args[0]}. Nothing here is
+# served by itself: `hsctl cert` writes domain.caddy — `import public_vaultwarden <domain>` for
+# each app you chose to make public — once the certificate exists. The certificate is
+# <repo>/letsencrypt/certificates/<domain>.crt/.key, mounted read-only at /letsencrypt; hsctl
+# renews it and reloads Caddy. See docs/letsencrypt.md.
 #
-# Adding an app? Give it a block here too, mirroring its {$SERVER_IP} block in the Caddyfile.
+# The dashboard has no public site on purpose: it's a root shell on the server.
+# Adding an app? Give it a public_<dir> snippet too, mirroring its site in the Caddyfile.
 
-{args[0]}:{$VAULT_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import vault
+(public_vaultwarden) {
+	{args[0]}:{$VAULT_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import vault
+	}
 }
 
-{args[0]}:{$CLOUD_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import cloud
+(public_nextcloud) {
+	{args[0]}:{$CLOUD_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import cloud
+	}
 }
 
-{args[0]}:{$PIHOLE_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import pihole
+(public_pihole) {
+	{args[0]}:{$PIHOLE_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import pihole
+	}
 }
 
-{args[0]}:{$HOME_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import home
+(public_stirling) {
+	{args[0]}:{$STIRLING_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import stirling
+	}
 }
 
-{args[0]}:{$STIRLING_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import stirling
+(public_it-tools) {
+	{args[0]}:{$ITTOOLS_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import ittools
+	}
 }
 
-{args[0]}:{$ITTOOLS_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import ittools
-}
-
-{args[0]}:{$IMAGETOOLS_HTTPS} {
-	bind 0.0.0.0
-	tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
-	import imagetools
+(public_imagetools) {
+	{args[0]}:{$IMAGETOOLS_HTTPS} {
+		bind 0.0.0.0
+		tls /letsencrypt/certificates/{args[0]}.crt /letsencrypt/certificates/{args[0]}.key
+		import imagetools
+	}
 }

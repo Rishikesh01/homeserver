@@ -1,8 +1,9 @@
 # letsencrypt/
 
-Your own domain's Let's Encrypt certificate lives here once you set one up with
-`hsctl cert` — see [docs/letsencrypt.md](../docs/letsencrypt.md). Nothing here is
-committed: everything but this README is git-ignored.
+The public Let's Encrypt certificate for your domain — used to reach chosen apps from
+outside your home network — lives here once you set it up with `hsctl cert`; see
+[docs/letsencrypt.md](../docs/letsencrypt.md). (At home, the apps keep using Caddy's own
+local certificates.) Nothing here is committed: everything but this README is git-ignored.
 
 | Path | What it is |
 |------|-----------|

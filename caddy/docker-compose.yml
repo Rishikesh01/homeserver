@@ -41,19 +41,19 @@ services:
       IMAGETOOLS_HTTPS: ${IMAGETOOLS_HTTPS:-8448}
     volumes:
       # The whole caddy/ dir, not just the Caddyfile: it imports letsencrypt.caddy, and
-      # domain.caddy appears here when `hsctl cert` switches your domain on (a directory
+      # domain.caddy appears here when `hsctl cert` switches public access on (a directory
       # mount sees new files, so a reload picks it up without recreating the container).
       - .:/etc/caddy:ro
       - caddy-data:/data       # issued certs + local CA root — back this up
       - caddy-config:/config
-      # Your domain's Let's Encrypt certificate (hsctl cert), read-only. An empty folder
-      # until you set a domain up.
+      # The public Let's Encrypt certificate (hsctl cert), read-only. An empty folder until
+      # you set public access up.
       - ../letsencrypt:/letsencrypt:ro
     networks:
       - edge
 
-  # Let's Encrypt client (lego, https://go-acme.github.io/lego) for your own domain — see
-  # docs/letsencrypt.md. Never started by `up`: it's a one-shot tool (the "cert" profile)
+  # Let's Encrypt client (lego, https://go-acme.github.io/lego) for public access from
+  # outside — see docs/letsencrypt.md. Never started by `up`: it's a one-shot tool (the "cert" profile)
   # that `hsctl cert issue` runs to get the certificate via the DNS-01 challenge, and the
   # dashboard re-runs twice a day to renew it. It writes to <repo>/letsencrypt as the
   # folder's owner (hsctl passes --user), so the files stay usable by your other services.

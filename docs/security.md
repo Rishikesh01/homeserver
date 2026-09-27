@@ -13,8 +13,9 @@ This stack stores your passwords and files, so treat the server like a safe.
 
 What this design assumes:
 
-- **The LAN is the trust boundary.** Nothing here is meant to face the public internet.
-  There is no remote access by design.
+- **The LAN is the trust boundary.** By default nothing faces the public internet. The one
+  exception is opt-in: [public access](letsencrypt.md) serves the apps *you pick* at your own
+  domain, with a Let's Encrypt certificate, through ports you forward — never the dashboard.
 - **Anyone with the disk has everything.** The apps store data unencrypted on disk, so
   full-disk encryption is the control that matters most against a stolen machine.
 - **The dashboard is a root shell.** `/admin/terminal` is a real PTY running as root under
@@ -33,9 +34,11 @@ browser on a trusted device, or someone with physical access to an unlocked, run
   — anyone who takes the drive can read your passwords and files. Use **full-disk encryption
   (LUKS)**: the easiest way is to tick **"Encrypt the new installation"** when installing
   Ubuntu. Without it, none of the rest matters if the machine is stolen.
-- **Keep it on your LAN only — do not expose it to the internet.** Don't port-forward any of
-  these ports on your router. The stack is designed for home-network access; if you need
-  it from outside, reach the LAN over a VPN rather than exposing any service directly.
+- **Expose as little as possible.** Out of the box, port-forward nothing. To reach an app
+  from outside, use [public access](letsencrypt.md) and forward **only that app's port**
+  (e.g. `8443` for Vaultwarden) — never `443` (the dashboard is a root shell) or `80`. Before
+  opening Vaultwarden, switch off its open signups and turn on two-step login. Want the whole
+  stack, dashboard included, from outside? Reach the LAN over a VPN instead.
 - **Firewall (optional but nice).** If you run `ufw`, allow only what's needed:
   ```bash
   sudo ufw allow 80,443,8443,8444,8445,8446,8447,8448,53/tcp && sudo ufw allow 53/udp
@@ -72,7 +75,7 @@ matters:
 | `backup.conf` | `0600` | backup destination + retention |
 | `.restic-password` | `0600` | **the backup encryption password** |
 | `.backup-env` | `0600` | cloud credentials for the off-site replica (S3 keys) |
-| `.acme-env` | `0600` | DNS API token for your domain's Let's Encrypt certificate (only if you use one) |
+| `.acme-env` | `0600` | DNS API token for the public (Let's Encrypt) certificate — only with public access |
 | `letsencrypt/` | `0700` dirs, `0600` keys | that certificate's private key + your Let's Encrypt account key |
 | `WELCOME.txt` | `0644` | the human-readable handout of the same logins |
 
@@ -88,11 +91,11 @@ Two things to act on:
 The **certificate authority's private key** lives in the `caddy-data` Docker volume. Anyone
 with it could impersonate your sites, so it is included in backups and shouldn't leak.
 
-If you use your own domain ([letsencrypt.md](letsencrypt.md)), `.acme-env` holds a DNS API
-token — the one secret here that reaches **outside** your LAN: whoever has it can change
-that zone's DNS. Scope it to DNS edit on that one zone, and revoke it at the provider if the
-box is ever lost. Getting and renewing the certificate needs **no inbound port** (it's
-proven over DNS), so a domain doesn't change the "don't port-forward" advice below.
+If you use [public access](letsencrypt.md), `.acme-env` holds a DNS API token — a secret
+that reaches **outside** your LAN: whoever has it can change that zone's DNS. Scope it to DNS
+edit on that one zone, and revoke it at the provider if the box is ever lost. Getting and
+renewing the certificate itself needs no open port (it's proven over DNS); only the apps you
+make public need theirs forwarded.
 
 ---
 
