@@ -72,7 +72,7 @@ Caddy stays the official image and only loads the files.
   https://192.168.1.10:8443                        https://vault.lab.example.com
           │                                                │
           │                                                │ 1. DNS query to Pi-hole at 10.8.0.1
-          │                                                │    vpn group  → 10.8.0.1
+          │                                                │    VPN client → 10.8.0.1
           │                                                │    any other  → NXDOMAIN
           │                                                │ 2. HTTPS through the WireGuard tunnel
           ▼                                                ▼
@@ -94,14 +94,15 @@ Caddy stays the official image and only loads the files.
   hsctl-certs.timer (daily)
           │
           ▼
-  hsctl certs renew
+  hsctl certs renew   (holds the reconcile lock)
           │ 1. docker compose run --rm lego … renew   (official goacme/lego image)
           │       │ 2. write _acme-challenge TXT ──► DNS provider (Cloudflare / DuckDNS / deSEC)
           │       │ 3. order *.lab.example.com   ──► Let's Encrypt
           │       │                                   checks the TXT over public DNS, issues
           │       └─ writes the files to the `acme` volume
           ▼
-  4. docker exec caddy caddy reload    Caddy reads the files. It never talks to the DNS
+  4. docker exec -w /etc/caddy caddy caddy reload --force
+                                       Caddy reads the files. It never talks to the DNS
                                        provider and never holds the DNS token.
 ```
 
@@ -118,14 +119,16 @@ Caddy stays the official image and only loads the files.
 ```
 
 There is no LAN on such a server, so "IP access without a VPN" would mean the public IP. That
-would expose the apps to the internet, so the IP sites move to the VPN address (or the
-provider's private network). This is [open question 3](#open-questions).
+would expose the apps to the internet. So on these servers `SERVER_IP` — the address the IP
+sites, their certificate and `default_sni` are built on — defaults to the VPN address instead of
+the autodetected public IP. The provider's private address is the alternative. This is
+[open question 3](#open-questions).
 
 ### Who can reach what
 
 | | Home server | Internet-facing server |
 |---|---|---|
-| IP sites (local CA) | LAN without VPN, and VPN | VPN, or the provider's private network if added to `ALLOW_SUBNETS` |
+| IP sites (local CA) | LAN without VPN, and VPN | VPN (or the provider's private network, if `SERVER_IP` is set to it) |
 | Domain sites (Let's Encrypt) | VPN only | VPN only |
 | Pi-hole DNS | LAN IP and VPN address | VPN address only |
 | Reachable from the internet | The VPN port (router forward) | The VPN port |
@@ -148,11 +151,14 @@ docker compose --profile certs run --rm lego \
   --domains '*.lab.example.com' [--email me@mydomain.com] [--server <staging URL>] \
   run                         # first issue
   # or: renew --no-random-sleep   (renews only when due; also follows Let's Encrypt's renewal hints)
+  # or: list                      (domains and expiry of the stored certificates)
 ```
 
 - **`--dns.resolvers` is required.** Pi-hole answers NXDOMAIN for the service names to anything
   that isn't a VPN client. lego's propagation check must use public resolvers, or our own rule
   could answer it.
+- **The email is optional.** Current lego releases accept no `--email` and only use a
+  placeholder as the local account folder name. The pinned version must be one of those.
 - **The token is only loaded by the lego service**, from its own credentials file (see
   [Configuration and secrets](#configuration-and-secrets)). It never enters Caddy's container.
 - **Where the files go.** lego writes the account and the certificate to a named volume, `acme`,
@@ -160,13 +166,17 @@ docker compose --profile certs run --rm lego \
   request a new certificate. A wildcard certificate is saved as `_.lab.example.com.crt` / `.key`.
 
 **Renewal.** A `hsctl-certs.timer` (daily, `RandomizedDelaySec`, `Persistent=true`) runs
-`hsctl certs renew` as a oneshot service:
+`hsctl certs renew` as a oneshot service, holding the
+[reconcile lock](#reconcile-one-writer-for-derived-state):
 
 1. `lego … renew --no-random-sleep`. lego's own random delay of up to 8 minutes isn't needed,
    because systemd already spreads the start time. Without it, "Renew now" in the dashboard
    doesn't hang for minutes.
-2. Then `caddy reload`. It's graceful, so reloading on every successful run is simpler than
-   working out whether the files changed.
+2. Then `docker exec -w /etc/caddy caddy caddy reload --force`.
+   - `--force` is required: the config text hasn't changed, and a plain reload of an unchanged
+     config is skipped, which would leave the old certificate in memory until it expires.
+   - `-w /etc/caddy` is required because the image's working directory is `/srv`, where there is
+     no Caddyfile.
 3. Then [reconcile](#reconcile-one-writer-for-derived-state).
 
 `hsctl install` writes the timer and its service the same way it writes the dashboard unit
@@ -207,6 +217,8 @@ caddy/conf/sites/custom/         user-owned and gitignored, for hand-added sites
   old file; a directory mount shows the new one.
 - **A subdirectory, not all of `caddy/`.** `caddy/.env` and the credentials file stay out of the
   container.
+- **Caddy no longer does ACME**, so the Caddyfile's global `email` option and the `ACME_EMAIL`
+  variable in Caddy's compose file go away.
 
 ```caddyfile
 # caddy/conf/Caddyfile (tracked) — one snippet per app
@@ -222,7 +234,7 @@ caddy/conf/sites/custom/         user-owned and gitignored, for hand-added sites
 {$SERVER_IP}:{$VAULT_HTTPS} {
 	bind 0.0.0.0
 	tls internal
-	@outside not remote_ip 10.8.0.0/24 192.168.1.0/24   # VPN + ALLOW_SUBNETS
+	@outside not remote_ip 10.8.0.0/24 192.168.1.0/24   # VPN_SUBNET + ALLOW_SUBNETS
 	handle @outside {
 		abort
 	}
@@ -234,8 +246,9 @@ caddy/conf/sites/custom/         user-owned and gitignored, for hand-added sites
 ```caddyfile
 # caddy/conf/sites/public.caddy — only once the certificate exists
 *.lab.example.com {
+	bind 0.0.0.0                                         # same bind as every other site
 	tls /acme/certificates/_.lab.example.com.crt /acme/certificates/_.lab.example.com.key
-	@outside not remote_ip 10.8.0.0/24                   # VPN only
+	@outside not remote_ip 10.8.0.0/24                   # VPN_SUBNET only
 	handle @outside {
 		abort
 	}
@@ -255,71 +268,97 @@ caddy/conf/sites/custom/         user-owned and gitignored, for hand-added sites
 }
 ```
 
-Rules for the allowlist and the ports:
+Rules for the sites, the allowlist and the published ports:
 
+- **Every site uses the same `bind`.** Sites on the same port with different binds make Caddy
+  build separate listeners on that port, which either fail to start or send connections to the
+  wrong one.
 - **List subnets explicitly.** Never use Caddy's `private_ranges` shortcut. It includes
   `172.16.0.0/12`, where Docker's own addresses live.
-- **Publish Caddy's ports on an explicit IPv4 address**: `"${CADDY_BIND}:443:443"`, following the
-  existing `PIHOLE_DNS_BIND` convention. Never use the bare `"443:443"`. The bare form also listens
-  on IPv6. With Docker's defaults, if the container has no IPv6, Docker relays IPv6 connections
-  and they arrive from a `172.x` address, which slips past an allowlist built on private ranges.
+- **Publish on explicit IPv4 addresses, never the bare `"443:443"`.**
+  - The bare form also listens on IPv6. With Docker's defaults, if the container has no IPv6,
+    Docker relays IPv6 connections, and they arrive from a `172.x` address.
+  - Compose can't loop over a list of addresses, so the published ports for Caddy and for
+    Pi-hole's DNS move out of the tracked compose files.
+  - Reconcile writes them, one entry per address, into a generated, gitignored
+    `docker-compose.override.yml` next to each app's compose file, which Compose loads
+    automatically. It recreates the container when the set changes. The addresses are listed
+    under [Configuration](#configuration-and-secrets).
 - **Requests from the server itself** can arrive from a Docker address and be refused at the HTTP
   layer. hsctl's own checks only need the TLS handshake, which still completes.
 
 ### Name resolution: Pi-hole, VPN clients only
 
-[Reconcile](#reconcile-one-writer-for-derived-state) configures Pi-hole through its API, using the
-admin password hsctl already generates:
+**How hsctl reaches Pi-hole.** Reconcile talks to Pi-hole's API at the container's address on the
+`homeserver-edge` network (the host can reach Docker bridge addresses directly), using the admin
+password hsctl already generates. The API stays unpublished, and Caddy's allowlist isn't
+involved.
 
-1. A group `homeserver-vpn` containing the VPN subnet as a client (`10.8.0.0/24`). That client is
-   **removed from the `Default` group**. Otherwise it would get both rules below, and which one
-   wins would be undefined.
-2. A regex denylist entry in `homeserver-vpn` that answers the service names with the server's
-   VPN address:
+**Preferred setup.** This applies if the sandbox confirms that Pi-hole applies its allow and
+deny rules before answering from its local records:
+
+1. `pihole/custom.list`, which is already mounted and already written by hsctl, gets one record per
+   service name: `10.8.0.1 vault.lab.example.com`, … (`VPN_ADDR`).
+2. In `Default`, a regex denylist entry answers those names with NXDOMAIN:
    ```
-   ^(home|vault|cloud|pihole|pdf|tools|image)\.lab\.example\.com$;reply=10.8.0.1
+   ^(home|vault|cloud|pihole|pdf|tools|image)\.lab\.example\.com$;reply=nxdomain
    ```
-3. The same regex in `Default` with `;reply=nxdomain`.
-4. Pi-hole's adlists also assigned to `homeserver-vpn`. Adlists belong to `Default` unless told
-   otherwise, so without this, VPN clients would lose ad-blocking. Because reconcile runs daily
-   and on every change, adlists the admin adds later are picked up too.
+3. A group `homeserver-vpn` gets the VPN subnet as a client. That client **stays in `Default`
+   too**. The group also gets the same regex as an **allowlist** entry. Allowlist entries beat
+   denylist entries, so VPN clients fall through to the local record, and everyone else gets
+   NXDOMAIN.
 
-The names come from the `services.json` keys plus `home`. Only the service names are covered, so a
-base domain that also holds real public records keeps working for everyone.
+Because VPN clients stay in `Default`, every adlist and every allow or deny entry the admin has,
+or adds later, applies to them unchanged. There's nothing to keep in sync.
 
-This **fails closed**. Pi-hole puts any client it doesn't recognise in `Default` — new LAN
-devices, IPv6 queries, Docker relay addresses — so they get NXDOMAIN. Only the VPN subnet gets an
-answer. Pi-hole's regex extensions (`;reply=<IP>`, `;reply=nxdomain`) and the `Default` group
-behaviour are documented upstream.
+**Fallback setup.** This applies if Pi-hole answers local records before applying rules:
 
-Requirements and consequences:
+- The VPN client sits **only** in `homeserver-vpn`.
+- That group gets the regex with `;reply=10.8.0.1`, and `Default` keeps `;reply=nxdomain`.
+- Reconcile mirrors everything else assigned to `Default`, adlists and domain entries alike,
+  into `homeserver-vpn` on every run, so VPN clients keep the admin's blocking rules.
 
+Either way:
+
+- **The names come from the `services.json` keys plus `home`.** Only the service names are
+  covered, so a base domain that also holds real public records keeps working for everyone.
+- **It fails closed.** Pi-hole puts any client it doesn't recognise in `Default` — new LAN
+  devices, IPv6 queries, Docker relay addresses — so they get NXDOMAIN. Pi-hole's regex extensions
+  (`;reply=…`) and the `Default` group behaviour are documented upstream.
 - **Pi-hole must see each VPN client's real address.** WireGuard on the host preserves it, and
   Docker's port forwarding preserves it over IPv4. A VPN that rewrites client addresses to its
   own would make every VPN client look like one address.
 - **The existing `FTLCONF_dns_listeningMode: ALL` is needed,** because queries arrive from a
   subnet that isn't the container's own.
-- **VPN clients use the server's VPN address as their DNS server.** With step 4, that also gives
-  them ad-blocking.
+- **Pi-hole must listen on `VPN_ADDR`.** The published DNS addresses include it whenever domain
+  access is on (see [Configuration](#configuration-and-secrets)). Today's rule alone isn't
+  enough: when something already holds port 53 on the host, it binds the LAN IP only.
+- **VPN clients use `VPN_ADDR` as their DNS server,** which also gives them ad-blocking.
 - **Pi-hole is required while domain access is on.** This is a rule in `Config.Validate()` (see
   [Reconcile](#reconcile-one-writer-for-derived-state)), so it holds for every path that changes
   `DISABLED_APPS`: the Apps page, `hsctl apps`, the wizard and `setup --disable-apps`. Pi-hole
   restarts and updates briefly interrupt DNS for VPN clients, as they already do for the LAN.
-- **DNS is not what keeps the LAN out; the Caddy allowlist is.** If the Pi-hole rules are edited by
-  hand and LAN devices start resolving the names, they still can't connect without the VPN.
-- **DuckDNS names resolve publicly** whatever Pi-hole does. Point the DuckDNS record at the VPN
-  address so the public answer leads nowhere.
+- **DNS is not what keeps the LAN out; the Caddy allowlist is.** If the Pi-hole rules go wrong
+  and LAN devices start resolving the names, they still can't connect without the VPN.
+- **DuckDNS names resolve publicly** whatever Pi-hole does. Point the DuckDNS record at
+  `VPN_ADDR` so the public answer leads nowhere.
 
 ### The VPN
 
-Which VPN is [open question 2](#open-questions). The certificate work only needs:
+Which VPN is [open question 2](#open-questions). The certificate work needs two settings, and they
+are deliberately separate:
 
-- the server's VPN address with its prefix (`VPN_ADDR=10.8.0.1/24`);
-- clients configured to use that address as their DNS server;
-- client addresses not rewritten (no masquerading);
-- one UDP port forwarded on the router (home) or open in the provider's firewall (internet-facing).
+- **`VPN_ADDR`**: the address VPN clients use to reach the server. Pi-hole's answer for the names
+  and its DNS listening address both come from it. With WireGuard on the server it's the `wg0`
+  address. With a VPN that ends on the router, it's the server's LAN IP.
+- **`VPN_SUBNET`**: the clients' address range, which the allowlist and the Pi-hole group use.
+  It can't be derived from `VPN_ADDR`'s prefix. Tailscale gives the server a `/32` out of
+  `100.64.0.0/10`, and a router VPN gives the server no VPN address at all.
 
-Peers, QR codes and the rest of VPN management are a separate feature.
+Beyond those, clients must use `VPN_ADDR` as their DNS server, and their addresses must not be
+rewritten (no masquerading). One UDP port is forwarded on the router (home) or opened in the
+provider's firewall (internet-facing). Peers, QR codes and the rest of VPN management are a
+separate feature.
 
 ### Apps that need to know the domain
 
@@ -393,16 +432,29 @@ would accept a certificate it signs for any site. Once every device uses the dom
 
 | Key | Meaning | Default |
 |---|---|---|
-| `DEPLOYMENT` | `home` or `internet` | `home` |
+| `DEPLOYMENT` | `home` or `internet` | `home`; `install` asks when the detected address is public |
+| `SERVER_IP` | *Existing key.* The address the IP sites, their certificate and `default_sni` use | the detected LAN IP (home), `VPN_ADDR` (internet) |
 | `TLS_LOCAL` | Serve the IP sites with the local CA | `on` |
 | `ACME_BASE_DOMAIN` | e.g. `lab.example.com`; empty means Let's Encrypt is off | empty |
 | `ACME_DNS_PROVIDER` | `cloudflare`, `duckdns` or `desec` | — |
-| `ACME_EMAIL` | *Existing key.* Optional contact. Must not be at `example.com`, which Let's Encrypt rejects. A migration blanks a saved `you@example.com` | blank (was `you@example.com`) |
+| `ACME_EMAIL` | *Existing key*, now only passed to lego. Optional; must not be at `example.com`, which Let's Encrypt rejects | blank — see below |
 | `ACME_STAGING` | Use Let's Encrypt's staging server | `off` |
-| `VPN_ADDR` | The server's VPN address with prefix, e.g. `10.8.0.1/24` (the form WireGuard's `Address` uses); the VPN subnet follows from it | — |
-| `ALLOW_SUBNETS` | Subnets besides the VPN allowed on the IP sites: the LAN, a provider private network, Tailscale's `100.64.0.0/10`, … | the LAN subnet (home), empty (internet) |
-| `PIHOLE_DNS_BIND` | *Existing key.* `defaultDNSBind` returns the VPN address on internet-facing servers | today's rule (home) |
-| `CADDY_BIND` | IPv4 address Caddy's ports are published on | `0.0.0.0` (home), the VPN address (internet) |
+| `VPN_ADDR` | The address VPN clients reach the server on ([The VPN](#the-vpn)) | the `wg0` address, if present |
+| `VPN_SUBNET` | The VPN clients' address range | — |
+| `ALLOW_SUBNETS` | Subnets besides `VPN_SUBNET` allowed on the IP sites: the LAN, a provider private network, … | the LAN subnet (home), empty (internet) |
+| `CADDY_BIND` | *Override only.* IPv4 addresses Caddy is published on | derived: `0.0.0.0` (home); `SERVER_IP` and `VPN_ADDR` (internet) |
+| `PIHOLE_DNS_BIND` | *Existing key, becomes override only.* IPv4 addresses Pi-hole's DNS is published on | derived: today's rule (`0.0.0.0`, or the LAN IP when port 53 is taken), plus `VPN_ADDR` when domain access is on and the LAN IP was chosen; `VPN_ADDR` only (internet) |
+
+**The bind settings are derived at reconcile time** from `DEPLOYMENT`, `SERVER_IP`, `VPN_ADDR`
+and the port-53 check. `setup.conf` only stores a value when the admin overrides it. That way,
+switching an existing install to `internet` or turning on domain access actually changes where
+things listen. A stored copy of an old default would otherwise keep Pi-hole open on the public
+IP.
+
+**`ACME_EMAIL` moves out of Caddy entirely.** Caddy no longer does ACME, so it leaves
+`caddyEnv()`, the Caddyfile and Caddy's compose file. Its default in `Defaults()` becomes blank,
+so `you@example.com` can't come back from any source, and a migration blanks a saved
+`you@example.com`.
 
 **The DNS token** lives in its own credentials file, `caddy/.acme-env`, like backup's
 `.backup-env`:
@@ -410,10 +462,12 @@ would accept a certificate it signs for any site. Once every device uses the dom
 - **Format:** provider variable names as lego expects them (`CF_DNS_API_TOKEN=…`,
   `DUCKDNS_TOKEN=…` or `DESEC_TOKEN=…`).
 - **Who loads it:** only the lego service, via `env_file` with `required: false`. Caddy never does.
-- **Permissions:** `0600` and gitignored; hsctl writes it with `writeFile0600`.
+- **Permissions:** `0600`; hsctl writes it with `writeFile0600`.
 - **Not touched by `Generate`,** so `setup --force` can't wipe it.
+- **Listed in `.gitignore` and `.dockerignore`.** `make sandbox` copies the repo into an image
+  (`COPY . /repo`), and today's `.dockerignore` only excludes `.env` files, so without this the
+  token would land in an image layer.
 - **Lifecycle:** added to the config files a backup includes and to the files `uninstall` removes.
-  The sandbox deletes it.
 - **Masked** in `hsctl secrets show`, the dashboard and the logs.
 
 A provider registry in Go (key, display name, lego `--dns` name, credential variable, help link)
@@ -425,7 +479,8 @@ Everything derived from `setup.conf` and `services.json` is written by one idemp
 `reconcile`, and by nothing else:
 
 - the site files;
-- the Pi-hole group, rules and adlist assignments;
+- the published-ports overrides;
+- the Pi-hole records, groups and rules;
 - Nextcloud's trusted domain;
 - Vaultwarden's `DOMAIN` (per [open question 4](#open-questions));
 - the dashboard's allowed origins.
@@ -440,21 +495,40 @@ Callers:
 "Enable Let's Encrypt" is just "save the config, then reconcile", and so is "disable". So generated
 state can't drift from its inputs, whichever path changed them.
 
-1. **`Config.Validate()`**, also run by `Config.Save`. Its cross-field rules:
-   - the base domain is a real hostname (not an IP, not a wildcard);
-   - the provider is known and its credentials file is present;
-   - the email, if given, is valid and isn't at `example.com`;
-   - `VPN_ADDR` is set;
-   - Pi-hole isn't in `DISABLED_APPS` while domain access is on.
-2. **Certificate.** If `ACME_BASE_DOMAIN` is set and the `acme` volume has no valid certificate for
-   `*.<base>`, run `lego … run`. Otherwise do nothing; renewal is the timer's job. That way a
-   re-apply (new token, wizard retry) doesn't order a duplicate certificate. If issuance fails,
-   stop and report; Caddy hasn't been touched.
-3. **Render the site files**, writing only those whose content changed (atomically, with
-   `writeFileAtomic`).
-4. **If a file changed, run `caddy reload`.** A failed reload leaves Caddy on its old config. So on
-   failure reconcile puts the previous files back; otherwise the bad files would stop Caddy at its
-   next restart.
+**Reconcile and `certs renew` hold one lock file**, so the CLI, the dashboard and the timer never
+run them at the same time. Two concurrent lego runs would order duplicate certificates, and with
+DuckDNS they'd overwrite each other's single verification record.
+
+1. **`Config.Validate()`**, also run by `Config.Save`.
+   - **When `ACME_BASE_DOMAIN` is set** (otherwise these rules don't apply):
+     - the base domain is a real hostname (not an IP, not a wildcard);
+     - the provider is known and its credentials file is present;
+     - the email, if given, is valid and isn't at `example.com`;
+     - `VPN_ADDR` and `VPN_SUBNET` are set;
+     - Pi-hole isn't in `DISABLED_APPS`.
+   - Installs without Let's Encrypt validate exactly as today.
+2. **Certificate.** This step only runs for callers that can wait: CLI commands, the wizard's job
+   and the timer. Dashboard toggles skip it and the timer catches up. When `ACME_BASE_DOMAIN` is
+   set:
+   - **Checking for a valid certificate.** `lego list` runs through Docker like every lego call,
+     so no root access to the volume is needed. A certificate counts as valid only if it covers
+     `*.<base>`, isn't due for renewal, and came from the configured CA. lego stores staging and
+     production certificates under the same name, so the state file records which CA issued it.
+   - **Ordering.** If there's no valid certificate, run `lego … run`, then `caddy reload --force`.
+     If hsctl can't tell — Docker isn't answering, say — it orders nothing; a duplicate order is
+     worse than waiting a day.
+   - **Failure doesn't stop reconcile.** It's recorded, and the remaining steps still run. Only
+     `public.caddy` is held back until a certificate exists.
+3. **Render the site files.** If any changed:
+   - validate the new set in a throwaway container of the Caddy image (`docker run --rm … caddy
+     validate`). This is rare, so the container start is cheap. If they're invalid, keep the old
+     files and report.
+   - Otherwise swap them in atomically (`writeFileAtomic`). If Caddy is running, `reload --force`;
+     if it isn't, they load at its next start.
+   - Validating before writing, rather than rolling back after a failed reload, keeps "Caddy
+     isn't running" apart from "the config is bad".
+4. **Render the published-ports overrides.** If an app's set of addresses changed, recreate that
+   container.
 5. **Pi-hole, Nextcloud and Vaultwarden** are independent: they run concurrently, and each only
    acts when its state differs.
 6. **Record the results** in the state file ([Status and monitoring](#status-and-monitoring)).
@@ -465,7 +539,7 @@ state can't drift from its inputs, whichever path changed them.
 
 ```bash
 hsctl setup --base-domain lab.example.com --dns-provider cloudflare \
-            --dns-token-file ~/cf.token --vpn-addr 10.8.0.1/24 \
+            --dns-token-file ~/cf.token --vpn-addr 10.8.0.1 --vpn-subnet 10.8.0.0/24 \
             [--acme-email me@mydomain.com] [--acme-staging] [--deployment internet]
 hsctl up
 ```
@@ -474,9 +548,20 @@ hsctl up
   show up in `ps` output and shell history.
 - **Interactive `hsctl setup` asks one extra question:** "Use your own domain with Let's Encrypt?
   [y/N]". The token is read without echo.
-- **`sudo hsctl install` still brings up local HTTPS only.** On an internet-facing server it opens
-  nothing to the internet; the admin reaches the wizard through an SSH tunnel
-  (`ssh -L 8443:127.0.0.1:443 you@host`).
+
+**Install on an internet-facing server**
+
+1. Run `sudo hsctl install --deployment internet`. Without the flag, `install` stops and asks for
+   it when the detected address is public, rather than defaulting to `home`.
+2. In that mode `install` publishes nothing at all. Caddy waits for the VPN, because the address
+   it publishes on doesn't exist yet.
+3. The admin reaches the wizard through an SSH tunnel straight to the dashboard, which already
+   listens on loopback:
+   ```bash
+   ssh -L 8088:127.0.0.1:<UI_PORT> you@host
+   ```
+   then opens `http://localhost:8088`. The SSH tunnel provides the encryption, and neither Caddy
+   nor its allowlist is involved.
 
 **After setup** — a new `hsctl certs` group:
 
@@ -495,9 +580,11 @@ hsctl get-ca                        unchanged
 **First-run wizard**
 
 - **Step 1** gets a collapsed "Use your own domain (optional)" section: base domain, provider,
-  token (write-only), optional email, staging, and the VPN address if it can't be detected.
-- **Step 3** starts the lego run alongside "Start everything", because lego doesn't depend on the
-  apps. Only the site write and reload wait for both. The step then shows the certificate result.
+  token (write-only), optional email, staging, and the VPN address and subnet if they can't be
+  detected.
+- **Step 3** is "Start everything", which runs `hsctl up`. Its reconcile requests the certificate
+  under the lock, in the same process that starts the apps, so the certificate and the apps come
+  up in one job. The step then shows the certificate result.
 - **Step 4 adapts.** When the certificate was issued, it shows the domain URLs ("nothing to
   install on VPN devices"). The `root.crt` download stays available for the IP route.
 - **The wizard never blocks on Let's Encrypt.** A failure is reported and fixed later from
@@ -520,15 +607,14 @@ hsctl get-ca                        unchanged
 - **A banner on the admin page** for: certificate expiring within 14 days, last renewal failed, or
   an exposure problem.
 - **Long-running work uses one job runner** built on `runHsctl`. It replaces the two hand-written
-  copies today (`setupRunStatus`, `restoreStatus`), and the certificate step joins the existing
-  setup job. Applying changes reloads Caddy, which fronts the dashboard, so the page polls the job
-  and survives the drop.
+  copies today (`setupRunStatus`, `restoreStatus`). Applying changes reloads Caddy, which fronts
+  the dashboard, so the page polls the job and survives the drop.
 
 ## Status and monitoring
 
 - **A small state file, `caddy/.certs-state.json`,** written by reconcile, `certs renew` and the
   status checks. It holds:
-  - the certificate's issuer and expiry;
+  - the certificate's issuer, issuing CA (staging or production) and expiry;
   - the last lego run (time, exit status, error tail);
   - the last check results.
 - **The admin banner only reads that file,** the way the backup freshness tile reads
@@ -536,9 +622,9 @@ hsctl get-ca                        unchanged
 - **`hsctl certs` and the Certificates page show the last result.** "Check again" runs the live
   checks concurrently under one deadline, with a single Pi-hole API session, then caches the
   result, as the Updates page does. The checks:
-  - **the TLS probe:** a handshake to the VPN address with `ServerName=home.<base>`, verified
-    against the system roots;
-  - **the Pi-hole rules:** present, and the adlist assignment as reconcile left it;
+  - **the TLS probe:** a handshake to `VPN_ADDR` with `ServerName=home.<base>`, verified against
+    the system roots;
+  - **the Pi-hole records and rules:** present, as reconcile left them;
   - **public DNS:** NXDOMAIN for the service names (DuckDNS excepted);
   - **the exposure self-check:** every listening socket on a non-private address, IPv4 and IPv6;
     only the VPN port is allowed.
@@ -548,13 +634,13 @@ hsctl get-ca                        unchanged
 | Risk | Mitigation |
 |---|---|
 | **The DNS token can rewrite the whole zone**, not just the homeserver's names, and it's in every backup, including the off-site copy. | Use a domain dedicated to the homeserver, or point `_acme-challenge.<base>` at a throwaway zone with a CNAME (lego follows CNAMEs by default). Scope tokens: Cloudflare `DNS:Edit` + `Zone:Read` on one zone; deSEC token policies. `uninstall` reminds the user to revoke the token at the provider; deleting the file doesn't revoke it. |
-| **Exposure is one misconfiguration away**: IPv6 relay addresses slipping past the allowlist, and Docker-published ports bypassing ufw. | The publishing and allowlist rules in [Caddy](#caddy-local-sites-and-domain-sites), plus the exposure self-check. Don't rely on ufw. |
+| **Exposure is one misconfiguration away**: IPv6 relay addresses slipping past the allowlist, Docker-published ports bypassing ufw, and a stale bind value left in `setup.conf`. | The publishing and allowlist rules in [Caddy](#caddy-local-sites-and-domain-sites), the derived bind settings, and the exposure self-check. Don't rely on ufw. |
 | **What sits behind a leak.** The dashboard is a root shell behind one password with no login throttling (`handleLogin` in `hsctl/ui.go`). Its admin forms have no CSRF token and rely on `SameSite=Lax`, which treats sibling subdomains (and today, sibling ports on the same IP) as the same site. | Add login throttling. Check `Origin` on every admin POST using the shared origins helper ([Apps](#apps-that-need-to-know-the-domain)). |
 | **The VPN becomes the perimeter.** A lost phone with a WireGuard config is "inside". | One VPN identity per device, with one-click revoke. Vaultwarden's own 2FA still applies. |
 | **The local CA is unrestricted and long-lived.** | The documented opt-out path ([Local certificates](#local-certificates)). |
 | **Hiding the names is only partial**: the certificate logs show `*.<base>`, DuckDNS names resolve publicly, and an off-VPN device that tries a name leaks the lookup. | Low risk; the allowlist is the real control. |
 | **The lego image joins the chain of trust.** | It's the upstream project's official image, pinned, and checked by `hsctl images` like every other image. |
-| **The sandbox restores the real config.** | The sandbox deletes `caddy/.acme-env` and clears `ACME_BASE_DOMAIN`, so it can't use the real token or order certificates. |
+| **The sandbox starts from the real repo and config.** | `.dockerignore` keeps the credentials file out of the sandbox image, and the sandbox clears `ACME_BASE_DOMAIN`, so it can't use the real token or order certificates. |
 
 One improvement comes for free: today the dashboard's login cookie is sent to every app on the
 same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to `vault.<base>`.
@@ -579,14 +665,17 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
 - **Boot order.** On an internet-facing server, Caddy and Pi-hole publish on the VPN address. If
   the VPN interface isn't up when Docker starts them, they don't start. Fix it with a systemd
   ordering rule for Docker after the VPN, or `net.ipv4.ip_nonlocal_bind=1`.
-- **A Caddy config error takes everything down**, the dashboard included. Reconcile's reload
-  fallback keeps bad files off disk. The SSH escape hatch is `hsctl certs public disable`.
+- **A Caddy config error takes everything down**, the dashboard included. Reconcile validates
+  before writing, so bad files never reach Caddy. The SSH escape hatch is
+  `hsctl certs public disable`.
 - **Two addresses per service can confuse people.** The Bitwarden and Nextcloud apps store one
   server address, and switching means logging in again. The onboarding guide says: the domain on
   the VPN, the IP address as the fallback.
 - **Rate limits.** Let's Encrypt allows 5 identical certificates per week. The protections:
   - the staging toggle;
-  - reconcile only ordering when no valid certificate exists;
+  - the reconcile lock;
+  - ordering only when `lego list` shows no valid certificate from the configured CA, and never
+    when hsctl can't tell;
   - the sandbox guard;
   - restores that keep the `acme` volume.
 - **Backups** gain the `acme` volume (automatic), the credentials file and, if the VPN is bundled,
@@ -606,9 +695,12 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
   - **A layout version** in the Caddyfile that hsctl checks before writing anything.
   - **An ordered list of migrations keyed by that version.** The existing
     `migrateSharedNetworkEnv` becomes the first. Later ones:
-    - moving the Caddyfile into `caddy/conf/` (recreating Caddy once, for the new mount);
+    - moving the Caddyfile into `caddy/conf/` and the published ports into the generated
+      overrides (recreating Caddy and Pi-hole once);
     - splitting out `local.caddy`;
-    - blanking a saved `ACME_EMAIL=you@example.com`.
+    - removing `ACME_EMAIL` from Caddy's files and blanking a saved `you@example.com`;
+    - dropping saved `PIHOLE_DNS_BIND` values that equal the old default, so the bind settings
+      become derived.
   - **An `hsctl upgrade` command** that moves the binary and the checkout to the same release,
     runs the pending migrations and reconciles. It handles rollback too.
 - **Hand-edited Caddyfiles.** `docs/adding-an-app.md` tells people to edit the tracked Caddyfile,
@@ -634,25 +726,28 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
 
 ## Testing
 
-- **Unit tests** (no Docker): config round-trip and `Config.Validate()` rules, the provider
-  registry, golden files for each rendering mode (local only, local + public, public only), form
-  validation, Pi-hole rule generation, the origins helper, token masking.
+- **Unit tests** (no Docker):
+  - config round-trip, and the `Config.Validate()` rules with Let's Encrypt on and off;
+  - the derived bind settings for each `DEPLOYMENT`;
+  - the provider registry;
+  - golden files for each rendering mode (local only, local + public, public only), including the
+    published-ports overrides;
+  - form validation;
+  - Pi-hole record and rule generation;
+  - the origins helper;
+  - token masking.
 - **CI**: `caddy validate` on every rendered mode with the official Caddy image, and a throwaway
   self-signed certificate in place of the Let's Encrypt one.
 - **Sandbox** (forced to local certificates by default). Things to verify before building on them:
-  - **Pi-hole 2026.07:** it applies the per-group `;reply=<IP>` and `;reply=nxdomain` rules as
-    described, and AAAA queries for the names get an empty answer rather than an address.
-  - **A Pi-hole setup without adlist syncing:**
-    - keep the VPN client in `Default`;
-    - put the names in `custom.list`;
-    - add a group-scoped *allowlist* entry for `homeserver-vpn` that overrides the `Default`
-      NXDOMAIN rule.
-
-    If Pi-hole evaluates the rules before its local records, this works with nothing to re-sync.
+  - **Which Pi-hole setup to use.** Check whether Pi-hole 2026.07 applies a group-scoped allowlist
+    entry and a `Default` denylist regex before answering from `custom.list`. That decides
+    between the [preferred and fallback setups](#name-resolution-pi-hole-vpn-clients-only). In
+    both, AAAA queries for the names should get an empty answer rather than an address.
   - **Vaultwarden with `DOMAIN` unset:** attachments work over both routes, and the apps don't
     switch to the `/api/config` URLs.
-  - **Caddy reload:** `caddy reload` picks up a renewed certificate file, and a failed reload leaves
-    the old config running.
+  - **Caddy reload:** `docker exec -w /etc/caddy caddy caddy reload --force` picks up a renewed
+    certificate file.
+  - **lego:** the pinned version accepts an empty `--email`.
   - **Sandbox ports:** the allowlist doesn't block the sandbox's own forwarded ports.
   - **IPv6:** nothing listens on IPv6 after the publishing change.
 - **End to end without the internet:** Pebble (Let's Encrypt's test CA) and lego's `exec` DNS
@@ -663,8 +758,8 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
 
 | Phase | What ships | Visible change |
 |---|---|---|
-| 0. Groundwork | The `caddy/conf/` layout with snippets and a generated `local.caddy` (JSON-equal to today), the layout version and ordered migrations, `hsctl upgrade`, reconcile (local sites only at first), explicit IPv4 publishing, the exposure self-check, login throttling, the shared origins helper and admin-POST `Origin` check, the shared job runner | None |
-| 1. Access control | `DEPLOYMENT` profiles, `ALLOW_SUBNETS` and the allowlist (log-only at first), the bind defaults for internet-facing servers, a safe `install` on internet-facing servers, `updates` targets from compose pins | Internet-facing servers supported |
+| 0. Groundwork | The `caddy/conf/` layout with snippets and a generated `local.caddy` (JSON-equal to today), the layout version and ordered migrations, `hsctl upgrade`, reconcile and its lock (local sites only at first), the published-ports overrides (explicit IPv4), the exposure self-check, login throttling, the shared origins helper and admin-POST `Origin` check, the shared job runner | None |
+| 1. Access control | `DEPLOYMENT` profiles with derived bind settings, `ALLOW_SUBNETS` and the allowlist (log-only at first), the internet-facing `install` path, `updates` targets from compose pins | Internet-facing servers supported |
 | 2. Let's Encrypt (CLI) | Config keys and `Config.Validate()`, the provider registry and credentials file, the lego service + `hsctl-certs.timer`, `public.caddy`, the Pi-hole VPN-only rules, the Nextcloud / Vaultwarden domain changes, `hsctl setup` flags, `hsctl certs`, the state file, the sandbox guard, docs | Domain access from the CLI |
 | 3. Dashboard | Wizard section, Admin → Certificates, Command Center cards, banners | Domain access from the UI |
 | 4. VPN and opt-out | Bundled VPN (if chosen), the local-certificate opt-out | — |
@@ -674,8 +769,8 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
 | # | Question | Recommendation |
 |---|---|---|
 | 1 | How hsctl runs ACME: the official lego **container**, or lego compiled into hsctl as a **library**? | The container: less code, and lego updates arrive through `hsctl updates` instead of waiting for an hsctl release. |
-| 2 | Which VPN: WireGuard bundled and managed by hsctl (peers, QR codes in the dashboard), or bring-your-own (Tailscale, NetBird, the router's VPN)? | Bundled WireGuard: self-hosted, needs one forwarded port, and doesn't answer unauthenticated packets, so scanners can't see it. The certificate work doesn't depend on the answer. |
-| 3 | On internet-facing servers, where do the IP sites listen? | The VPN address, or the provider's private network via `ALLOW_SUBNETS`; never the public IP. |
+| 2 | Which VPN: WireGuard bundled and managed by hsctl (peers, QR codes in the dashboard), or bring-your-own (Tailscale, NetBird, the router's VPN)? | Bundled WireGuard: self-hosted, needs one forwarded port, and doesn't answer unauthenticated packets, so scanners can't see it. The certificate work only needs `VPN_ADDR` and `VPN_SUBNET`, so it doesn't depend on the answer. |
+| 3 | On internet-facing servers, which address do the IP sites use (`SERVER_IP`)? | The VPN address by default, or the provider's private address; never the public IP. |
 | 4 | Vaultwarden `DOMAIN`: the IP URL, the domain URL, or unset? | Test "unset" in the sandbox first. If it works, attachments work over both routes. |
 | 5 | The base domain (e.g. `lab.example.com`), and whether `home` is the right name for the dashboard. | A dedicated subdomain as the base, so the token and the Pi-hole rules never touch other records. |
 | 6 | The local-certificate opt-out: "turning off doesn't delete; purge is separate, with a typed confirmation". | As proposed. |
@@ -691,6 +786,6 @@ same IP, because cookies ignore ports. A cookie for `home.<base>` isn't sent to 
 | A community Caddy image with plugins | A stranger's build in front of the password manager, and most bundle only Cloudflare. |
 | `caddy add-package` | Depends on caddyserver.com's build service, and the downloaded binary is lost whenever the container is recreated. |
 | Switching to Traefik (DNS providers built in) | Traefik has no built-in local certificate authority, which decision 2 requires, and the whole proxy layer would need rewriting. |
-| A separate CoreDNS container for the VPN names | Superseded by decision 10: Pi-hole's per-group rules do the same with one less container. |
+| A separate CoreDNS container for the VPN names | Superseded by decision 10: Pi-hole does the same with one less container. |
 | Public DNS records pointing at the VPN address | Simple, but the names would resolve for everyone. Conflicts with decision 4. |
-| One static Pi-hole record for everyone, with the Caddy allowlist as the only control | Removes the per-group rules, but the names would resolve on the LAN too. Conflicts with decision 4. |
+| One static Pi-hole record for everyone, with the Caddy allowlist as the only control | No per-client rules, but the names would resolve on the LAN too. Conflicts with decision 4. |
