@@ -111,3 +111,21 @@ func TestCleanMountTarget(t *testing.T) {
 		}
 	}
 }
+
+// TestEjectableMount: only data-disk mountpoints get an Eject button — never the system's own.
+func TestEjectableMount(t *testing.T) {
+	cases := []struct {
+		mp   string
+		want bool
+	}{
+		{"/mnt", true}, {"/mnt/backup", true}, {"/media/alice/usb", true}, {"/run/media/alice/usb", true},
+		{"/", false}, {"/boot/efi", false}, {"/home", false}, {"/mnt/", false}, {"/mntx", false}, {"/media/", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mp, func(t *testing.T) {
+			if got := ejectableMount(tc.mp); got != tc.want {
+				t.Errorf("ejectableMount(%q) = %v, want %v", tc.mp, got, tc.want)
+			}
+		})
+	}
+}
