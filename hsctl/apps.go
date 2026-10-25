@@ -242,6 +242,6 @@ const appsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p id="jobstatus" class="foot" aria-live="polite"></p>
 <div id="out" class="out" data-job="{{.JobID}}" data-reload="1" hidden></div>
 <p class="foot">Anyone who opens a switched-off app's address sees a “this app isn't running” page that points back here. Caddy (the HTTPS front door) and this dashboard can't be switched off. To remove an app for good, including its data, use the terminal: <code>hsctl apps disable NAME</code> then <code>docker compose -f NAME/docker-compose.yml down -v</code>.</p>
-<p class="foot"><a href="/admin">← Admin</a></p>
+<p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `</script>
 </div></body></html>`

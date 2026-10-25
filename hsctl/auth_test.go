@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,6 +175,94 @@ func TestFlashRoundTrip(t *testing.T) {
 			}
 			if f := takeFlash(httptest.NewRecorder(), httptest.NewRequest("GET", "/admin?msg=forged", nil)); f.Msg != "" {
 				t.Errorf("a ?msg= link produced a flash: %q", f.Msg)
+			}
+		})
+	}
+}
+
+// TestLoginThrottle: a few wrong passwords are free, then each failure locks the client out for
+// longer; a forged X-Forwarded-For can't escape the per-peer budget; success resets the count.
+func TestLoginThrottle(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		failures  int
+		keys      []string
+		wantWait  time.Duration
+		afterWait time.Duration // checked at now+afterWait
+	}{
+		{"free tries", loginFreeTries, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 0, 0},
+		{"first lockout", loginFreeTries + 1, []string{"client 1.2.3.4", "peer 172.18.0.9"}, loginFirstLock, 0},
+		{"doubles", loginFreeTries + 2, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 2 * loginFirstLock, 0},
+		{"capped and expires", loginFreeTries + 20, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 0, loginMaxLock},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &uiServer{}
+			for i := 0; i < tc.failures; i++ {
+				s.loginFailed(tc.keys, now)
+			}
+			if got := s.loginBlocked(tc.keys, now.Add(tc.afterWait)); got != tc.wantWait {
+				t.Errorf("wait = %v, want %v", got, tc.wantWait)
+			}
+		})
+	}
+	t.Run("rotating forwarded addresses hit the peer budget", func(t *testing.T) {
+		s := &uiServer{}
+		for i := 0; i < loginPeerFreeTries+1; i++ {
+			s.loginFailed([]string{fmt.Sprintf("client 10.0.0.%d", i), "peer 172.18.0.9"}, now)
+		}
+		if s.loginBlocked([]string{"client 10.9.9.9", "peer 172.18.0.9"}, now) == 0 {
+			t.Error("a fresh forwarded address escaped the peer lockout")
+		}
+	})
+	t.Run("success resets", func(t *testing.T) {
+		s := &uiServer{}
+		keys := []string{"client 1.2.3.4", "peer 172.18.0.9"}
+		for i := 0; i < loginFreeTries+3; i++ {
+			s.loginFailed(keys, now)
+		}
+		s.loginSucceeded(keys)
+		if s.loginBlocked(keys, now) != 0 {
+			t.Error("still blocked after a successful login")
+		}
+	})
+}
+
+// TestSameOrigin: admin POSTs from another origin — another app on the same box — are refused.
+func TestSameOrigin(t *testing.T) {
+	cases := []struct {
+		name, origin, referer string
+		want                  bool
+	}{
+		{"own page over Caddy", "https://10.0.0.5", "", true},
+		{"own page direct", "http://127.0.0.1:8088", "", true},
+		{"sibling app port", "https://10.0.0.5:8444", "", false},
+		{"other site", "https://evil.example", "", false},
+		{"referer only, sibling", "", "https://10.0.0.5:8447/x", false},
+		{"no browser headers (curl)", "", "", true},
+		{"opaque origin", "null", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			if err := (Config{ServerIP: "10.0.0.5", UIPort: 8088}).Save(repo); err != nil {
+				t.Fatal(err)
+			}
+			s := &uiServer{repo: repo}
+			r := httptest.NewRequest("POST", "http://127.0.0.1:8088/admin/run", nil)
+			r.Header.Set("X-Forwarded-Proto", map[bool]string{true: "https", false: ""}[strings.HasPrefix(tc.origin, "https://10.0.0.5")])
+			if strings.HasPrefix(tc.origin, "https://10.0.0.5") {
+				r.Host = "10.0.0.5"
+			}
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if tc.referer != "" {
+				r.Header.Set("Referer", tc.referer)
+			}
+			if got := s.sameOrigin(r); got != tc.want {
+				t.Errorf("sameOrigin = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -35,6 +35,12 @@ type uiServer struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 
+	// Login throttling (see loginBlocked): failures per client and per connection peer, plus a
+	// lock so password checks run one at a time.
+	loginMu      sync.Mutex
+	loginFails   map[string]*loginFailures
+	loginCheckMu sync.Mutex
+
 	// updSt caches the last update-check results for the Updates page (nil = not
 	// checked since the dashboard started; cleared again after an apply).
 	updMu sync.Mutex
@@ -227,12 +233,51 @@ func uiPassword(repo string) (string, error) {
 // autofill the native Basic-Auth dialog — but they happily fill a normal login form.
 func (s *uiServer) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && !s.sameOrigin(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
 		if !s.validSession(r) {
+			// The pages' scripts poll these; a login redirect would look like a broken JSON reply,
+			// so say plainly that the session is gone (e.g. the dashboard restarted).
+			if r.URL.Path == "/admin/job" || r.URL.Path == "/admin/run" || r.URL.Path == "/setup/up/status" {
+				http.Error(w, "signed out — sign in again", http.StatusUnauthorized)
+				return
+			}
 			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
 		h(w, r)
 	}
+}
+
+// sameOrigin reports whether a state-changing request came from the dashboard's own pages. The
+// session cookie is SameSite=Lax, but every app on this box shares the server's address on another
+// port — and cookies ignore ports, so a page on any of them counts as "same site" and the browser
+// would send our cookie along. Browsers always send Origin (or at least Referer) with a POST, so
+// one from another origin is refused; a client sending neither (curl, scripts) isn't a browser
+// carrying someone's cookie, and is let through.
+func (s *uiServer) sameOrigin(r *http.Request) bool {
+	src := r.Header.Get("Origin")
+	if src == "" || src == "null" {
+		if ref := r.Header.Get("Referer"); ref != "" {
+			src = ref
+		} else if src == "null" {
+			return false
+		} else {
+			return true
+		}
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	got := u.Scheme + "://" + u.Host
+	scheme := "http"
+	if isHTTPS(r) {
+		scheme = "https"
+	}
+	return got == scheme+"://"+r.Host || got == "https://"+s.config().ServerIP
 }
 
 // sweepSessions deletes every expired token. validSession only drops the one token it's handed,
@@ -247,6 +292,13 @@ func (s *uiServer) sweepSessions() {
 			delete(s.sessions, tok)
 		}
 	}
+	s.loginMu.Lock()
+	for key, f := range s.loginFails {
+		if now.Sub(f.last) > loginForgetAfter && now.After(f.until) {
+			delete(s.loginFails, key)
+		}
+	}
+	s.loginMu.Unlock()
 }
 
 // validSession reports whether the request carries a live (unexpired) session cookie.
@@ -274,17 +326,39 @@ type loginData struct{ Err, Next string }
 // mints a session token, stores it server-side, and sets it as an HttpOnly cookie.
 func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		if !s.sameOrigin(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		ip := remoteIP(r)
+		keys := loginKeys(r)
+		if wait := s.loginBlocked(keys, time.Now()); wait > 0 {
+			uiLog.Warn("login throttled", "from", ip)
+			w.WriteHeader(http.StatusTooManyRequests)
+			render(w, loginTmpl, loginData{Err: fmt.Sprintf("Too many wrong passwords — wait %s and try again.",
+				shortDuration(wait)), Next: safeNext(r.FormValue("next"))})
+			return
+		}
 		u := r.FormValue("username")
 		p := r.FormValue("password")
+		// One password check at a time, with a pause after a wrong one, so parallel requests can't
+		// slip a burst of guesses past the lockout.
+		s.loginCheckMu.Lock()
 		ok := subtle.ConstantTimeCompare([]byte(u), []byte("admin")) == 1 &&
 			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
 		if !ok {
-			uiLog.Warn("login failed", "user", u, "from", remoteIP(r))
+			s.loginFailed(keys, time.Now())
+			time.Sleep(400 * time.Millisecond)
+		}
+		s.loginCheckMu.Unlock()
+		if !ok {
+			uiLog.Warn("login failed", "user", u, "from", ip)
 			w.WriteHeader(http.StatusUnauthorized)
 			render(w, loginTmpl, loginData{Err: "Wrong username or password.", Next: safeNext(r.FormValue("next"))})
 			return
 		}
-		uiLog.Info("login ok", "from", remoteIP(r))
+		s.loginSucceeded(keys)
+		uiLog.Info("login ok", "from", ip)
 		tok := genPassword(32)
 		s.mu.Lock()
 		s.sessions[tok] = time.Now().Add(sessionTTL)
@@ -298,6 +372,88 @@ func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render(w, loginTmpl, loginData{Next: safeNext(r.URL.Query().Get("next"))})
+}
+
+// Login throttling. The dashboard grants a root shell, so a password guesser gets a few free tries
+// and then waits: after a few wrong passwords, each further failure locks them out for twice as
+// long as the last (30s, 1m, 2m … up to 15m). A success resets it. Failures are counted per
+// client (the address Caddy reports) AND per connection peer: the forwarded address can't be
+// trusted from a direct connection (anything on the box can reach us without Caddy and claim any
+// X-Forwarded-For), so the peer gets its own, larger allowance that rotating addresses can't
+// escape.
+const (
+	loginFreeTries     = 5  // per client
+	loginPeerFreeTries = 30 // per connection peer (Caddy carries every LAN client)
+	loginFirstLock     = 30 * time.Second
+	loginMaxLock       = 15 * time.Minute
+	loginForgetAfter   = time.Hour // failures this old are forgotten
+)
+
+type loginFailures struct {
+	count int
+	last  time.Time
+	until time.Time // locked out until then
+}
+
+// loginKeys are the throttle buckets a login request counts against: its client and its peer.
+func loginKeys(r *http.Request) []string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		peer = host
+	}
+	return []string{"client " + remoteIP(r), "peer " + peer}
+}
+
+func freeTries(key string) int {
+	if strings.HasPrefix(key, "peer ") {
+		return loginPeerFreeTries
+	}
+	return loginFreeTries
+}
+
+// loginBlocked returns how long the request must still wait, or 0.
+func (s *uiServer) loginBlocked(keys []string, now time.Time) time.Duration {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	var wait time.Duration
+	for _, k := range keys {
+		if f := s.loginFails[k]; f != nil && now.Before(f.until) && f.until.Sub(now) > wait {
+			wait = f.until.Sub(now)
+		}
+	}
+	return wait
+}
+
+func (s *uiServer) loginFailed(keys []string, now time.Time) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if s.loginFails == nil {
+		s.loginFails = map[string]*loginFailures{}
+	}
+	for _, k := range keys {
+		f := s.loginFails[k]
+		if f == nil || now.Sub(f.last) > loginForgetAfter {
+			f = &loginFailures{}
+			s.loginFails[k] = f
+		}
+		f.count++
+		f.last = now
+		if over := f.count - freeTries(k); over > 0 {
+			lock := loginFirstLock << min(over-1, 10)
+			if lock > loginMaxLock {
+				lock = loginMaxLock
+			}
+			f.until = now.Add(lock)
+		}
+	}
+}
+
+func (s *uiServer) loginSucceeded(keys []string) {
+	s.loginMu.Lock()
+	for _, k := range keys {
+		delete(s.loginFails, k)
+	}
+	s.loginMu.Unlock()
 }
 
 func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {

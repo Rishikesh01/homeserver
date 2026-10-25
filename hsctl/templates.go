@@ -152,6 +152,7 @@ const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <input class="in" type="password" name="password" autocomplete="current-password" autofocus></label></p>
   <button class="btn">Sign in</button>
 </form>
+<p class="foot">The user is <code>admin</code>. The password was printed by <code>sudo hsctl install</code> and is kept on the server in <code>.ui-password</code> in the homeserver folder — show it with <code>hsctl secrets show</code>, or set a new one with <code>hsctl secrets set-ui-password</code>.</p>
 <p class="foot"><a href="/">← Home portal</a></p>
 </div></body></html>`
 
@@ -228,7 +229,7 @@ Keep the repo password file (<code>.restic-password</code>) safe — without it,
 <p>Recover the whole server from a snapshot (stops the stack, puts every volume back, starts it again).</p>
 <p><a href="/admin/backup/restore">♻️ Restore from a backup →</a></p>
 
-<p class="foot"><a href="/admin">← Admin</a></p>
+<p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `</script>
 </div></body></html>`
 
@@ -255,7 +256,7 @@ when it's done, so you don't need to reload or do anything.</div>
   <input class="in" name="confirm" autocomplete="off"></p>
   <button class="btn red">♻️ Restore now</button>
 </form>
-<p class="foot"><a href="/admin/backup">← Cancel</a></p>
+<p class="foot"><a href="/admin/backup">← Cancel</a> · <a href="/logout">Log out</a></p>
 </div></body></html>`
 
 // restoreProgressTmpl follows the restore job (jobs.go). It keeps polling through the window
@@ -388,7 +389,7 @@ const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <h3>Output</h3>
 <p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
 <div id="out" class="out" data-job="{{.JobID}}">Pick a command above — its output appears here as it runs.</div>
-<p class="foot"><a href="/admin">← Admin</a> · <a href="/admin/terminal">Open a full terminal →</a></p>
+<p class="foot"><a href="/admin">← Admin</a> · <a href="/admin/terminal">Open a full terminal →</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `</script>
 </div></body></html>`
 
@@ -422,7 +423,7 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <h3>Output</h3>
 <p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
 <div id="out" class="out" data-job="{{.JobID}}">Output appears here as a check or update runs.</div>
-<p class="foot"><a href="/admin">← Admin</a></p>
+<p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `
 async function stream(url, body, reload){
   const out=document.getElementById('out');
@@ -473,7 +474,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 </table>
 
 <div class="note"><b>You choose where each disk mounts</b> — the box is pre-filled with a suggestion under <code>{{.MountAt}}</code>, but edit it to mount wherever you like (same as a manual <code>mount</code> on the server). Mounts are <b>temporary</b> — they clear on reboot and no permanent (fstab) entry is written, matching the by-hand way the backup disk is attached. After mounting a disk for backups, set it as the destination on the <a href="/admin/backup">Backups</a> page.</div>
-<p class="foot"><a href="/admin">← Admin</a></p>
+<p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 </div></body></html>`
 
 const terminalTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -486,7 +487,7 @@ const terminalTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="sub">A real shell on the server, running as the dashboard's user.</p>
 <div class="banner"><b>This is a full shell (root under the service).</b> Anything you type runs for real. Only the admin login can reach it, and it isn't exposed outside your network — but treat it with the same care as sitting at the machine.</div>
 <div id="term"></div>
-<p class="foot"><a href="/admin">← Admin</a> · blank screen? Click it and press Enter.</p>
+<p class="foot"><a href="/admin">← Admin</a> · blank screen? Click it and press Enter. · <a href="/logout">Log out</a></p>
 <script src="/admin/assets/xterm.js"></script>
 <script src="/admin/assets/addon-fit.js"></script>
 <script>

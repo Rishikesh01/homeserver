@@ -192,7 +192,7 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
 
   <p style="margin-top:20px"><button class="btn" type="submit">Continue →</button></p>
 </form>
-<p class="foot">Dashboard port: {{.Cfg.UIPort}} (set by <code>hsctl install</code>). · <a href="/help">Setup guide</a></p>
+<p class="foot">Dashboard port: {{.Cfg.UIPort}} (set by <code>hsctl install</code>). · <a href="/help">Setup guide</a> · <a href="/logout">Log out</a></p>
 
 {{else}}
 <p class="sub">Settings saved and every app configured. These are the <b>admin logins it just created</b>.</p>
