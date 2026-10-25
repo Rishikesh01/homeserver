@@ -259,7 +259,7 @@ func backupCmd() *cobra.Command {
 
 	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest); --into-volumes puts it back [root]",
 		Args: cobra.MaximumNArgs(1), RunE: locked("backup restore", 0, runBackupRestore)}
-	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
+	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/"+defaultRestoreDir+")")
 	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
 
@@ -626,7 +626,11 @@ func lastBackupTime(repo string) (time.Time, bool) {
 	return t, true
 }
 
-// runBackupRestore extracts a snapshot to a directory (default <repo>/restore). It does
+// defaultRestoreDir is where a snapshot is extracted unless --target says otherwise: inside
+// backups/, which is git-ignored (the extraction holds plaintext secrets and databases).
+const defaultRestoreDir = "backups/restore"
+
+// runBackupRestore extracts a snapshot to a directory (default <repo>/backups/restore). It does
 // NOT overwrite live data — putting volumes/DB back into the stack is the manual final
 // step (printed below, and in README -> Backup & restore), because it's destructive.
 func runBackupRestore(cmd *cobra.Command, args []string) error {
@@ -652,7 +656,17 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	target, _ := cmd.Flags().GetString("target")
 	userTarget := cmd.Flags().Changed("target") && strings.TrimSpace(target) != ""
 	if target == "" {
-		target = filepath.Join(repo, "restore")
+		target = filepath.Join(repo, defaultRestoreDir)
+	}
+	into, _ := cmd.Flags().GetBool("into-volumes")
+	// Putting back from a folder that already holds files would copy those leftovers into the
+	// live volumes too (restic restore only adds files). Only the default scratch folder is ours
+	// to empty; a --target you chose must start out empty.
+	if userTarget && into {
+		if entries, err := os.ReadDir(target); err == nil && len(entries) > 0 {
+			return fmt.Errorf("--target %s isn't empty — with --into-volumes, anything already in it would be "+
+				"copied into the live volumes too. Use an empty folder (or leave --target off)", target)
+		}
 	}
 	snap := "latest"
 	if len(args) > 0 {
@@ -676,7 +690,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, target)
 
-	if into, _ := cmd.Flags().GetBool("into-volumes"); into {
+	if into {
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
 			fmt.Println("\n--into-volumes will STOP the stack, WIPE each data volume, and overwrite it")
@@ -686,13 +700,26 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 		}
-		return restoreIntoVolumes(repo, target)
+		if err := restoreIntoVolumes(repo, target); err != nil {
+			return err
+		}
+		// The extraction holds plaintext copies of every secret and database; once it's back in the
+		// volumes it's served its purpose. (A --target you chose is yours to keep.)
+		if !userTarget {
+			if err := os.RemoveAll(target); err == nil {
+				fmt.Println("\nremoved the extracted copy at", target)
+			}
+		}
+		return nil
 	}
 
-	fmt.Println("To put it back into the stack (disaster recovery), or just run `hsctl backup restore --into-volumes`:")
+	fmt.Println("It holds plaintext copies of your data and secrets — delete it when you're done.")
+	fmt.Println("To put it back into the stack (disaster recovery), or just run `sudo hsctl backup restore --into-volumes`:")
 	fmt.Println("  1. hsctl down")
-	fmt.Printf("  2. copy each volume's files back, e.g.  cp -a %s/var/lib/docker/volumes/<name>/_data/. \\\n", target)
-	fmt.Println("       /var/lib/docker/volumes/<name>/_data/   (this restores the Postgres DB volume too)")
+	fmt.Println("  2. for each volume, EMPTY it first (so deleted files don't come back), then copy the snapshot's files in:")
+	fmt.Println("       sudo find /var/lib/docker/volumes/<name>/_data -mindepth 1 -delete")
+	fmt.Printf("       sudo cp -a %s/var/lib/docker/volumes/<name>/_data/. /var/lib/docker/volumes/<name>/_data/\n", target)
+	fmt.Println("     (this restores the Postgres DB volume too)")
 	fmt.Println("  3. hsctl up")
 	fmt.Println("  Vaultwarden: step 2 restores its volume (attachments/keys) but NOT its DB — the")
 	fmt.Println("  consistent SQLite fileset (copied during a brief stop) is in backups/staging/vaultwarden/.")
@@ -707,7 +734,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 
 // prepareRestoreTarget makes target an empty directory before `restic restore` writes into it.
 // restic restore is ADDITIVE — it won't remove files already in the target that aren't in the
-// snapshot — and we reuse a fixed target (<repo>/restore) across restores. Without wiping first,
+// snapshot — and we reuse a fixed target (<repo>/backups/restore) across restores. Without wiping first,
 // leftovers from an earlier extraction (individual files, or a whole volume dir) get copied into
 // the live volumes by restoreIntoVolumes, resurrecting deleted data or even a volume not in the
 // requested snapshot. Guarded so a blank/mistyped target can't wipe a system path.

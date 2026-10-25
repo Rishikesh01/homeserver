@@ -26,6 +26,8 @@ backup.conf
 # cloud credentials for the off-site backup replica (B2/S3 keys)
 .backup-env
 backups/
+# where older hsctl versions extracted restores (plaintext copies of every secret and database)
+/restore/
 
 # sandbox: host-built hsctl binary (rebuilt by `make sandbox`)
 sandbox/_build/
