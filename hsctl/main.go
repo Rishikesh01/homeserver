@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,9 @@ func rootCmd() *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// A root run (sudo, the dashboard service, the backup timer) first hands back any of
+		// hsctl's files an older version left root-owned, so the admin can read them again.
+		PersistentPreRun: func(*cobra.Command, []string) { repairRepoOwnership() },
 	}
 
 	setup := &cobra.Command{
@@ -95,4 +99,19 @@ func rootCmd() *cobra.Command {
 
 	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
 	return root
+}
+
+// repairRepoOwnership runs repairOwnership on the repo when we're root, and says what it fixed.
+func repairRepoOwnership() {
+	if os.Geteuid() != 0 {
+		return
+	}
+	repo := repoDir()
+	if !isRepo(repo) {
+		return
+	}
+	if fixed := repairOwnership(repo); len(fixed) > 0 {
+		fmt.Fprintf(os.Stderr, "gave %s back to the repo's owner (a root run had left them root-owned)\n",
+			strings.Join(fixed, ", "))
+	}
 }

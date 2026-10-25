@@ -152,7 +152,7 @@ func cmdGetCA() error {
 		return fmt.Errorf("reading CA from caddy (is it up?): %w", err)
 	}
 	dst := filepath.Join(repoDir(), "caddy-root-ca.crt")
-	if err := os.WriteFile(dst, []byte(out+"\n"), 0644); err != nil {
+	if err := writeFile0644(dst, out+"\n"); err != nil {
 		return err
 	}
 	fmt.Println("wrote", dst)

@@ -196,6 +196,7 @@ func backupCmd() *cobra.Command {
 					fmt.Printf("pinned restic version baseline: %s\n", v)
 				}
 			}
+			defer handBackLocalRepo(repo, cfg)
 			return resticRun(repo, cfg, "init")
 		})}
 	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
@@ -204,6 +205,7 @@ func backupCmd() *cobra.Command {
 		RunE: withRestic(func(repo string, cfg backupCfg) error { return resticRun(repo, cfg, "snapshots") })}
 	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
 		RunE: withRestic(func(repo string, cfg backupCfg) error {
+			defer handBackLocalRepo(repo, cfg)
 			return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
 		})}
 
@@ -267,6 +269,7 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 }
 
 func backupRun(repo string, cfg backupCfg) error {
+	defer handBackLocalRepo(repo, cfg)
 	ensureResticPassword(repo)
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
@@ -274,7 +277,7 @@ func backupRun(repo string, cfg backupCfg) error {
 			cur, cfg.ResticVersion)
 	}
 	staging := filepath.Join(repo, "backups", "staging")
-	if err := os.MkdirAll(staging, 0700); err != nil {
+	if err := mkdirAllOwned(staging, 0700); err != nil {
 		return err
 	}
 	dumpNextcloudDB(repo, staging) // best-effort; warns inside
@@ -363,6 +366,16 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 	return nil
 }
 
+// handBackLocalRepo gives a restic repository that lives inside the homeserver repo (the default
+// backups/restic) back to the admin after root wrote to it, so `hsctl backup list` and plain
+// `restic` work without sudo. A repo elsewhere (an external disk under /mnt, sftp:, …) is left
+// exactly as restic made it.
+func handBackLocalRepo(repo string, cfg backupCfg) {
+	if filepath.IsAbs(cfg.Repo) && within(cfg.Repo, repo) {
+		handBackTree(cfg.Repo)
+	}
+}
+
 // resticQuiet runs restic against the given repository, discarding output — for probes
 // whose failure is expected (does the replica exist yet?).
 func resticQuiet(repo, repository string, args ...string) error {
@@ -379,7 +392,7 @@ const lastBackupFile = "backups/.last-backup"
 
 func stampLastBackup(repo string) {
 	path := filepath.Join(repo, lastBackupFile)
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	_ = mkdirAllOwned(filepath.Dir(path), 0755)
 	_ = writeFile0644(path, time.Now().Format(time.RFC3339)+"\n")
 }
 
@@ -463,7 +476,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	// (restic overlays). Only the default reusable scratch dir gets emptied first, so a prior
 	// extraction there can't contaminate an --into-volumes put-back.
 	if userTarget {
-		if err := os.MkdirAll(target, 0700); err != nil {
+		if err := mkdirAllOwned(target, 0700); err != nil {
 			return err
 		}
 	} else if err := prepareRestoreTarget(target); err != nil {
@@ -517,7 +530,7 @@ func prepareRestoreTarget(target string) error {
 	if err := os.RemoveAll(clean); err != nil {
 		return fmt.Errorf("clearing restore target %s: %w", clean, err)
 	}
-	return os.MkdirAll(clean, 0700)
+	return mkdirAllOwned(clean, 0700)
 }
 
 // restoreSnapshotIntoVolumes extracts a snapshot to <repo>/restore and writes every volume
@@ -1250,7 +1263,7 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
 		return ""
 	}
-	if err := os.MkdirAll(dest, 0700); err != nil {
+	if err := mkdirAllOwned(dest, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, "vaultwarden: staging mkdir:", err)
 		return ""
 	}
@@ -1288,7 +1301,7 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 
 // dumpNextcloudDB writes a consistent SQL dump (preferred over the raw volume on restore).
 func dumpNextcloudDB(repo, staging string) {
-	f, err := os.Create(filepath.Join(staging, "nextcloud-db.sql"))
+	f, err := createOwned(filepath.Join(staging, "nextcloud-db.sql"), 0600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "db dump: cannot create file:", err)
 		return
