@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -577,78 +579,156 @@ func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
 	return restoreIntoVolumes(repo, target)
 }
 
+// restorePlan is what a snapshot extracted under a target holds, worked out before anything is
+// stopped or wiped.
+type restorePlan struct {
+	volsRoot  string   // <target>/var/lib/docker/volumes
+	volumes   []string // volume names with a _data dir to put back
+	vwInLoop  bool     // vaultwarden_vw-data is among them
+	vwStaging string   // the staged Vaultwarden DB fileset, "" when the snapshot has none
+}
+
+// planRestore checks an extracted snapshot BEFORE the stack is touched: a snapshot we can't use
+// must leave the running stack alone. It finds Vaultwarden's staged database wherever the backup
+// was taken — the snapshot stores the repo's absolute path at backup time, which differs on a new
+// machine or a moved repo — and refuses a snapshot whose Vaultwarden volume came without its
+// database, instead of restoring an empty password vault and calling it a success.
+func planRestore(target string) (restorePlan, error) {
+	p := restorePlan{volsRoot: filepath.Join(target, "var", "lib", "docker", "volumes")}
+	entries, err := os.ReadDir(p.volsRoot)
+	if err != nil {
+		return p, fmt.Errorf("no volume data found in the snapshot (looked for %s): %w — nothing was changed", p.volsRoot, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() && fileExists(filepath.Join(p.volsRoot, e.Name(), "_data")) {
+			p.volumes = append(p.volumes, e.Name())
+		}
+	}
+	p.vwInLoop = slices.Contains(p.volumes, "vaultwarden_vw-data")
+	p.vwStaging = findVaultwardenStaging(target)
+	if len(p.volumes) == 0 && p.vwStaging == "" {
+		return p, fmt.Errorf("the snapshot holds no volume data under %s — nothing was changed", p.volsRoot)
+	}
+	if p.vwInLoop && !fileExists(filepath.Join(p.volsRoot, "vaultwarden_vw-data", "_data", "db.sqlite3")) &&
+		(p.vwStaging == "" || !fileExists(filepath.Join(p.vwStaging, "db.sqlite3"))) {
+		return p, fmt.Errorf("the snapshot has Vaultwarden's files but not its database (no db.sqlite3 in the " +
+			"volume and no staged copy under backups/staging/vaultwarden) — refusing to restore an empty " +
+			"password vault; nothing was changed")
+	}
+	return p, nil
+}
+
+// findVaultwardenStaging returns the directory under target that holds the staged Vaultwarden DB
+// (…/backups/staging/vaultwarden), wherever the repo lived when the backup was taken. The volume
+// tree is skipped: it's big, and staging is never inside it.
+func findVaultwardenStaging(target string) string {
+	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
+	suffix := string(filepath.Separator) + filepath.Join("backups", "staging", "vaultwarden")
+	found := ""
+	_ = filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if path == volsRoot {
+			return filepath.SkipDir
+		}
+		if strings.HasSuffix(path, suffix) {
+			found = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
 // restoreIntoVolumes is the automated disaster-recovery put-back: given an already-extracted
 // snapshot under `target`, it writes every backed-up volume's data back into the live Docker
 // volumes and brings the stack up. DESTRUCTIVE — it stops the stack and wipes each target
 // volume before copying. This is the one-command form of the manual steps `restore` prints,
-// including the Vaultwarden special case (its data is in staging/, not a volume dir).
-func restoreIntoVolumes(repo, target string) error {
+// including the Vaultwarden special case (its database is in staging, not in its volume).
+func restoreIntoVolumes(repo, target string) (err error) {
+	plan, err := planRestore(target)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nthe snapshot holds %d volume(s): %s\n", len(plan.volumes), strings.Join(plan.volumes, " "))
+
 	fmt.Println("\n== stopping the stack ==")
 	if err := cmdDown(false, false); err != nil {
 		return fmt.Errorf("stack down: %w", err)
 	}
+	// From here on the stack is down. If anything fails, say exactly what was and wasn't put back,
+	// and bring Caddy up so the dashboard — the only way in from the LAN — shows the failure.
+	var done []string
+	restoredAll := false
+	defer func() {
+		if err == nil {
+			return
+		}
+		if restoredAll {
+			fmt.Fprintln(os.Stderr, "\nEvery volume was restored, but the stack didn't fully start — see above.")
+			return // cmdUp always starts Caddy, even past a failed app
+		}
+		var left []string
+		for _, v := range plan.volumes {
+			if !slices.Contains(done, v) {
+				left = append(left, v)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\nrestore failed part-way. Restored: %s. NOT restored: %s.\n", listOrNone(done), listOrNone(left))
+		fmt.Fprintln(os.Stderr, "The apps are stopped. Bringing Caddy back up so the dashboard is reachable...")
+		_ = ensureEdgeNetwork()
+		_ = dockerRun(filepath.Join(repo, "caddy"), "compose", "up", "-d")
+	}()
 
-	// Every volume captured in the snapshot is under <target>/var/lib/docker/volumes/<name>/_data.
-	// This now INCLUDES vaultwarden_vw-data (its attachments/keys/config) — but NOT its db.sqlite3,
-	// which was excluded from the volume backup and lives in staging (overlaid below).
-	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
-	entries, err := os.ReadDir(volsRoot)
-	if err != nil {
-		return fmt.Errorf("no volume data found in snapshot at %s: %w", volsRoot, err)
-	}
-	restored := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, name := range plan.volumes {
+		if err := restoreOneVolume(repo, name, filepath.Join(plan.volsRoot, name, "_data")); err != nil {
+			return fmt.Errorf("restore volume %s: %w", name, err)
 		}
-		src := filepath.Join(volsRoot, e.Name(), "_data")
-		if !fileExists(src) {
-			fmt.Fprintf(os.Stderr, "skip %s (no _data in snapshot)\n", e.Name())
-			continue
-		}
-		if err := restoreOneVolume(repo, e.Name(), src); err != nil {
-			return fmt.Errorf("restore volume %s: %w", e.Name(), err)
-		}
-		restored++
+		done = append(done, name)
 	}
 
-	// Vaultwarden — handle both snapshot layouts (the snapshot stores the repo's absolute path,
-	// so staging lands under <target>/<repo>/backups/staging/vaultwarden):
+	// Vaultwarden — handle both snapshot layouts:
 	//   - NEW: the volume (attachments/keys, no DB) was restored by the loop above; overlay the
-	//     consistent db.sqlite3 from staging onto it.
+	//     consistent db.sqlite3 fileset from staging onto it.
 	//   - OLD: the whole volume lives in staging (and isn't in the volume loop) — restore it whole.
-	// If staging is absent entirely, Vaultwarden was down at backup time and its DB was in the
-	// volume backup above, so there's nothing to do.
-	vwStaging := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
-	switch vwInLoop := fileExists(filepath.Join(volsRoot, "vaultwarden_vw-data", "_data")); {
-	case vwInLoop:
-		if fileExists(filepath.Join(vwStaging, "db.sqlite3")) {
-			mp, err := volumeMountpoint(repo, "vaultwarden_vw-data")
-			if err != nil {
-				return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
-			}
-			// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
-			for _, suf := range dbFilesetSuffixes {
-				f := filepath.Join(vwStaging, "db.sqlite3"+suf)
-				if !fileExists(f) {
-					continue
-				}
-				if err := copyFile(f, filepath.Join(mp, "db.sqlite3"+suf)); err != nil {
-					return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
-				}
-			}
-			fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
+	// With no staged copy, Vaultwarden was down at backup time and its DB is in the volume itself.
+	switch {
+	case plan.vwInLoop && plan.vwStaging != "" && fileExists(filepath.Join(plan.vwStaging, "db.sqlite3")):
+		mp, err := volumeMountpoint(repo, "vaultwarden_vw-data")
+		if err != nil {
+			return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
 		}
-	case fileExists(vwStaging):
+		// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
+		for _, suf := range dbFilesetSuffixes {
+			f := filepath.Join(plan.vwStaging, "db.sqlite3"+suf)
+			if !fileExists(f) {
+				continue
+			}
+			if err := copyFile(f, filepath.Join(mp, "db.sqlite3"+suf)); err != nil {
+				return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
+			}
+		}
+		fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
+	case !plan.vwInLoop && plan.vwStaging != "":
 		// Older snapshot: staging holds the entire volume.
-		if err := restoreOneVolume(repo, "vaultwarden_vw-data", vwStaging); err != nil {
+		if err := restoreOneVolume(repo, "vaultwarden_vw-data", plan.vwStaging); err != nil {
 			return fmt.Errorf("restore vaultwarden (legacy staging layout): %w", err)
 		}
-		restored++
+		done = append(done, "vaultwarden_vw-data")
 	}
 
-	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", restored)
+	restoredAll = true
+	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", len(done))
 	return cmdUp()
+}
+
+// listOrNone joins names for a message, or says "none".
+func listOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // verifyRestoreIntoVolume proves the destructive put-back primitive that `restore --into-volumes`
