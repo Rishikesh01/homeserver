@@ -137,8 +137,8 @@ func buildRetention(daily, weekly, monthly, rest string) (string, error) {
 		if v == "" || v == "0" {
 			continue
 		}
-		if n, err := strconv.Atoi(v); err != nil || n < 1 {
-			return "", fmt.Errorf("keep %s: %q isn't a number of snapshots", strings.TrimPrefix(kv[0], "--keep-"), v)
+		if n, err := strconv.Atoi(v); err != nil || n < -1 {
+			return "", fmt.Errorf("keep %s: %q isn't a number of snapshots (-1 keeps all)", strings.TrimPrefix(kv[0], "--keep-"), v)
 		}
 		parts = append(parts, kv[0], v)
 	}

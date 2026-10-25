@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,7 +22,10 @@ import (
 const lockFile = ".hsctl.lock"
 
 // opLock is a held operation lock; Release it when the operation ends.
-type opLock struct{ f *os.File }
+type opLock struct {
+	f    *os.File
+	once sync.Once
+}
 
 // errBusy is returned (wrapped) when another operation holds the lock.
 var errBusy = errors.New("another hsctl operation is running")
@@ -71,13 +75,14 @@ func acquireOpLock(repo, what string, wait time.Duration) (*opLock, error) {
 
 // Release drops the lock.
 func (l *opLock) Release() {
-	if l == nil || l.f == nil {
+	if l == nil {
 		return
 	}
-	_ = l.f.Truncate(0)
-	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
-	_ = l.f.Close()
-	l.f = nil
+	l.once.Do(func() {
+		_ = l.f.Truncate(0)
+		_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+		_ = l.f.Close()
+	})
 }
 
 // lockHolder describes the current holder from the lock file's contents.
@@ -98,7 +103,9 @@ func opLockBusy(repo string) string {
 		return ""
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	// A shared lock: it fails only against a held operation, so two pages asking at once don't
+	// see each other's probe as a running operation.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 		return lockHolder(path)
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

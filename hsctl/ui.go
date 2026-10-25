@@ -807,10 +807,10 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	daily, weekly, monthly, rest := retentionKeeps(cfg.Retention)
 	field := func(n int) string {
-		if n < 0 {
+		if n == -2 { // not in the policy
 			return ""
 		}
-		return strconv.Itoa(n)
+		return strconv.Itoa(n) // -1 is restic's "keep all of them"
 	}
 	d.KeepDaily, d.KeepWeekly, d.KeepMonthly, d.KeepRest = field(daily), field(weekly), field(monthly), rest
 	if p := localRepoPath(cfg.Repo); p != "" && cfg.RequireMount == "" {

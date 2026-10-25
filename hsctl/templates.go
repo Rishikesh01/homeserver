@@ -191,11 +191,11 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <input class="in" name="require_mount" value="{{.GuardPath}}" placeholder="/mnt/backup"></p>
   <fieldset style="border:1px solid #2a2f3a;border-radius:8px;padding:8px 12px;margin:12px 0">
   <legend>How many snapshots to keep</legend>
-  <label>Daily <input class="in" name="keep_daily" type="number" min="0" value="{{.KeepDaily}}" style="width:6em"></label>
-  <label>Weekly <input class="in" name="keep_weekly" type="number" min="0" value="{{.KeepWeekly}}" style="width:6em"></label>
-  <label>Monthly <input class="in" name="keep_monthly" type="number" min="0" value="{{.KeepMonthly}}" style="width:6em"></label>
+  <label>Daily <input class="in" name="keep_daily" type="number" min="-1" value="{{.KeepDaily}}" style="width:6em"></label>
+  <label>Weekly <input class="in" name="keep_weekly" type="number" min="-1" value="{{.KeepWeekly}}" style="width:6em"></label>
+  <label>Monthly <input class="in" name="keep_monthly" type="number" min="-1" value="{{.KeepMonthly}}" style="width:6em"></label>
   <input type="hidden" name="keep_rest" value="{{.KeepRest}}">
-  <p class="foot" style="margin-top:6px">Older snapshots are pruned after each backup. Leave a box empty (or 0) to not keep any of that kind.{{if .KeepRest}} Also kept, from your config: <code>{{.KeepRest}}</code>.{{end}}</p>
+  <p class="foot" style="margin-top:6px">Older snapshots are pruned after each backup. Leave a box empty (or 0) to not keep any of that kind; -1 keeps all of them.{{if .KeepRest}} Also kept, from your config: <code>{{.KeepRest}}</code>.{{end}}</p>
   </fieldset>
   <p>Off-site replica (optional second copy — another machine over SFTP, or S3 storage):<br>
   <input class="in" name="replica" value="{{.Replica}}" placeholder="sftp:user@nas:/backups"></p>

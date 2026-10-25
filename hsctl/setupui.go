@@ -120,8 +120,13 @@ func (s *uiServer) handleSetupUpStatus(w http.ResponseWriter, r *http.Request) {
 	s.setupMu.Unlock()
 	var st setupRunStatus
 	if j, ok := s.jobs().get(id); ok {
+		// The page shows the whole log, so read every chunk of it.
+		var out strings.Builder
 		js := j.status(0)
-		st = setupRunStatus{Active: !js.Done, Done: js.Done, OK: js.Done && js.OK, Output: js.Out}
+		for out.WriteString(js.Out); js.Out != "" && !js.Done; out.WriteString(js.Out) {
+			js = j.status(js.Next)
+		}
+		st = setupRunStatus{Active: !js.Done, Done: js.Done, OK: js.Done && js.OK, Output: out.String()}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

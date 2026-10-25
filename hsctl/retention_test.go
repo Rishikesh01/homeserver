@@ -72,6 +72,7 @@ func TestBuildRetention(t *testing.T) {
 		{"defaults", "7", "4", "6", "", defaultRetention},
 		{"keeps nothing", "", "", "", "", ""},
 		{"not a number", "x", "", "", "", ""},
+		{"keep all dailies", "-1", "", "12", "", "--keep-daily -1 --keep-monthly 12"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
