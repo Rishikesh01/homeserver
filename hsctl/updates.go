@@ -515,10 +515,14 @@ func applyUpdates(repo string, statuses []imageStatus, targets []string, yes boo
 		done[svc] = true
 		fmt.Printf("\n== updating %s ==\n", svc)
 		dir := filepath.Join(repo, svc)
-		if err := dockerRun(dir, "compose", "pull"); err != nil {
+		pull := []string{"compose", "pull"}
+		if !isTerminal(os.Stdout) {
+			pull = append(pull, "--quiet") // no per-layer progress in a job log
+		}
+		if err := dockerRun(dir, pull...); err != nil {
 			return fmt.Errorf("%s: pull: %w", svc, err)
 		}
-		if err := dockerRun(dir, "compose", "up", "-d"); err != nil {
+		if err := dockerRun(dir, composeUpArgs()...); err != nil {
 			return fmt.Errorf("%s: up: %w", svc, err)
 		}
 	}

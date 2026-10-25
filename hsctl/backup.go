@@ -874,7 +874,7 @@ func restoreIntoVolumes(repo, target string) (err error) {
 		fmt.Fprintf(os.Stderr, "\nrestore failed part-way. Restored: %s. NOT restored: %s.\n", listOrNone(done), listOrNone(left))
 		fmt.Fprintln(os.Stderr, "The apps are stopped. Bringing Caddy back up so the dashboard is reachable...")
 		_ = ensureEdgeNetwork()
-		_ = dockerRun(filepath.Join(repo, "caddy"), "compose", "up", "-d")
+		_ = dockerRun(filepath.Join(repo, "caddy"), composeUpArgs()...)
 	}()
 
 	for _, name := range plan.volumes {

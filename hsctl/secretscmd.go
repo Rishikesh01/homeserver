@@ -99,7 +99,7 @@ func rotateVWAdmin(repo string) error {
 	if err := ensureEdgeNetwork(); err != nil {
 		return err
 	}
-	if err := dockerRun(filepath.Join(repo, "vaultwarden"), "compose", "up", "-d", "--force-recreate", "vaultwarden"); err != nil {
+	if err := dockerRun(filepath.Join(repo, "vaultwarden"), composeUpArgs("--force-recreate", "vaultwarden")...); err != nil {
 		return fmt.Errorf("recreate vaultwarden: %w", err)
 	}
 	fmt.Println("done — log in at " + vwAdminURL(envPath) + " with the token above.")

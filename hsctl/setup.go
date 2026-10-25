@@ -12,6 +12,7 @@ import (
 	_ "time/tzdata" // validate timezone names even on a box without system zoneinfo
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 )
 
 func runSetup(cmd *cobra.Command, _ []string) error {
@@ -235,9 +236,25 @@ func localIPv4(ip string) bool {
 	return false
 }
 
-func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+// isTTY reports whether stdin is an interactive terminal — something to ask a question on. (A
+// character-device check isn't enough: /dev/null, which jobs and the timer get, is one too.)
+func isTTY() bool { return isTerminal(os.Stdin) }
+
+// isTerminal reports whether f is a terminal.
+func isTerminal(f *os.File) bool {
+	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
+	return err == nil
+}
+
+// composeUpArgs is `compose up -d` plus extra args — without per-layer download progress when
+// the output isn't a terminal (a dashboard job's log, the journal), where every progress tick
+// would land as its own line and bury the messages that matter.
+func composeUpArgs(extra ...string) []string {
+	args := []string{"compose", "up", "-d"}
+	if !isTerminal(os.Stdout) {
+		args = append(args, "--quiet-pull")
+	}
+	return append(args, extra...)
 }
 
 var stdinReader = bufio.NewReader(os.Stdin)

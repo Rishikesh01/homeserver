@@ -146,7 +146,7 @@ func cmdUp() error {
 	}
 	failed := upServices(enabledServices(cfg), func(svc string) error {
 		fmt.Printf("== up: %s ==\n", svc)
-		err := dockerRun(filepath.Join(repoDir(), svc), "compose", "up", "-d")
+		err := dockerRun(filepath.Join(repoDir(), svc), composeUpArgs()...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "!! %s didn't start (%v) — carrying on with the rest\n", svc, err)
 		}

@@ -80,7 +80,7 @@ func cmdInstall() error {
 			return err
 		}
 		fmt.Println("== starting Caddy (the HTTPS front door) ==")
-		if err := dockerRun(filepath.Join(repo, "caddy"), "compose", "up", "-d"); err != nil {
+		if err := dockerRun(filepath.Join(repo, "caddy"), composeUpArgs()...); err != nil {
 			return fmt.Errorf("caddy: %w", err)
 		}
 	}
