@@ -48,7 +48,10 @@ func cmdInstall() error {
 		}
 		fmt.Printf("Saved %s (autodetected: IP %s, timezone %s) — you can change these in the dashboard.\n", confFile, c.ServerIP, c.TZ)
 	}
-	pass := uiPassword(repo)
+	pass, err := uiPassword(repo)
+	if err != nil {
+		return err
+	}
 
 	firstRun := len(missingEnv()) > 0
 	if firstRun {

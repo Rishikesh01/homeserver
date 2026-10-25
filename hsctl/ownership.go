@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -143,4 +145,48 @@ func repairOwnership(repo string) []string {
 		}
 	}
 	return fixed
+}
+
+// unreadable reports whether path exists but this user can't open it — the signature of a file a
+// root run left behind, which must not be mistaken for "missing".
+func unreadable(path string) bool {
+	f, err := os.Open(path)
+	if err == nil {
+		f.Close()
+		return false
+	}
+	return errors.Is(err, fs.ErrPermission)
+}
+
+// unreadableConfig lists (repo-relative) the given hsctl files that exist but can't be read;
+// with no names it checks every file hsctl writes.
+func unreadableConfig(repo string, rels ...string) []string {
+	if len(rels) == 0 {
+		rels = ownedConfigPaths
+	}
+	var bad []string
+	for _, rel := range rels {
+		if unreadable(filepath.Join(repo, rel)) {
+			bad = append(bad, rel)
+		}
+	}
+	return bad
+}
+
+// errUnreadable explains files we can't read and how to get them back, instead of the misleading
+// "not set up yet" a silent read failure used to produce.
+func errUnreadable(repo string, rels []string) error {
+	return fmt.Errorf("can't read %s — owned by another user (usually root, from an older hsctl run "+
+		"with sudo or from the dashboard).\nGive them back to yourself with:\n"+
+		"  cd %s && sudo chown \"$USER\": %s\n"+
+		"(or run any hsctl command once with sudo — it repairs these files)",
+		strings.Join(rels, ", "), repo, strings.Join(rels, " "))
+}
+
+// requireReadable fails with errUnreadable when any of the given hsctl files can't be read.
+func requireReadable(repo string, rels ...string) error {
+	if bad := unreadableConfig(repo, rels...); len(bad) > 0 {
+		return errUnreadable(repo, bad)
+	}
+	return nil
 }

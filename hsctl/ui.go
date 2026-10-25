@@ -86,7 +86,11 @@ func (s *uiServer) getRestore() restoreStatus {
 
 func runUI(cmd *cobra.Command, _ []string) error {
 	addr, _ := cmd.Flags().GetString("addr")
-	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
+	pass, err := uiPassword(repoDir())
+	if err != nil {
+		return err
+	}
+	s := &uiServer{repo: repoDir(), pass: pass, sessions: map[string]time.Time{}}
 	c := s.config()
 
 	// Reap expired sessions periodically so the token map can't grow without bound.
@@ -208,19 +212,26 @@ func serveUI(mux http.Handler, addrs []string) error {
 
 // uiPassword returns the admin password from $HSCTL_UI_PASSWORD or .ui-password,
 // generating and saving one on first run.
-func uiPassword(repo string) string {
+func uiPassword(repo string) (string, error) {
 	if p := os.Getenv("HSCTL_UI_PASSWORD"); p != "" {
-		return p
+		return p, nil
 	}
 	path := filepath.Join(repo, ".ui-password")
 	if b, err := os.ReadFile(path); err == nil {
 		if p := strings.TrimSpace(string(b)); p != "" {
-			return p
+			return p, nil
 		}
 	}
+	// Never mint a new password over one we merely can't read: the running service would keep
+	// the old one and the file would no longer say what it is.
+	if unreadable(path) {
+		return "", errUnreadable(repo, []string{".ui-password"})
+	}
 	p := genPassword(16)
-	_ = writeFile0600(path, p+"\n")
-	return p
+	if err := writeFile0600(path, p+"\n"); err != nil {
+		return "", fmt.Errorf("saving the dashboard password: %w", err)
+	}
+	return p, nil
 }
 
 // requireAuth gates admin handlers behind a login-form session cookie. We use a cookie

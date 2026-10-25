@@ -76,6 +76,10 @@ type backupCfg struct {
 	ReplicaRepo   string // optional second restic repo (off-site) that `backup replicate` copies to
 }
 
+// backupConfigFiles are the backup settings a run depends on. If one exists but can't be read,
+// loading would fall back to defaults — and back up to the wrong place, or with a new password.
+var backupConfigFiles = []string{backupConfFile, resticPassFile, backupEnvFile}
+
 // backupEnvFile holds cloud-backend credentials restic needs for remote repos —
 // B2_ACCOUNT_ID / B2_ACCOUNT_KEY for Backblaze, AWS_ACCESS_KEY_ID / ... for S3 —
 // one KEY=VALUE per line. Optional: local and SFTP destinations don't need it.
@@ -176,6 +180,9 @@ func backupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := requireReadable(repo, backupConfigFiles...); err != nil {
+				return err
+			}
 			cfg := loadBackupCfg(repo)
 			if err := requireBackupMount(cfg); err != nil {
 				return err
@@ -231,6 +238,10 @@ func backupCmd() *cobra.Command {
 func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	repo, err := requireRepoDir()
 	if err != nil {
+		return err
+	}
+	// Saving over a backup.conf we couldn't read would replace the real destination with defaults.
+	if err := requireReadable(repo, backupConfigFiles...); err != nil {
 		return err
 	}
 	cfg := loadBackupCfg(repo)
@@ -456,6 +467,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 	repo, err := requireRepoDir()
 	if err != nil {
+		return err
+	}
+	if err := requireReadable(repo, backupConfigFiles...); err != nil {
 		return err
 	}
 	cfg := loadBackupCfg(repo)

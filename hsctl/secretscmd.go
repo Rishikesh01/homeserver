@@ -42,6 +42,9 @@ func rotateVWAdmin(repo string) error {
 	if !fileExists(envPath) {
 		return fmt.Errorf("%s not found — run: hsctl setup", envPath)
 	}
+	if err := requireReadable(repo, "vaultwarden/.env"); err != nil {
+		return err
+	}
 	token := genPassword(40)
 	if err := setEnvKey(envPath, "VW_ADMIN_TOKEN", escapeDollarsForCompose(argon2idPHC(token))); err != nil {
 		return err
@@ -76,30 +79,46 @@ func vwAdminURL(envPath string) string {
 func secretsShow(repo string) error {
 	type item struct{ label, file, key string }
 	var any bool
+	var blocked []string // files that exist but we can't read (left root-owned)
 	for _, it := range []item{
 		{"Vaultwarden /admin token", "vaultwarden/.env", "VW_ADMIN_TOKEN"},
 		{"Nextcloud (user 'admin')", "nextcloud/.env", "NC_ADMIN_PASSWORD"},
 		{"Pi-hole admin", "pihole/.env", "PIHOLE_PASSWORD"},
 	} {
-		if kv, err := readKV(filepath.Join(repo, it.file)); err == nil {
-			v := kv[it.key]
-			if v == "" {
-				continue
+		path := filepath.Join(repo, it.file)
+		kv, err := readKV(path)
+		if err != nil {
+			if unreadable(path) {
+				fmt.Printf("%-28s (can't read %s)\n", it.label+":", it.file)
+				blocked = append(blocked, it.file)
 			}
-			// The Vaultwarden token is stored Argon2-hashed — don't print the hash as if
-			// it were the login; it's not reversible.
-			if it.key == "VW_ADMIN_TOKEN" && strings.Contains(v, "argon2") {
-				v = "(Argon2-hashed; shown once at setup — reset with: hsctl secrets rotate-vw-admin)"
-			}
-			fmt.Printf("%-28s %s\n", it.label+":", v)
-			any = true
+			continue
 		}
+		v := kv[it.key]
+		if v == "" {
+			continue
+		}
+		// The Vaultwarden token is stored Argon2-hashed — don't print the hash as if
+		// it were the login; it's not reversible.
+		if it.key == "VW_ADMIN_TOKEN" && strings.Contains(v, "argon2") {
+			v = "(Argon2-hashed; shown once at setup — reset with: hsctl secrets rotate-vw-admin)"
+		}
+		fmt.Printf("%-28s %s\n", it.label+":", v)
+		any = true
 	}
-	if b, err := os.ReadFile(filepath.Join(repo, ".ui-password")); err == nil {
+	uiPass := filepath.Join(repo, ".ui-password")
+	if b, err := os.ReadFile(uiPass); err == nil {
 		if v := strings.TrimSpace(string(b)); v != "" {
 			fmt.Printf("%-28s %s (user 'admin')\n", "Dashboard:", v)
 			any = true
 		}
+	} else if unreadable(uiPass) {
+		fmt.Printf("%-28s (can't read .ui-password)\n", "Dashboard:")
+		blocked = append(blocked, ".ui-password")
+	}
+	if len(blocked) > 0 {
+		fmt.Println()
+		return errUnreadable(repo, blocked)
 	}
 	if !any {
 		fmt.Println("No logins found — has the stack been set up? Run: hsctl setup")

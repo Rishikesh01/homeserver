@@ -76,6 +76,10 @@ func migrateSharedNetworkEnv(repo string) {
 // coreServices need a generated .env (the tools run from compose defaults, no .env).
 var coreServices = []string{"vaultwarden", "nextcloud", "pihole"}
 
+// envFiles are the generated per-service .env files (repo-relative). docker compose reads them on
+// every up/down, so an unreadable one has to be reported before compose fails on it.
+var envFiles = []string{"vaultwarden/.env", "nextcloud/.env", "pihole/.env", "caddy/.env"}
+
 // container names belonging to the stack (for status filtering).
 var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "stirling-pdf", "it-tools", "imagetools"}
 
@@ -96,6 +100,9 @@ func missingEnvIn(repo string) []string {
 func cmdUp() error {
 	if m := missingEnv(); len(m) > 0 {
 		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
+	}
+	if err := requireReadable(repoDir(), envFiles...); err != nil {
+		return err
 	}
 	migrateSharedNetworkEnv(repoDir())
 	if err := ensureEdgeNetwork(); err != nil {
@@ -123,6 +130,9 @@ func cmdUp() error {
 }
 
 func cmdDown(volumes bool) error {
+	if err := requireReadable(repoDir(), envFiles...); err != nil {
+		return err
+	}
 	down := []string{"compose", "down"}
 	if volumes {
 		down = append(down, "-v")

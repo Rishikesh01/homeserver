@@ -16,6 +16,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	yes, _ := f.GetBool("yes")
 	force, _ := f.GetBool("force")
 	repo := repoDir()
+	// A config file we can't read must stop us here: loading would silently fall back to
+	// autodetected values and then save them over the real settings.
+	if err := requireReadable(repo, append([]string{confFile}, envFiles...)...); err != nil {
+		return err
+	}
 	c := LoadConfig(repo)
 	// apply only the flags the user actually set, over the loaded config
 	if f.Changed("server-ip") {
