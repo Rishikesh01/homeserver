@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -58,7 +61,9 @@ func isRepo(dir string) bool {
 
 // dockerSudo caches whether the docker daemon needs sudo from this user. The web UI probes
 // this from many request goroutines at once, so the one-time detection is guarded by Once —
-// otherwise concurrent first calls would race on the cache variable.
+// otherwise concurrent first calls would race on the cache variable. Only a permission error
+// means "use sudo"; a stopped or missing daemon is reported by dockerProblem instead of being
+// retried with sudo (which just turned it into a surprise password prompt).
 var (
 	dockerSudoOnce sync.Once
 	dockerSudo     bool
@@ -66,16 +71,77 @@ var (
 
 func dockerNeedsSudo() bool {
 	dockerSudoOnce.Do(func() {
-		dockerSudo = exec.Command("docker", "info").Run() != nil
+		out, err := exec.Command("docker", "info").CombinedOutput()
+		dockerSudo = err != nil && os.Geteuid() != 0 && strings.Contains(strings.ToLower(string(out)), "permission denied")
+		if dockerSudo {
+			fmt.Fprintln(os.Stderr, "note: using sudo for docker — "+dockerGroupAdvice())
+		}
 	})
 	return dockerSudo
 }
 
-// dockerCmd builds a docker (or sudo docker) command rooted at dir.
+// dockerGroupAdvice explains how to use docker without sudo, depending on whether the user is
+// already in the docker group on disk (then only this login session predates it).
+func dockerGroupAdvice() string {
+	if u, err := user.Current(); err == nil {
+		if g, err := user.LookupGroup("docker"); err == nil {
+			if ids, err := u.GroupIds(); err == nil && slices.Contains(ids, g.Gid) {
+				return "you're in the docker group, but this login session started before you were added: " +
+					"log out and back in (or run: newgrp docker)"
+			}
+		}
+	}
+	return "your user isn't in the docker group: sudo usermod -aG docker $USER, then log out and back in"
+}
+
+// dockerProblem describes why docker can't be used right now, or "" when it can.
+func dockerProblem() string {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return "Docker isn't installed — install it: curl -fsSL https://get.docker.com | sh"
+	}
+	out, err := dockerCmd(repoDir(), "info").CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	return classifyDockerError(string(out), err)
+}
+
+// classifyDockerError turns `docker info`'s failure output into what to do about it.
+func classifyDockerError(out string, err error) string {
+	msg := strings.ToLower(out)
+	switch {
+	case strings.Contains(msg, "cannot connect to the docker daemon") || strings.Contains(msg, "is the docker daemon running"):
+		return "Docker isn't running — start it: sudo systemctl start docker"
+	case strings.Contains(msg, "permission denied"):
+		return "Docker refused this user — " + dockerGroupAdvice()
+	case strings.Contains(msg, "a password is required") || strings.Contains(msg, "a terminal is required"):
+		return "Docker needs sudo here and there's no terminal to ask for the password — " + dockerGroupAdvice()
+	}
+	if line := strings.TrimSpace(out); line != "" {
+		first, _, _ := strings.Cut(line, "\n")
+		return "Docker isn't usable: " + first
+	}
+	return "Docker isn't usable: " + err.Error()
+}
+
+// requireDocker fails with dockerProblem's explanation when docker can't be used.
+func requireDocker() error {
+	if p := dockerProblem(); p != "" {
+		return errors.New(p)
+	}
+	return nil
+}
+
+// dockerCmd builds a docker (or sudo docker) command rooted at dir. Without a terminal to ask for
+// a password (a script, the timer), sudo is told not to ask (-n) so it fails fast instead of hanging.
 func dockerCmd(dir string, args ...string) *exec.Cmd {
 	name := "docker"
 	if dockerNeedsSudo() {
-		name, args = "sudo", append([]string{"docker"}, args...)
+		pre := []string{"docker"}
+		if !isTTY() {
+			pre = []string{"-n", "docker"}
+		}
+		name, args = "sudo", append(pre, args...)
 	}
 	c := exec.Command(name, args...)
 	c.Dir = dir

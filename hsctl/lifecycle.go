@@ -130,6 +130,9 @@ func cmdUp() error {
 	if err := requireReadable(repoDir(), envFiles...); err != nil {
 		return err
 	}
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	cfg := LoadConfig(repoDir())
 	if m := missingEnvFor(repoDir(), cfg); len(m) > 0 {
 		return fmt.Errorf("missing .env for %s — run: hsctl setup", strings.Join(m, ", "))
@@ -184,6 +187,9 @@ func cmdDown(volumes, keepProxy bool) error {
 	if err := requireReadable(repoDir(), envFiles...); err != nil {
 		return err
 	}
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	down := []string{"compose", "down"}
 	if volumes {
 		down = append(down, "-v")
@@ -230,6 +236,9 @@ func cmdRestart() error {
 }
 
 func cmdStatus() error {
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	args := []string{"ps", "--format", "table {{.Names}}\t{{.Status}}"}
 	for _, n := range stackContainers {
 		args = append(args, "--filter", "name="+n)
@@ -238,6 +247,9 @@ func cmdStatus() error {
 }
 
 func cmdGetCA() error {
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	out, err := dockerOut(repoDir(), "exec", "caddy", "cat",
 		"/data/caddy/pki/authorities/local/root.crt")
 	if err != nil {

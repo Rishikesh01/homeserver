@@ -338,6 +338,9 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := requireResticPassword(repo); err != nil {
 		return err
 	}
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
 			"pin may have been overridden by a system upgrade. Run `hsctl backup verify` to re-test.\n",

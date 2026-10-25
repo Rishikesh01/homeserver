@@ -50,8 +50,8 @@ func cmdInstall() error {
 	if err != nil {
 		return err
 	}
-	if err := dockerCmd(repo, "info").Run(); err != nil {
-		return fmt.Errorf("Docker isn't reachable (is it installed and running? `curl -fsSL https://get.docker.com | sh`)")
+	if err := requireDocker(); err != nil {
+		return err
 	}
 
 	c := LoadConfig(repo)

@@ -351,6 +351,9 @@ func pinVarFor(composeText string, env map[string]string, ref string) (string, e
 // statuses. progress, when non-nil, gets each status as it lands — the check
 // talks to registries and takes seconds per image, so callers show rows live.
 func checkAllUpdates(repo string, progress func(imageStatus)) ([]imageStatus, error) {
+	if err := requireDocker(); err != nil {
+		return nil, err
+	}
 	if _, err := dockerOut(repo, "buildx", "version"); err != nil {
 		return nil, fmt.Errorf("docker buildx is needed to read registry digests — install it:\n" +
 			"  sudo apt-get install -y docker-buildx-plugin")

@@ -427,7 +427,9 @@ func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	st, err := s.status()
 	if err != nil {
 		uiLog.Warn("docker unreachable", "err", err)
-		d.DockerErr = "Docker is not reachable. Is the daemon running, and is this user in the 'docker' group? (sudo usermod -aG docker $USER, then re-login)"
+		if d.DockerErr = dockerProblem(); d.DockerErr == "" {
+			d.DockerErr = "Couldn't list the containers: " + err.Error()
+		}
 	}
 	d.Containers = st
 	d.Sys = <-sysCh
