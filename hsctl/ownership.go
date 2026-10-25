@@ -83,14 +83,14 @@ func createOwned(path string, perm os.FileMode) (*os.File, error) {
 	return f, nil
 }
 
-// handBackTree gives every root-owned entry under dir to the owner of dir's parent — for trees a
-// root child process wrote (restic writing a repo that lives inside the homeserver repo). It never
-// follows symlinks, and is a no-op unless we're root and the parent belongs to someone else.
-func handBackTree(dir string) {
+// handBackTree gives every root-owned entry under dir to the owner of owner (a directory) — for
+// trees a root child process wrote (restic writing a repo that lives inside the homeserver repo).
+// It never follows symlinks, and is a no-op unless we're root and owner belongs to someone else.
+func handBackTree(dir, owner string) {
 	if os.Geteuid() != 0 {
 		return
 	}
-	uid, gid, ok := ownerOf(filepath.Dir(filepath.Clean(dir)))
+	uid, gid, ok := ownerOf(owner)
 	if !ok || uid == 0 {
 		return
 	}

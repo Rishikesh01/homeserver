@@ -618,7 +618,9 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return strconv.Itoa(n)
 	}
 	d.KeepDaily, d.KeepWeekly, d.KeepMonthly, d.KeepRest = field(daily), field(weekly), field(monthly), rest
-	if d.ResticOK {
+	if d.ResticOK && requireResticPassword(s.repo) != nil {
+		d.Snapshots = requireResticPassword(s.repo).Error()
+	} else if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
 			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
 		} else {

@@ -195,7 +195,11 @@ func backupCmd() *cobra.Command {
 
 	initCmd := &cobra.Command{Use: "init", Short: "Create the encrypted restic repo (first time)", Args: cobra.NoArgs,
 		RunE: locked("backup init", 0, withRestic(func(repo string, cfg backupCfg) error {
-			ensureResticPassword(repo)
+			passFile := filepath.Join(repo, resticPassFile)
+			generated := !fileExists(passFile)
+			if err := ensureResticPassword(repo, cfg); err != nil {
+				return err
+			}
 			// Record the restic version we're initialising with, so `backup verify` can
 			// later catch a restic that drifted (e.g. after a system upgrade).
 			if cfg.ResticVersion == "" {
@@ -206,7 +210,17 @@ func backupCmd() *cobra.Command {
 				}
 			}
 			defer handBackLocalRepo(repo, cfg)
-			return resticRun(repo, cfg, "init")
+			if err := resticRun(repo, cfg, "init"); err != nil {
+				// A password generated just now must never outlive a failed init: for a repository
+				// that already exists (only detectable for a remote one by trying), it would stand in
+				// for the lost real password and make every later run fail with "wrong password".
+				if generated {
+					_ = os.Remove(passFile)
+					fmt.Fprintln(os.Stderr, "removed the password generated for this init — nothing was created")
+				}
+				return err
+			}
+			return nil
 		}))}
 	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -217,10 +231,18 @@ func backupCmd() *cobra.Command {
 		}}
 	runCmd.Flags().Duration("wait", 0, "if another hsctl operation is running, wait up to this long for it (e.g. 30m)")
 	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
-		RunE: withRestic(func(repo string, cfg backupCfg) error { return resticRun(repo, cfg, "snapshots") })}
+		RunE: withRestic(func(repo string, cfg backupCfg) error {
+			if err := requireResticPassword(repo); err != nil {
+				return err
+			}
+			return resticRun(repo, cfg, "snapshots")
+		})}
 	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
 		RunE: locked("backup forget", 0, withRestic(func(repo string, cfg backupCfg) error {
 			defer handBackLocalRepo(repo, cfg)
+			if err := requireResticPassword(repo); err != nil {
+				return err
+			}
 			args, err := forgetArgs(cfg.Retention)
 			if err != nil {
 				return fmt.Errorf("%w\nfix it with: hsctl backup config --retention '%s'", err, retentionExample)
@@ -296,7 +318,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 
 func backupRun(repo string, cfg backupCfg) error {
 	defer handBackLocalRepo(repo, cfg)
-	ensureResticPassword(repo)
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
 			"pin may have been overridden by a system upgrade. Run `hsctl backup verify` to re-test.\n",
@@ -377,6 +401,9 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 			"Cloud credentials (e.g. B2_ACCOUNT_ID / B2_ACCOUNT_KEY) go in %s, one KEY=VALUE per line.",
 			backupEnvFile)
 	}
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
 	pass := filepath.Join(repo, resticPassFile)
 	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe.
 	if err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
@@ -405,9 +432,17 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 // `restic` work without sudo. A repo elsewhere (an external disk under /mnt, sftp:, …) is left
 // exactly as restic made it.
 func handBackLocalRepo(repo string, cfg backupCfg) {
-	if filepath.IsAbs(cfg.Repo) && within(cfg.Repo, repo) {
-		handBackTree(cfg.Repo)
+	if !filepath.IsAbs(cfg.Repo) || !within(cfg.Repo, repo) {
+		return
 	}
+	// Walk from the repo's top-level folder that holds it (backups/, which restic may have created
+	// itself), so the folders in between are handed back too.
+	rel, err := filepath.Rel(repo, cfg.Repo)
+	if err != nil || rel == "." {
+		return
+	}
+	top, _, _ := strings.Cut(rel, string(filepath.Separator))
+	handBackTree(filepath.Join(repo, top), repo)
 }
 
 // resticQuiet runs restic against the given repository, discarding output — for probes
@@ -508,7 +543,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		snap = args[0]
 	}
-	ensureResticPassword(repo)
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
 	// A user-supplied --target is the operator's own directory: extract INTO it without wiping
 	// (restic overlays). Only the default reusable scratch dir gets emptied first, so a prior
 	// extraction there can't contaminate an --into-volumes put-back.
@@ -1470,12 +1507,36 @@ func resticVersion() (string, error) {
 	return "", fmt.Errorf("could not parse restic version from %q", strings.TrimSpace(string(out)))
 }
 
-func ensureResticPassword(repo string) {
+// ensureResticPassword creates the repo password for `backup init`, when there isn't one yet.
+// Only init does this: generating one anywhere else (as `run` and `restore` used to) replaced a
+// LOST password with a new random one, so restoring onto a fresh machine failed with "wrong
+// password" and the nightly backup failed every night after a `git clean`. A local repository that
+// already exists is never given a new password either.
+func ensureResticPassword(repo string, cfg backupCfg) error {
 	path := filepath.Join(repo, resticPassFile)
 	if fileExists(path) {
-		return
+		return nil
 	}
-	pw := genPassword(32)
-	_ = writeFile0600(path, pw+"\n")
-	fmt.Printf("generated restic repo password -> %s  (BACK THIS UP; without it backups are unrecoverable)\n", path)
+	if fileExists(filepath.Join(cfg.Repo, "config")) { // a local restic repository is already there
+		return fmt.Errorf("a backup repository already exists at %s, but %s is missing — "+
+			"put your saved password back first:\n  hsctl backup config --password '…'", cfg.Repo, resticPassFile)
+	}
+	if err := writeFile0600(path, genPassword(32)+"\n"); err != nil {
+		return fmt.Errorf("save the new backup password: %w", err)
+	}
+	fmt.Printf("generated the backup password -> %s\n", path)
+	fmt.Println("  SAVE A COPY SOMEWHERE ELSE (Vaultwarden, or written down): without it the backups can't be")
+	fmt.Println("  decrypted. See it any time with: hsctl secrets show")
+	return nil
+}
+
+// requireResticPassword fails, with what to do, when there's no repo password — for every backup
+// command but init.
+func requireResticPassword(repo string) error {
+	if fileExists(filepath.Join(repo, resticPassFile)) {
+		return nil
+	}
+	return fmt.Errorf("no backup password (%s).\n"+
+		"  Have backups already? Put your saved password back: hsctl backup config --password '…'\n"+
+		"  Starting fresh? hsctl backup init creates the repository and a password.", resticPassFile)
 }

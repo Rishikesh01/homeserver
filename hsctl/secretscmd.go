@@ -106,6 +106,15 @@ func secretsShow(repo string) error {
 		fmt.Printf("%-28s %s\n", it.label+":", v)
 		any = true
 	}
+	if b, err := os.ReadFile(filepath.Join(repo, resticPassFile)); err == nil {
+		if v := strings.TrimSpace(string(b)); v != "" {
+			fmt.Printf("%-28s %s (keep a copy off this machine)\n", "Backup password:", v)
+			any = true
+		}
+	} else if unreadable(filepath.Join(repo, resticPassFile)) {
+		fmt.Printf("%-28s (can't read %s)\n", "Backup password:", resticPassFile)
+		blocked = append(blocked, resticPassFile)
+	}
 	uiPass := filepath.Join(repo, ".ui-password")
 	if b, err := os.ReadFile(uiPass); err == nil {
 		if v := strings.TrimSpace(string(b)); v != "" {
