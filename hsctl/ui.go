@@ -700,6 +700,10 @@ func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
 		return
 	}
+	if holder := opLockBusy(s.repo); holder != "" {
+		redirectFlash(w, r, "/admin/devices", "Not now — "+holder+" is running and may be using the disks. Try again when it's finished.", true)
+		return
+	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	dev := strings.TrimSpace(r.FormValue("dev"))
 	if mp, err := mountDeviceAt(dev, target); err != nil {
@@ -717,6 +721,12 @@ func (s *uiServer) deviceActionHandler(action func(string) (string, error), errP
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
+			return
+		}
+		// Ejecting the backup disk between restic's writes would send the rest of a backup onto
+		// the system disk (or fail a restore half-way).
+		if holder := opLockBusy(s.repo); holder != "" {
+			redirectFlash(w, r, "/admin/devices", "Not now — "+holder+" is running and may be using the disks. Try again when it's finished.", true)
 			return
 		}
 		dev := strings.TrimSpace(r.FormValue("dev"))
@@ -860,6 +870,9 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.NotifyURL = v
+	}
+	if w := guardMismatch(cfg); w != "" {
+		msg += " Warning: " + w + "."
 	}
 	if err := cfg.save(s.repo); err != nil {
 		msg, isErr = "Save failed: "+err.Error(), true
