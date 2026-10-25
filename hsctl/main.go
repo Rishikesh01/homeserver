@@ -38,8 +38,8 @@ func rootCmd() *cobra.Command {
 
 	setup := &cobra.Command{
 		Use:   "setup",
-		Short: "Configure and generate each service's .env (interactive)",
-		Args:  cobra.NoArgs,
+		Short: "Configure and generate each service's .env, or apply changed settings (interactive)",
+		Args:  setupArgs,
 		RunE:  runSetup,
 	}
 	setup.Flags().Bool("yes", false, "non-interactive: accept defaults/setup.conf/flags")

@@ -145,11 +145,25 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	// Default: the dashboard is plain HTTP and grants a root shell, so keep it OFF the LAN.
 	// Bind loopback (local use) + the docker bridge gateway (so Caddy, which fronts us with
 	// HTTPS via host.docker.internal, can still reach us) — never the LAN interface.
-	addrs, warn := uiListenAddrs(c.UIPort)
+	addrs, warn := uiListenAddrs(dashboardPort(s.repo, c))
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
 	return serveUI(handler, addrs)
+}
+
+// dashboardPort is the port the dashboard must listen on: the one Caddy forwards to (caddy/.env's
+// HOME_UPSTREAM), so a UI_PORT edited in setup.conf but not yet applied with `hsctl setup` can't
+// leave Caddy proxying to a port nothing listens on. Falls back to the configured port.
+func dashboardPort(repo string, c Config) int {
+	if kv, err := readKV(filepath.Join(repo, "caddy/.env")); err == nil {
+		if up := kv["HOME_UPSTREAM"]; strings.HasPrefix(up, "host.docker.internal:") {
+			if p := portFromUpstream(up); p > 0 {
+				return p
+			}
+		}
+	}
+	return c.UIPort
 }
 
 // uiListenAddrs returns the addresses the dashboard binds to by default: always loopback, plus

@@ -55,18 +55,15 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "saving setup.conf: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	secrets, err := c.Generate(s.repo, false)
+	// Generate also applies the confirmed settings to the caddy/.env the bootstrap wrote from
+	// autodetected values, so Caddy follows a corrected IP or port.
+	res, err := c.Generate(s.repo, false)
 	if err != nil {
 		http.Error(w, "generating service configs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// The bootstrap wrote caddy/.env from autodetected values; follow what the admin confirmed.
-	if err := reconcileCaddyEnv(s.repo, c); err != nil {
-		http.Error(w, "updating caddy/.env: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	uiLog.Info("setup wizard: configs generated", "ip", c.ServerIP, "from", remoteIP(r))
-	render(w, setupTmpl, setupData{Cfg: c, Secrets: secrets, Step: 2})
+	render(w, setupTmpl, setupData{Cfg: c, Secrets: res.Secrets, Step: 2})
 }
 
 // setupRunStatus is kept in memory so setup progress survives a dropped browser stream.

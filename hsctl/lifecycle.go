@@ -118,6 +118,14 @@ func cmdUp() error {
 			return fmt.Errorf("%s: %w", s, err)
 		}
 	}
+	// Nextcloud only reads NC_TRUSTED_DOMAINS on first install; keep its own list in step with
+	// the server IP so an IP change doesn't lock it behind "untrusted domain". Best-effort: a
+	// fresh Nextcloud may still be installing (and then takes the env value anyway).
+	if !cfg.IsDisabled("nextcloud") {
+		if added, err := ensureNextcloudTrusts(repoDir(), cfg.ServerIP); err == nil && added {
+			fmt.Printf("nextcloud: added %s to its trusted domains\n", cfg.ServerIP)
+		}
+	}
 	fmt.Println()
 	if err := cmdStatus(); err != nil {
 		return err

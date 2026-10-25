@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+	_ "time/tzdata" // validate timezone names even on a box without system zoneinfo
 
 	"github.com/spf13/cobra"
 )
@@ -22,6 +25,8 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	c := LoadConfig(repo)
+	// What Caddy currently issues certificates for (the autodetected IP on a first setup).
+	deployedIP := c.ServerIP
 	// apply only the flags the user actually set, over the loaded config
 	if f.Changed("server-ip") {
 		c.ServerIP, _ = f.GetString("server-ip")
@@ -47,30 +52,167 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 
 	if !yes && isTTY() {
-		c = promptConfig(c)
+		c = promptConfig(c, deployedIP)
+	} else if c.ServerIP != deployedIP && c.PiholeDNSBind == deployedIP && !f.Changed("pihole-dns-bind") {
+		// Pi-hole was bound to the old IP; let Normalize re-derive the bind for the new one.
+		c.PiholeDNSBind = ""
 	}
 	c.Normalize()
+	if err := validateConfig(c); err != nil {
+		return err
+	}
+	if !localIPv4(c.ServerIP) {
+		fmt.Fprintf(os.Stderr, "warning: %s isn't an address of this machine — the apps will only be "+
+			"reachable there if it forwards to this box.\n", c.ServerIP)
+	}
 	if err := c.Save(repo); err != nil {
 		return err
 	}
 	fmt.Println("Saved", filepath.Join(repo, confFile))
 
-	secrets, err := c.Generate(repo, force)
+	res, err := c.Generate(repo, force)
 	if err != nil {
 		return err
 	}
-	if len(secrets) > 0 {
+	if len(res.Changed) > 0 {
+		fmt.Println("\nApplied your changes to the existing config:")
+		for _, l := range res.Changed {
+			fmt.Println("  " + l)
+		}
+		if c.ServerIP != deployedIP {
+			trustNextcloudIP(repo, c.ServerIP)
+		}
+	}
+	if len(res.Secrets) > 0 {
 		fmt.Println("\n========== NEW LOGINS — save these into a password manager ==========")
-		for _, s := range secrets {
+		for _, s := range res.Secrets {
 			fmt.Printf("%-26s %s\n", s.Label, s.Value)
 		}
 		fmt.Println("=====================================================================")
-		fmt.Println("See them again anytime with `hsctl secrets show` (read from the .env files).")
-	} else {
-		fmt.Println("All .env files already exist (nothing regenerated). Use --force to recreate.")
+		fmt.Println("See them again anytime with `hsctl secrets show` (read from the .env files) —")
+		fmt.Println("except the Vaultwarden /admin token, which is stored hashed: copy it now.")
+	} else if len(res.Changed) == 0 {
+		fmt.Println("Nothing to change — the existing .env files already match these settings.")
 	}
-	fmt.Println("\nNext: hsctl up   then   hsctl get-ca")
+	switch {
+	case len(res.Secrets) > 0 && !uiServiceActive():
+		fmt.Println("\nNext: hsctl up   then   sudo hsctl install   (runs the dashboard on boot)")
+	case len(res.Secrets) > 0 || len(res.Changed) > 0:
+		fmt.Println("\nNext: hsctl up   (recreates the containers whose settings changed)")
+	}
 	return nil
+}
+
+// setupArgs rejects positional arguments, with a pointed hint for the classic slip of giving
+// a boolean flag its value after a space (`--vw-signups false`), which cobra reads as a stray
+// argument.
+func setupArgs(_ *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if a := strings.ToLower(args[0]); a == "true" || a == "false" {
+		return fmt.Errorf("unexpected %q — give a true/false flag its value with '=', e.g. --vw-signups=%s", args[0], a)
+	}
+	return fmt.Errorf("unexpected argument %q — setup takes only flags (see hsctl setup --help)", args[0])
+}
+
+// trustNextcloudIP adds a new server IP to a running Nextcloud's own trusted_domains: Nextcloud
+// only reads NC_TRUSTED_DOMAINS on its first install, so without this an IP change locks it
+// behind "access through untrusted domain".
+func trustNextcloudIP(repo, ip string) {
+	if containerState(repo, "nextcloud-app") != "running" {
+		fmt.Println("  (Nextcloud isn't running — `hsctl up` adds the new IP to its trusted domains.)")
+		return
+	}
+	if added, err := ensureNextcloudTrusts(repo, ip); err != nil {
+		fmt.Fprintf(os.Stderr, "  could not add %s to Nextcloud's trusted domains yet (%v) — `hsctl up` retries it\n", ip, err)
+	} else if added {
+		fmt.Printf("  nextcloud: trusted_domains += %s\n", ip)
+	}
+}
+
+// ensureNextcloudTrusts makes sure ip is in Nextcloud's trusted_domains (via occ), reporting
+// whether it had to add it. It errors while Nextcloud isn't installed/ready yet.
+func ensureNextcloudTrusts(repo, ip string) (bool, error) {
+	occ := func(args ...string) (string, error) {
+		return dockerCombined(repo, append([]string{"exec", "-u", "www-data", "nextcloud-app", "php", "occ"}, args...)...)
+	}
+	out, err := occ("config:system:get", "trusted_domains")
+	if err != nil {
+		return false, fmt.Errorf("occ: %s", strings.TrimSpace(out))
+	}
+	domains := strings.Fields(out)
+	for _, d := range domains {
+		if d == ip {
+			return false, nil
+		}
+	}
+	if out, err := occ("config:system:set", "trusted_domains", strconv.Itoa(len(domains)), "--value="+ip); err != nil {
+		return false, fmt.Errorf("occ: %s", strings.TrimSpace(out))
+	}
+	return true, nil
+}
+
+// validIPv4 checks s is a dotted IPv4 address (the certificates and binds are IPv4-only).
+func validIPv4(s string) error {
+	if ip := net.ParseIP(s); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("%q isn't an IPv4 address (like 192.168.1.10)", s)
+	}
+	return nil
+}
+
+func validTZ(s string) error {
+	if _, err := time.LoadLocation(s); err != nil || s == "" || s == "Local" {
+		return fmt.Errorf("%q isn't a timezone name (like Europe/Brussels or Asia/Kolkata)", s)
+	}
+	return nil
+}
+
+func validPort(s string) error {
+	if n, err := strconv.Atoi(s); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%q isn't a port number (1-65535)", s)
+	}
+	return nil
+}
+
+// validateConfig checks every setting before anything is written. A non-interactive run with a
+// bad flag fails here; the prompts re-ask instead.
+func validateConfig(c Config) error {
+	var errs []string
+	add := func(err error) {
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	add(validIPv4(c.ServerIP))
+	add(validTZ(c.TZ))
+	add(validPort(strconv.Itoa(c.UIPort)))
+	if c.PiholeDNSBind != "" && c.PiholeDNSBind != c.ServerIP { // same value: already reported
+		add(validIPv4(c.PiholeDNSBind))
+	}
+	for _, d := range c.DisabledApps {
+		if !validApp(d) {
+			errs = append(errs, fmt.Sprintf("unknown app %q in DISABLED_APPS — one of: %s", d, strings.Join(appDirs(), ", ")))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid settings, nothing was written:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return nil
+}
+
+// localIPv4 reports whether ip is assigned to one of this machine's interfaces.
+func localIPv4(ip string) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true // can't tell — don't warn
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.String() == ip {
+			return true
+		}
+	}
+	return false
 }
 
 func isTTY() bool {
@@ -81,12 +223,31 @@ func isTTY() bool {
 var stdinReader = bufio.NewReader(os.Stdin)
 
 func ask(prompt, def string) string {
-	fmt.Printf("  %s [%s]: ", prompt, def)
-	line, _ := stdinReader.ReadString('\n')
-	if line = strings.TrimSpace(line); line == "" {
-		return def
+	return askValid(prompt, def, nil)
+}
+
+// askValid is ask with a check: an answer that fails validate is explained and asked again,
+// so a typo never lands in the generated .env files. At end of input it settles for the default
+// (validateConfig still checks the final result).
+func askValid(prompt, def string, validate func(string) error) string {
+	for {
+		fmt.Printf("  %s [%s]: ", prompt, def)
+		line, err := stdinReader.ReadString('\n')
+		if line = strings.TrimSpace(line); line == "" {
+			return def
+		}
+		if validate == nil {
+			return line
+		}
+		verr := validate(line)
+		if verr == nil {
+			return line
+		}
+		fmt.Printf("    %v\n", verr)
+		if err != nil {
+			return def
+		}
 	}
-	return line
 }
 
 func askYN(prompt string, def bool) bool {
@@ -103,17 +264,19 @@ func askYN(prompt string, def bool) bool {
 	return strings.HasPrefix(line, "y")
 }
 
-func promptConfig(c Config) Config {
+// promptConfig asks for each setting. deployedIP is the address the stack runs on now, so a
+// Pi-hole bind that followed the old IP follows the new one by default.
+func promptConfig(c Config, deployedIP string) Config {
 	fmt.Println("== Configure (Enter accepts each [default]) ==")
-	c.ServerIP = ask("Server LAN IP", c.ServerIP)
-	c.TZ = ask("Timezone", c.TZ)
-	c.UIPort = atoiDef(ask("Dashboard (web UI) port", strconv.Itoa(c.UIPort)), c.UIPort)
+	c.ServerIP = askValid("Server LAN IP", c.ServerIP, validIPv4)
+	c.TZ = askValid("Timezone", c.TZ, validTZ)
+	c.UIPort = atoiDef(askValid("Dashboard (web UI) port", strconv.Itoa(c.UIPort), validPort), c.UIPort)
 	// derived defaults follow the IP just entered
 	dnsDef := c.PiholeDNSBind
-	if dnsDef == "" {
+	if dnsDef == "" || (dnsDef == deployedIP && c.ServerIP != deployedIP) {
 		dnsDef = defaultDNSBind(c.ServerIP)
 	}
-	c.PiholeDNSBind = ask("Pi-hole DNS bind IP", dnsDef)
+	c.PiholeDNSBind = askValid("Pi-hole DNS bind IP", dnsDef, validIPv4)
 	c.VWSignupsAllowed = askYN("Allow open Vaultwarden signups?", c.VWSignupsAllowed)
 	fmt.Printf("  Apps: %s\n", strings.Join(appDirs(), ", "))
 	for {

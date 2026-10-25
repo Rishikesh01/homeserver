@@ -156,15 +156,59 @@ func TestSetupWizardFlow(t *testing.T) {
 	}
 }
 
-func TestReconcileCaddyEnvCreatesWhenMissing(t *testing.T) {
-	repo := setupTestRepo(t)
-	c := Config{ServerIP: "10.0.0.5", ACMEEmail: "a@b", UIPort: 9000}
-	if err := reconcileCaddyEnv(repo, c); err != nil {
-		t.Fatal(err)
+// TestGenerateAppliesSettings: re-running setup with new settings must reach the existing .env
+// files (non-secret keys only), and leave every secret as it was.
+func TestGenerateAppliesSettings(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*Config)
+		want   map[string]string // "file:KEY" -> value
+	}{
+		{"signups off", func(c *Config) { c.VWSignupsAllowed = false },
+			map[string]string{"vaultwarden/.env:VW_SIGNUPS_ALLOWED": "false"}},
+		{"timezone", func(c *Config) { c.TZ = "Europe/Berlin" },
+			map[string]string{"pihole/.env:TZ": "Europe/Berlin"}},
+		{"dashboard port", func(c *Config) { c.UIPort = 9000 },
+			map[string]string{"caddy/.env:HOME_UPSTREAM": "host.docker.internal:9000"}},
+		{"new server IP", func(c *Config) { c.ServerIP = "10.0.0.9" },
+			map[string]string{
+				"caddy/.env:SERVER_IP":              "10.0.0.9",
+				"vaultwarden/.env:VW_DOMAIN":        "https://10.0.0.9:8443",
+				"nextcloud/.env:NC_TRUSTED_DOMAINS": "10.0.0.9",
+			}},
 	}
-	kv, _ := readKV(filepath.Join(repo, "caddy/.env"))
-	if kv["SERVER_IP"] != "10.0.0.5" || kv["HOME_UPSTREAM"] != "host.docker.internal:9000" || kv["HOME_HTTPS"] != "443" {
-		t.Errorf("fresh caddy/.env wrong: %v", kv)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			c := Config{ServerIP: "10.0.0.5", TZ: "Etc/UTC", ACMEEmail: "a@b", UIPort: 8088,
+				PiholeDNSBind: "0.0.0.0", VWSignupsAllowed: true}
+			if _, err := c.Generate(repo, false); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
+			tc.change(&c)
+			res, err := c.Generate(repo, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Secrets) != 0 {
+				t.Errorf("re-run generated new logins: %v", res.Secrets)
+			}
+			if len(res.Changed) == 0 {
+				t.Error("no changes reported")
+			}
+			for k, want := range tc.want {
+				file, key, _ := strings.Cut(k, ":")
+				kv, _ := readKV(filepath.Join(repo, file))
+				if kv[key] != want {
+					t.Errorf("%s %s = %q, want %q", file, key, kv[key], want)
+				}
+			}
+			after, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
+			if after["POSTGRES_PASSWORD"] != before["POSTGRES_PASSWORD"] {
+				t.Error("a secret changed")
+			}
+		})
 	}
 }
 

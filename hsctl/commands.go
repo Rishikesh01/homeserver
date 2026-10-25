@@ -70,8 +70,8 @@ var webCmds = []webCmd{
 		Confirm: "DELETE ALL DATA? Every service's data volume will be destroyed. This cannot be undone."},
 
 	// ---- Setup & certificates ------------------------------------------------
-	{Slug: "setup", Title: "Generate missing configs", Category: "Setup",
-		Desc: "Create any service config (.env) that doesn't exist yet, from your saved settings, and generate logins for new services. Existing configs and secrets are left untouched.",
+	{Slug: "setup", Title: "Apply settings / generate missing configs", Category: "Setup",
+		Desc: "Apply your saved settings (setup.conf: server IP, timezone, signups, …) to every service config, and create any config (.env) that doesn't exist yet with fresh logins. Existing secrets are never changed. Afterwards, Start all services so the apps pick the changes up.",
 		Args: []string{"setup", "--yes"}, Danger: dangerCaution},
 	{Slug: "setup-force", Title: "Regenerate ALL secrets", Category: "Setup",
 		Desc: "Rebuild every service config and generate brand-new passwords/secrets for ALL services. Destructive: current logins stop working and data tied to old secrets can become unreadable. Only for a fresh start.",

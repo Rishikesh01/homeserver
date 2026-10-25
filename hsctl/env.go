@@ -2,16 +2,35 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 // Secret is a human login surfaced after generation (to save into Vaultwarden).
 type Secret struct{ Label, Value string }
 
-// Generate writes every service's .env (with fresh secrets), pihole/custom.list, and
-// a personalized WELCOME.txt. Existing .env files are left untouched unless force is
-// set. It returns the human logins for any .env it newly created.
-func (c Config) Generate(repo string, force bool) ([]Secret, error) {
+// generated is what Generate did: the human logins of any .env it created, and the settings it
+// changed in .env files that already existed.
+type generated struct {
+	Secrets []Secret
+	Changed []string
+}
+
+// Generate writes every service's .env (with fresh secrets), pihole/custom.list, and a
+// personalized WELCOME.txt. An existing .env keeps its secrets unless force is set, but gets the
+// current settings applied (see applySettings) — so changing a setting with `hsctl setup` or the
+// wizard actually reaches the stack.
+func (c Config) Generate(repo string, force bool) (generated, error) {
+	var res generated
+	if !force {
+		changed, err := c.applySettings(repo)
+		if err != nil {
+			return res, err
+		}
+		res.Changed = changed
+	}
 	var secrets []Secret
 	// writeEnv writes path only if absent (or force); reports whether it wrote.
 	writeEnv := func(rel, content string) (bool, error) {
@@ -30,7 +49,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	if wrote, err := writeEnv("vaultwarden/.env", fmt.Sprintf(
 		"VW_DOMAIN=https://%s:8443\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\n",
 		c.ServerIP, vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
-		return nil, err
+		return res, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Vaultwarden /admin token (SAVE — not recoverable):", vwToken})
 	}
@@ -42,7 +61,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 			"NC_ADMIN_USER=admin\nNC_ADMIN_PASSWORD=%s\nNC_TRUSTED_DOMAINS=%s\n"+
 			"NC_TRUSTED_PROXIES=172.16.0.0/12\n",
 		genPassword(32), genPassword(32), ncPw, c.ServerIP)); err != nil {
-		return nil, err
+		return res, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Nextcloud (user 'admin'):", ncPw})
 	}
@@ -52,7 +71,7 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	if wrote, err := writeEnv("pihole/.env", fmt.Sprintf(
 		"TZ=%s\nPIHOLE_PASSWORD=%s\nPIHOLE_UPSTREAMS=1.1.1.1;9.9.9.9\nPIHOLE_DNS_BIND=%s\n",
 		c.TZ, phPw, c.PiholeDNSBind)); err != nil {
-		return nil, err
+		return res, err
 	} else if wrote {
 		secrets = append(secrets, Secret{"Pi-hole admin:", phPw})
 	}
@@ -63,13 +82,13 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 	if !fileExists(listPath) || force {
 		if err := writeFile0644(listPath,
 			"# Pi-hole local DNS records (none — apps are reached by IP:port).\n"); err != nil {
-			return nil, err
+			return res, err
 		}
 	}
 
 	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP).
 	if _, err := writeEnv("caddy/.env", c.caddyEnv()); err != nil {
-		return nil, err
+		return res, err
 	}
 
 	// personalized handout
@@ -83,10 +102,92 @@ func (c Config) Generate(repo string, force bool) ([]Secret, error) {
 Step-by-step per device: see ONBOARDING.md
 `, c.ServerIP)
 	if err := writeFile0644(filepath.Join(repo, "WELCOME.txt"), welcome); err != nil {
-		return nil, err
+		return res, err
 	}
 
-	return secrets, nil
+	res.Secrets = secrets
+	return res, nil
+}
+
+// applySettings writes the non-secret settings in c into the .env files that already exist, and
+// returns a line per value it changed. Secrets are never touched. Values hsctl doesn't own are left
+// alone: VW_DOMAIN and NC_TRUSTED_DOMAINS only have the old server IP swapped for the new one (so a
+// hand-set hostname survives), and HOME_UPSTREAM only follows the dashboard port while it still
+// points at the host gateway. Containers pick the changes up on the next `hsctl up`.
+func (c Config) applySettings(repo string) ([]string, error) {
+	var changed []string
+	set := func(rel, key, val string) error {
+		path := filepath.Join(repo, rel)
+		kv, err := readKV(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // not generated yet — Generate creates it
+			}
+			return err
+		}
+		cur, ok := kv[key]
+		if ok && cur == val {
+			return nil
+		}
+		if err := setEnvKey(path, key, val); err != nil {
+			return err
+		}
+		if !ok {
+			cur = "(unset)"
+		}
+		changed = append(changed, fmt.Sprintf("%s: %s %s -> %s", rel, key, cur, val))
+		return nil
+	}
+
+	caddy, _ := readKV(filepath.Join(repo, "caddy/.env"))
+	oldIP := caddy["SERVER_IP"]
+	vaultPort := caddy["VAULT_HTTPS"]
+	if vaultPort == "" {
+		vaultPort = "8443"
+	}
+	type step struct{ rel, key, val string }
+	steps := []step{
+		{"caddy/.env", "SERVER_IP", c.ServerIP},
+		{"caddy/.env", "ACME_EMAIL", c.ACMEEmail},
+		{"vaultwarden/.env", "VW_SIGNUPS_ALLOWED", boolStr(c.VWSignupsAllowed, "true", "false")},
+		{"pihole/.env", "TZ", c.TZ},
+		{"pihole/.env", "PIHOLE_DNS_BIND", c.PiholeDNSBind},
+	}
+	if up := caddy["HOME_UPSTREAM"]; up == "" || strings.HasPrefix(up, "host.docker.internal:") {
+		steps = append(steps, step{"caddy/.env", "HOME_UPSTREAM", fmt.Sprintf("host.docker.internal:%d", c.UIPort)})
+	}
+	if oldIP != "" && oldIP != c.ServerIP {
+		if kv, err := readKV(filepath.Join(repo, "vaultwarden/.env")); err == nil {
+			if d := kv["VW_DOMAIN"]; d == "https://"+oldIP+":"+vaultPort || d == "" {
+				steps = append(steps, step{"vaultwarden/.env", "VW_DOMAIN", "https://" + c.ServerIP + ":" + vaultPort})
+			}
+		}
+		if kv, err := readKV(filepath.Join(repo, "nextcloud/.env")); err == nil {
+			steps = append(steps, step{"nextcloud/.env", "NC_TRUSTED_DOMAINS",
+				swapField(kv["NC_TRUSTED_DOMAINS"], oldIP, c.ServerIP)})
+		}
+	}
+	for _, st := range steps {
+		if err := set(st.rel, st.key, st.val); err != nil {
+			return changed, fmt.Errorf("update %s: %w", st.rel, err)
+		}
+	}
+	return changed, nil
+}
+
+// swapField replaces old with new in a space-separated list (appending new if old isn't there).
+func swapField(list, old, new string) string {
+	f := strings.Fields(list)
+	for i, v := range f {
+		if v == old {
+			f[i] = new
+			return strings.Join(f, " ")
+		}
+	}
+	if !slices.Contains(f, new) {
+		f = append(f, new)
+	}
+	return strings.Join(f, " ")
 }
 
 // caddyEnv is the content of caddy/.env for this config. It holds no secrets — just the
@@ -101,26 +202,6 @@ func (c Config) caddyEnv() string {
 			"VAULT_HTTPS=8443\nCLOUD_HTTPS=8444\nPIHOLE_HTTPS=8445\nHOME_HTTPS=443\n"+
 			"STIRLING_HTTPS=8446\nITTOOLS_HTTPS=8447\nIMAGETOOLS_HTTPS=8448\n",
 		c.ServerIP, c.ACMEEmail, c.UIPort)
-}
-
-// reconcileCaddyEnv updates the three config-derived keys in an EXISTING caddy/.env so Caddy
-// follows a changed IP / email / dashboard port. Everything else in the file (a user's
-// upstream override, comments) is preserved. Used by the setup wizard: the bootstrap writes
-// caddy/.env from autodetected values before the admin has confirmed them.
-func reconcileCaddyEnv(repo string, c Config) error {
-	path := filepath.Join(repo, "caddy/.env")
-	if !fileExists(path) {
-		return writeFile0600(path, c.caddyEnv())
-	}
-	for _, kv := range [][2]string{
-		{"SERVER_IP", c.ServerIP}, {"ACME_EMAIL", c.ACMEEmail},
-		{"HOME_UPSTREAM", fmt.Sprintf("host.docker.internal:%d", c.UIPort)},
-	} {
-		if err := setEnvKey(path, kv[0], kv[1]); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func boolStr(b bool, t, f string) string {

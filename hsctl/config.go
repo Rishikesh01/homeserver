@@ -115,6 +115,10 @@ func overlayFromConf(c *Config, repo string) {
 // live stack, and re-saving setup.conf reconciles any drift).
 func overlayFromEnv(c *Config, repo string) {
 	if kv, err := readKV(filepath.Join(repo, "caddy/.env")); err == nil {
+		// Caddy issues the certificates for this IP, so it's the deployed server address.
+		if v := kv["SERVER_IP"]; v != "" {
+			c.ServerIP = v
+		}
 		if v := kv["ACME_EMAIL"]; v != "" {
 			c.ACMEEmail = v
 		}
@@ -149,7 +153,8 @@ func portFromUpstream(s string) int {
 // Save writes setup.conf (0600). Not secrets — just settings.
 func (c Config) Save(repo string) error {
 	var b strings.Builder
-	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). Edit + re-run freely.\n")
+	b.WriteString("# Saved by hsctl — your configuration (NOT secrets). To change a setting, edit it here and\n" +
+		"# run `hsctl setup --yes` (or just run `hsctl setup`): that applies it to the .env files.\n")
 	for _, kv := range [][2]string{
 		{"SERVER_IP", c.ServerIP}, {"TZ_VAL", c.TZ}, {"ACME_EMAIL", c.ACMEEmail},
 		{"UI_PORT", strconv.Itoa(c.UIPort)},
