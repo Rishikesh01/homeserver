@@ -181,18 +181,30 @@ func readKV(path string) (map[string]string, error) {
 		if !ok {
 			continue
 		}
-		m[strings.TrimSpace(k)] = unquote(strings.TrimSpace(v))
+		m[strings.TrimSpace(k)] = envValue(v)
 	}
 	return m, sc.Err()
 }
 
-func unquote(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
+// envValue parses the value half of a KEY=VALUE line the way docker compose's .env parser does,
+// so hsctl and compose agree on what a file says: a quoted value is everything between the quotes,
+// and an unquoted value ends at an inline comment (a '#' after whitespace). Without the comment
+// rule, `SERVER_IP=192.168.1.10   # this host's IP` read as the whole line and got pasted into
+// every generated .env.
+func envValue(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) > 0 && (v[0] == '"' || v[0] == '\'') {
+		if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+			return v[1 : 1+end]
+		}
+		return v // unterminated quote: take it literally
+	}
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return strings.TrimSpace(v[:i])
 		}
 	}
-	return s
+	return v
 }
 
 // splitCSV parses "a, b,c" into ["a","b","c"], dropping blanks.
