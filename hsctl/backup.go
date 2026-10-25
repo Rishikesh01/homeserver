@@ -204,7 +204,7 @@ func backupCmd() *cobra.Command {
 			}
 			return nil
 		}))}
-	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
+	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config) [root]", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The nightly timer passes --wait, so it waits out a dashboard job or a terminal
 			// command instead of skipping the night's backup.
@@ -212,7 +212,10 @@ func backupCmd() *cobra.Command {
 			// Record every outcome — including a run refused before it started (another operation
 			// holding the lock, disk not mounted, no password) — so a failing nightly backup shows
 			// on the dashboard and, if configured, sends a notification.
-			err := locked("backup run", wait, withRestic(backupRun))(cmd, args)
+			err := requireRoot("backup run", "it reads Docker's volume files")
+			if err == nil {
+				err = locked("backup run", wait, withRestic(backupRun))(cmd, args)
+			}
 			if repo := repoDir(); isRepo(repo) {
 				recordLastRun(repo, err)
 			}
@@ -239,14 +242,14 @@ func backupCmd() *cobra.Command {
 			return resticRun(repo, cfg, args...)
 		}))}
 
-	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
+	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest); --into-volumes puts it back [root]",
 		Args: cobra.MaximumNArgs(1), RunE: locked("backup restore", 0, runBackupRestore)}
 	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
 	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
 
 	verifyCmd := &cobra.Command{Use: "verify", Aliases: []string{"selftest", "test"},
-		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data)",
+		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data) [root]",
 		Args:  cobra.NoArgs, RunE: runBackupVerify}
 	verifyCmd.Flags().String("image", "", "container image for the test fixture (default: a local image)")
 	verifyCmd.Flags().Bool("keep", false, "keep the test volume + temp repo afterwards (for debugging)")
@@ -319,7 +322,7 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	if w := guardMismatch(cfg); w != "" {
 		fmt.Fprintln(os.Stderr, "warning: "+w)
 	}
-	fmt.Println("next: hsctl backup init   then   hsctl backup run   (run needs root for volume files)")
+	fmt.Println("next: sudo hsctl backup init   then   sudo hsctl backup run   (they read Docker's volume files)")
 	return nil
 }
 
@@ -560,6 +563,11 @@ func lastBackupTime(repo string) (time.Time, bool) {
 func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if err := requireRestic(); err != nil {
 		return err
+	}
+	if into, _ := cmd.Flags().GetBool("into-volumes"); into {
+		if err := requireRoot("backup restore --into-volumes", "it writes Docker's volume files"); err != nil {
+			return err
+		}
 	}
 	repo, err := requireRepoDir()
 	if err != nil {
@@ -902,6 +910,9 @@ func restoreOneVolume(repo, name, src string) error {
 // /var/lib/docker/volumes (root-only).
 func runBackupVerify(cmd *cobra.Command, _ []string) error {
 	if err := requireRestic(); err != nil {
+		return err
+	}
+	if err := requireRoot("backup verify", "it reads Docker's volume files"); err != nil {
 		return err
 	}
 	repo, err := requireRepoDir()
@@ -1693,6 +1704,16 @@ func resticOutput(repo string, cfg backupCfg, args ...string) (string, error) {
 	c.Env = backupEnv(repo, cfg.Repo)
 	out, err := c.CombinedOutput()
 	return string(out), err
+}
+
+// requireRoot refuses an operation that only works as root. Without this, a non-root
+// `backup run` didn't fail cleanly: restic saved a snapshot missing every file it couldn't read,
+// and that partial snapshot became "latest" — the default for a restore.
+func requireRoot(what, why string) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s needs root (%s) — run it with sudo:\n  sudo hsctl %s", what, why, what)
 }
 
 func requireRestic() error {
