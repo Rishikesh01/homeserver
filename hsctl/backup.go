@@ -330,7 +330,11 @@ func backupRun(repo string, cfg backupCfg) error {
 	if err := mkdirAllOwned(staging, 0700); err != nil {
 		return err
 	}
-	dumpNextcloudDB(repo, staging) // best-effort; warns inside
+	var problems []string // things that went wrong but still left a usable snapshot
+	if err := dumpNextcloudDB(repo, staging); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		problems = append(problems, err.Error())
+	}
 	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments,
 	// keys and config are static files backed up live with the volume below — so the stop stays
 	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
@@ -385,7 +389,12 @@ func backupRun(repo string, cfg backupCfg) error {
 			return fmt.Errorf("the snapshot was saved, but old ones were NOT pruned: %w\n"+
 				"fix it with: hsctl backup config --retention '%s'", err, retentionExample)
 		}
-		return resticRun(repo, cfg, args...)
+		if err := resticRun(repo, cfg, args...); err != nil {
+			return err
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("the snapshot was saved, but with problems:\n  %s", strings.Join(problems, "\n  "))
 	}
 	return nil
 }
@@ -585,8 +594,8 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/db.sqlite3* \\")
 	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/")
 	fmt.Println("  (If staging was skipped at backup time, the volume already includes its DB — nothing to overlay.)")
-	fmt.Println("  Nextcloud: a consistent SQL dump is also in backups/staging/nextcloud-db.sql — only")
-	fmt.Println("  needed as a fallback (import into a fresh nextcloud-db) if the restored DB volume won't start.")
+	fmt.Println("  Nextcloud: the database volume was copied while Postgres ran; the consistent copy is the")
+	fmt.Println("  SQL dump in backups/staging/nextcloud-db.sql (`--into-volumes` rebuilds the database from it).")
 	return nil
 }
 
@@ -614,6 +623,8 @@ type restorePlan struct {
 	volumes   []string // volume names with a _data dir to put back
 	vwInLoop  bool     // vaultwarden_vw-data is among them
 	vwStaging string   // the staged Vaultwarden DB fileset, "" when the snapshot has none
+	ncDump    string   // a complete Nextcloud database dump, "" if the snapshot has none
+	ncVolume  string   // which Nextcloud database volume the snapshot holds, "" if none
 }
 
 // planRestore checks an extracted snapshot BEFORE the stack is touched: a snapshot we can't use
@@ -634,6 +645,19 @@ func planRestore(target string) (restorePlan, error) {
 	}
 	p.vwInLoop = slices.Contains(p.volumes, "vaultwarden_vw-data")
 	p.vwStaging = findVaultwardenStaging(target)
+	if p.vwStaging != "" {
+		// The dump sits next to Vaultwarden's staging dir. An older hsctl could leave a truncated
+		// dump behind; only a complete one is trusted.
+		if d := filepath.Join(filepath.Dir(p.vwStaging), nextcloudDumpFile); dumpComplete(d) {
+			p.ncDump = d
+		}
+	}
+	for _, v := range nextcloudDBVolumes {
+		if slices.Contains(p.volumes, v) {
+			p.ncVolume = v
+			break
+		}
+	}
 	if len(p.volumes) == 0 && p.vwStaging == "" {
 		return p, fmt.Errorf("the snapshot holds no volume data under %s — nothing was changed", p.volsRoot)
 	}
@@ -744,6 +768,13 @@ func restoreIntoVolumes(repo, target string) (err error) {
 			return fmt.Errorf("restore vaultwarden (legacy staging layout): %w", err)
 		}
 		done = append(done, "vaultwarden_vw-data")
+	}
+
+	// Rebuild Nextcloud's database from the consistent dump (the raw volume was copied live) — only
+	// into the volume the compose file actually runs on.
+	if plan.ncDump != "" && plan.ncVolume == nextcloudDBVolumes[0] {
+		fmt.Println("\n== nextcloud database ==")
+		restoreNextcloudDBFromDump(repo, plan.ncDump, plan.ncVolume, filepath.Join(plan.volsRoot, plan.ncVolume, "_data"))
 	}
 
 	restoredAll = true
@@ -1427,21 +1458,150 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	return filepath.Join(mp, "db.sqlite3*")
 }
 
-// dumpNextcloudDB writes a consistent SQL dump (preferred over the raw volume on restore).
-func dumpNextcloudDB(repo, staging string) {
-	f, err := createOwned(filepath.Join(staging, "nextcloud-db.sql"), 0600)
+// nextcloudDumpFile is the consistent Postgres dump inside the staging dir.
+const nextcloudDumpFile = "nextcloud-db.sql"
+
+// pgDumpFooter ends every complete plain-format pg_dump. A dump without it was cut short.
+const pgDumpFooter = "-- PostgreSQL database dump complete"
+
+// nextcloudDBVolumes are the names Nextcloud's Postgres data volume has had, newest first: the
+// compose file moved to a fresh volume for the Postgres 18 data layout.
+var nextcloudDBVolumes = []string{"nextcloud_db-data-v18", "nextcloud_db-data"}
+
+// dumpNextcloudDB writes a consistent SQL dump of Nextcloud's database into staging — the copy a
+// restore rebuilds the database from (the raw volume is read while Postgres runs, so it isn't
+// guaranteed consistent). It writes to a temp file and only renames it into place once pg_dump
+// succeeded, and on any failure removes the old dump: a snapshot carrying the PREVIOUS backup's
+// dump would quietly restore stale data. With Nextcloud's database stopped there's nothing to
+// dump (its volume is at rest, so the volume copy is consistent) and it returns nil.
+func dumpNextcloudDB(repo, staging string) error {
+	dumpPath := filepath.Join(staging, nextcloudDumpFile)
+	if containerState(repo, "nextcloud-db") != "running" {
+		_ = os.Remove(dumpPath)
+		return nil
+	}
+	tmp := dumpPath + ".tmp"
+	f, err := createOwned(tmp, 0600)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "db dump: cannot create file:", err)
+		_ = os.Remove(dumpPath)
+		return fmt.Errorf("nextcloud db dump: cannot create %s: %w", tmp, err)
+	}
+	user, db := nextcloudDBNames(repo)
+	// No -T: that's docker-compose syntax; plain `docker exec` rejects it. We don't
+	// need a TTY here — pg_dump's stdout is redirected to the dump file below.
+	c := dockerCmd(repo, "exec", "nextcloud-db", "pg_dump", "-U", user, db)
+	c.Stdout, c.Stderr = f, os.Stderr
+	runErr := c.Run()
+	closeErr := f.Close()
+	if runErr == nil && closeErr == nil && dumpComplete(tmp) {
+		if err := os.Rename(tmp, dumpPath); err == nil {
+			return nil
+		}
+	}
+	_ = os.Remove(tmp)
+	_ = os.Remove(dumpPath)
+	if runErr == nil {
+		runErr = fmt.Errorf("the dump came out incomplete")
+	}
+	return fmt.Errorf("nextcloud db dump failed (%v) — this snapshot has only the raw database volume", runErr)
+}
+
+// nextcloudDBNames returns the Postgres user and database from nextcloud/.env (with the defaults
+// the compose file uses).
+func nextcloudDBNames(repo string) (user, db string) {
+	user, db = "nextcloud", "nextcloud"
+	if kv, err := readKV(filepath.Join(repo, "nextcloud/.env")); err == nil {
+		if v := kv["POSTGRES_USER"]; v != "" {
+			user = v
+		}
+		if v := kv["POSTGRES_DB"]; v != "" {
+			db = v
+		}
+	}
+	return user, db
+}
+
+// dumpComplete reports whether a plain-format pg_dump file ends with pg_dump's completion footer.
+func dumpComplete(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	tail := make([]byte, 512)
+	off := fi.Size() - int64(len(tail))
+	if off < 0 {
+		off, tail = 0, tail[:fi.Size()]
+	}
+	n, _ := f.ReadAt(tail, off)
+	return strings.Contains(string(tail[:n]), pgDumpFooter)
+}
+
+// restoreNextcloudDBFromDump rebuilds Nextcloud's database from the snapshot's consistent dump, on
+// top of the just-restored raw volume (which supplies the roles and the password Nextcloud's
+// config.php expects). The raw volume was copied while Postgres ran, so its tables aren't
+// guaranteed consistent; the dump is. Postgres is started on its own, the database is dropped and
+// re-created from the dump, and the rest of the stack starts afterwards. If anything goes wrong,
+// the raw volume is put back as it was in the snapshot and the restore carries on with that.
+func restoreNextcloudDBFromDump(repo, dump, volume, rawVolume string) {
+	fail := func(why string, err error) {
+		fmt.Fprintf(os.Stderr, "  nextcloud db: couldn't rebuild from the dump (%s: %v) — using the raw volume copy instead\n", why, err)
+		_, _ = dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "stop", "db")
+		if err := restoreOneVolume(repo, volume, rawVolume); err != nil {
+			fmt.Fprintf(os.Stderr, "  nextcloud db: putting the raw volume back failed too: %v\n", err)
+		}
+	}
+	user, db := nextcloudDBNames(repo)
+	if err := ensureEdgeNetwork(); err != nil {
+		fail("network", err)
+		return
+	}
+	if out, err := dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "up", "-d", "db"); err != nil {
+		fail("start postgres", fmt.Errorf("%v: %s", err, strings.TrimSpace(out)))
+		return
+	}
+	// NOT pg_isready alone: during first start Postgres may run a temporary server. Gate on a query.
+	ready := func() bool {
+		return dockerCmd(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres", "-tAc", "select 1").Run() == nil
+	}
+	if !dockerWait(120*time.Second, ready) {
+		fail("postgres didn't become ready", fmt.Errorf("timed out after 2 minutes"))
+		return
+	}
+	psql := func(sql string) error {
+		out, err := dockerCombined(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql)
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(out))
+		}
+		return nil
+	}
+	if err := psql(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, db)); err != nil {
+		fail("drop the copied database", err)
+		return
+	}
+	if err := psql(fmt.Sprintf(`CREATE DATABASE "%s" OWNER "%s"`, db, user)); err != nil {
+		fail("create the database", err)
+		return
+	}
+	f, err := os.Open(dump)
+	if err != nil {
+		fail("open the dump", err)
 		return
 	}
 	defer f.Close()
-	// No -T: that's docker-compose syntax; plain `docker exec` rejects it. We don't
-	// need a TTY here — pg_dump's stdout is redirected to the dump file below.
-	c := dockerCmd(repo, "exec", "nextcloud-db", "pg_dump", "-U", "nextcloud", "nextcloud")
-	c.Stdout, c.Stderr = f, os.Stderr
-	if err := c.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "db dump: skipped (is nextcloud-db up?):", err)
+	imp := dockerCmd(repo, "exec", "-i", "nextcloud-db", "psql", "-q", "-U", user, "-d", db, "-v", "ON_ERROR_STOP=1")
+	var errOut strings.Builder
+	imp.Stdin, imp.Stdout, imp.Stderr = f, io.Discard, &errOut
+	if err := imp.Run(); err != nil {
+		fail("import the dump", fmt.Errorf("%v: %s", err, strings.TrimSpace(errOut.String())))
+		return
 	}
+	fmt.Println("  rebuilt the nextcloud database from its consistent dump")
 }
 
 // resticEnv builds the environment to point restic at a given repository + password file.

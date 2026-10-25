@@ -101,3 +101,27 @@ func TestPlanRestore(t *testing.T) {
 		})
 	}
 }
+
+// TestDumpComplete: only a pg_dump that ran to its completion footer is trusted on restore.
+func TestDumpComplete(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       bool
+	}{
+		{"complete", "CREATE TABLE x();\n--\n" + pgDumpFooter + "\n--\n\n", true},
+		{"cut short", "CREATE TABLE x();\nCOPY x FROM stdin;\n1\n", false},
+		{"empty", "", false},
+		{"footer far from the end", pgDumpFooter + "\n" + strings.Repeat("x", 4096), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), nextcloudDumpFile)
+			if err := os.WriteFile(p, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := dumpComplete(p); got != tc.want {
+				t.Errorf("dumpComplete = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
