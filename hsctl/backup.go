@@ -166,7 +166,7 @@ func backupCmd() *cobra.Command {
 	cfgCmd := &cobra.Command{Use: "config", Short: "Set the backup destination / retention / password",
 		Args: cobra.NoArgs, RunE: runBackupConfig}
 	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp: / b2: / s3:)")
-	cfgCmd.Flags().String("retention", "", "restic forget policy")
+	cfgCmd.Flags().String("retention", "", "restic --keep-* options, e.g. '"+retentionExample+"'")
 	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
@@ -221,7 +221,11 @@ func backupCmd() *cobra.Command {
 	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
 		RunE: locked("backup forget", 0, withRestic(func(repo string, cfg backupCfg) error {
 			defer handBackLocalRepo(repo, cfg)
-			return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+			args, err := forgetArgs(cfg.Retention)
+			if err != nil {
+				return fmt.Errorf("%w\nfix it with: hsctl backup config --retention '%s'", err, retentionExample)
+			}
+			return resticRun(repo, cfg, args...)
 		}))}
 
 	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
@@ -259,6 +263,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	}
 	if f.Changed("retention") {
 		cfg.Retention, _ = f.GetString("retention")
+		if _, err := parseRetention(cfg.Retention); err != nil {
+			return err
+		}
 	}
 	if f.Changed("require-mount") {
 		cfg.RequireMount, _ = f.GetString("require-mount") // empty string clears the guard
@@ -349,7 +356,12 @@ func backupRun(repo string, cfg backupCfg) error {
 	// make the dashboard claim the backup itself is overdue.
 	stampLastBackup(repo)
 	if cfg.Retention != "" {
-		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+		args, err := forgetArgs(cfg.Retention)
+		if err != nil {
+			return fmt.Errorf("the snapshot was saved, but old ones were NOT pruned: %w\n"+
+				"fix it with: hsctl backup config --retention '%s'", err, retentionExample)
+		}
+		return resticRun(repo, cfg, args...)
 	}
 	return nil
 }
@@ -379,8 +391,11 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 		return fmt.Errorf("copy to replica: %w", err)
 	}
 	if cfg.Retention != "" {
-		return resticAt(repo, cfg.ReplicaRepo,
-			append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+		args, err := forgetArgs(cfg.Retention)
+		if err != nil {
+			return fmt.Errorf("copied, but the replica was NOT pruned: %w", err)
+		}
+		return resticAt(repo, cfg.ReplicaRepo, args...)
 	}
 	return nil
 }

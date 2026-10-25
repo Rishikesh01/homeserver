@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -590,6 +591,9 @@ type backupData struct {
 	GuardOK                         bool   // is that path a real mount right now
 	Stats                           string // restic repo stats, "" if unavailable
 	Busy, JobID                     string
+	KeepDaily, KeepWeekly           string // the retention form's fields ("" = not set)
+	KeepMonthly, KeepRest           string
+	RetentionErr                    string // the saved policy is invalid (nothing gets pruned)
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
@@ -603,6 +607,17 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 		d.ResticVersion = v
 	}
 	d.Busy, d.JobID = s.busyNote()
+	if _, err := parseRetention(cfg.Retention); err != nil {
+		d.RetentionErr = err.Error()
+	}
+	daily, weekly, monthly, rest := retentionKeeps(cfg.Retention)
+	field := func(n int) string {
+		if n < 0 {
+			return ""
+		}
+		return strconv.Itoa(n)
+	}
+	d.KeepDaily, d.KeepWeekly, d.KeepMonthly, d.KeepRest = field(daily), field(weekly), field(monthly), rest
 	if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
 			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
@@ -626,8 +641,15 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
 		cfg.Repo = v
 	}
-	if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
-		cfg.Retention = v
+	_ = r.ParseForm()
+	if r.Form.Has("keep_daily") {
+		policy, err := buildRetention(r.FormValue("keep_daily"), r.FormValue("keep_weekly"),
+			r.FormValue("keep_monthly"), r.FormValue("keep_rest"))
+		if err != nil {
+			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper("Not saved — "+err.Error()), http.StatusSeeOther)
+			return
+		}
+		cfg.Retention = policy
 	}
 	if v := strings.TrimSpace(r.FormValue("replica")); v != "" {
 		cfg.ReplicaRepo = v // clear it via: hsctl backup config --replica ""

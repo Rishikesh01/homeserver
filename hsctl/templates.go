@@ -166,7 +166,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <div class="kv">
   <div class="k">restic</div><div>{{if .ResticOK}}installed{{if .ResticVersion}} · v{{.ResticVersion}}{{end}}{{else}}<span style="color:var(--bad)">not installed</span>{{end}}</div>
   <div class="k">Destination</div><div><code>{{.Repo}}</code></div>
-  <div class="k">Retention</div><div>{{.Retention}}</div>
+  <div class="k">Retention</div><div>{{.Retention}}{{if .RetentionErr}}<br><span style="color:var(--bad)">⚠ {{.RetentionErr}} — nothing is pruned until it's fixed below.</span>{{end}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
   <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code>{{else}}none — set one below for fire/theft-proof backups{{end}}</div>
   {{if .Stats}}<div class="k">Repo size</div><div><span class="foot">{{.Stats}}</span></div>{{end}}
@@ -178,7 +178,14 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <input class="in" name="repo" value="{{.Repo}}"></p>
   <p class="foot">Examples — external disk: <code>/mnt/backup/restic</code> · another host:
   <code>sftp:user@host:/backups</code> · Backblaze B2: <code>b2:bucket:homeserver</code></p>
-  <p>Retention (how many to keep): <input class="in" name="retention" value="{{.Retention}}"></p>
+  <fieldset style="border:1px solid #2a2f3a;border-radius:8px;padding:8px 12px;margin:12px 0">
+  <legend>How many snapshots to keep</legend>
+  <label>Daily <input class="in" name="keep_daily" type="number" min="0" value="{{.KeepDaily}}" style="width:6em"></label>
+  <label>Weekly <input class="in" name="keep_weekly" type="number" min="0" value="{{.KeepWeekly}}" style="width:6em"></label>
+  <label>Monthly <input class="in" name="keep_monthly" type="number" min="0" value="{{.KeepMonthly}}" style="width:6em"></label>
+  <input type="hidden" name="keep_rest" value="{{.KeepRest}}">
+  <p class="foot" style="margin-top:6px">Older snapshots are pruned after each backup. Leave a box empty (or 0) to not keep any of that kind.{{if .KeepRest}} Also kept, from your config: <code>{{.KeepRest}}</code>.{{end}}</p>
+  </fieldset>
   <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
   <input class="in" name="replica" value="{{.Replica}}" placeholder="b2:bucket:homeserver"></p>
   <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo

@@ -10,7 +10,10 @@
 #   s3:s3.region.amazonaws.com/your-bucket
 RESTIC_REPO=/mnt/restic
 
-# restic retention policy, applied by `hsctl backup run` and `hsctl backup forget`.
+# restic retention policy, applied by `hsctl backup run` and `hsctl backup forget`. Only restic
+# --keep-* options (and --group-by) are accepted — anything else is refused, because restic would
+# read a stray word as a snapshot ID to delete. Snapshots are grouped by tag unless you add
+# --group-by, so changing which volumes are backed up doesn't strand old snapshots.
 RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
 
 # Optional safety guard. If set, every backup/restore op REFUSES unless this path is a real
