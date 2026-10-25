@@ -202,6 +202,13 @@ func backupCmd() *cobra.Command {
 				}
 				return err
 			}
+			// There's somewhere to back up to now, so the nightly timer can do its job.
+			if !fileExists(filepath.Join(repo, backupConfFile)) {
+				if err := cfg.save(repo); err != nil {
+					return err
+				}
+			}
+			enableBackupTimer()
 			return nil
 		}))}
 	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config) [root]", Args: cobra.NoArgs,

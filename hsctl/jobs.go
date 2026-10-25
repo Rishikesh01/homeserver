@@ -108,7 +108,7 @@ func (jr *jobRunner) start(repo, slug, title string, args []string) (job, error)
 
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+repo)
+	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+repo, "HSCTL_FROM_DASHBOARD=1")
 	cmd.Stdout, cmd.Stderr = logf, logf // a file, not a pipe: nothing the browser does can break it
 	if err := cmd.Start(); err != nil {
 		logf.Close()

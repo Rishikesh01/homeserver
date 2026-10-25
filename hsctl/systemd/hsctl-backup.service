@@ -1,0 +1,15 @@
+[Unit]
+Description=hsctl homeserver backup (restic)
+After=docker.service
+Wants=docker.service
+# The backup disk itself is checked by hsctl (the REQUIRE_MOUNT guard in backup.conf), which
+# refuses to run — and records the failure for the dashboard — when it isn't mounted.
+
+[Service]
+Type=oneshot
+# Root so restic can read Docker volume files under /var/lib/docker/volumes. --wait lets the
+# nightly run wait out a dashboard job or a terminal command instead of skipping the night.
+# `sudo hsctl install` writes this unit, with __DIR__ and __BIN__ filled in.
+WorkingDirectory=__DIR__
+ExecStart=__BIN__ backup run --wait 30m
+User=root
