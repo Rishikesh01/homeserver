@@ -58,7 +58,7 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			ResticOK: true, ResticVersion: "0.16.4", GuardPath: "/mnt/backup", GuardOK: false,
 			Stats: "Total Size: 1.2 GiB", Snapshots: "ID  Time\nabc 2026", Msg: "done"}},
 		{"restore", restoreTmpl, restoreData{Snapshots: "ID  Time", Msg: "", ResticOK: true}},
-		{"restore-progress", restoreProgressTmpl, nil},
+		{"restore-progress", restoreProgressTmpl, struct{ JobID string }{"abc"}},
 	}
 
 	for _, tc := range cases {

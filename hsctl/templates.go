@@ -239,9 +239,9 @@ when it's done, so you don't need to reload or do anything.</div>
 <p class="foot"><a href="/admin/backup">← Cancel</a></p>
 </div></body></html>`
 
-// restoreProgressTmpl is shown after a restore is kicked off. It polls the status endpoint and
-// keeps retrying through the window where Caddy (the proxy) is down mid-restore — so the page
-// updates itself to "done" once the stack is back up, instead of just erroring out.
+// restoreProgressTmpl follows the restore job (jobs.go). It keeps polling through the window
+// where Caddy (the proxy) is down mid-restore, shows the job's output as it lands, and ends with
+// the outcome — including exactly what failed, if anything did.
 const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Restoring…</title>
 <style>{{css}}
@@ -249,27 +249,35 @@ const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
 @keyframes sp{to{transform:rotate(360deg)}}</style></head><body><div class="wrap">
 <h1>♻️ Restoring…</h1>
 <p class="sub">Putting your backup back into the stack.</p>
-<div class="note"><span class="spin" id="spin"></span><span id="status">Restore in progress. The services — including this dashboard's proxy — go offline for a few minutes while it runs; <b>that's expected</b>. This page keeps checking on its own and updates when it's done. No need to reload.</span></div>
-<p class="banner" id="hint" style="display:none">This is taking longer than usual. The stack is probably still restarting — please keep waiting. If the page still hasn't updated after several more minutes, the restore may have hit a problem: check on the server itself (open the dashboard on the machine, or log in and run <code>hsctl status</code>).</p>
-<p class="foot" id="link" style="display:none"><a href="/admin/backup">← Back to Backups</a></p>
+<div class="note" role="status" aria-live="polite"><span class="spin" id="spin"></span><span id="status">Restore in progress. The services — including this dashboard's proxy — go offline for a few minutes while it runs; <b>that's expected</b>. The restore runs on the server whether or not this page is open; it keeps checking on its own and updates when it's done.</span></div>
+<p class="banner" id="hint" style="display:none">The server hasn't answered for a while. The stack is probably still restarting — keep waiting. If nothing changes after several more minutes, check on the server itself: <code>hsctl status</code>, and <code>journalctl -u hsctl-ui</code> for the dashboard's log.</p>
+<div id="out" class="out" data-job="{{.JobID}}"></div>
+<p class="foot" id="link" style="display:none"><a href="/admin/backup">← Back to Backups</a> · <a href="/admin">Admin</a></p>
 <script>
 (function(){
-  var statusEl=document.getElementById('status'), spin=document.getElementById('spin'),
-      link=document.getElementById('link'), hint=document.getElementById('hint'), fails=0;
-  function finish(msg){
-    spin.style.display='none';
-    statusEl.textContent=msg;
-    hint.style.display='none';
-    link.style.display='';
-    setTimeout(function(){ location.href='/admin/backup?msg='+encodeURIComponent(msg); }, 2500);
+  var statusEl=document.getElementById('status'), spin=document.getElementById('spin'), out=document.getElementById('out'),
+      link=document.getElementById('link'), hint=document.getElementById('hint'), id=out.dataset.job, from=0, fails=0;
+  function finish(ok){
+    spin.style.display='none'; hint.style.display='none'; link.style.display='';
+    statusEl.textContent=ok ? 'Restore complete — every volume was put back and the stack is up.'
+                            : 'Restore FAILED — the output below says what went wrong and what (if anything) was put back.';
+    document.querySelector('.note').className=ok?'flash':'banner';
   }
   function poll(){
-    fetch('/admin/backup/restore/status',{cache:'no-store'})
-      .then(function(r){ return r.json(); })
-      .then(function(s){ fails=0; hint.style.display='none'; if(s.done){ finish(s.message); } else { setTimeout(poll, 3000); } })
-      .catch(function(){ fails++; if(fails>=40){ hint.style.display=''; } setTimeout(poll, 3000); }); // proxy down mid-restore; keep trying, warn after ~2 min
+    fetch('/admin/job?id='+encodeURIComponent(id)+'&from='+from,{cache:'no-store'})
+      .then(function(r){ if(r.status===404){ throw 'gone'; } if(!r.ok || r.redirected){ throw 'down'; } return r.json(); })
+      .then(function(j){
+        fails=0; hint.style.display='none';
+        if(j.out){ out.textContent+=j.out; out.scrollTop=out.scrollHeight; }
+        from=j.next;
+        if(j.done){ finish(j.ok); } else { setTimeout(poll, 2000); }
+      })
+      .catch(function(e){
+        if(e==='gone'){ spin.style.display='none'; link.style.display=''; statusEl.textContent='The dashboard restarted, so this restore\'s progress is gone. Check the Backups page and hsctl status on the server.'; return; }
+        fails++; if(fails>=40){ hint.style.display=''; } setTimeout(poll, 3000); // proxy down mid-restore; keep trying
+      });
   }
-  setTimeout(poll, 3000);
+  poll();
 })();
 </script>
 </div></body></html>`

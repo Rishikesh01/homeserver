@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
@@ -35,11 +34,6 @@ type uiServer struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 
-	// restoreSt tracks the async web restore so its progress page can poll for completion even
-	// while Caddy (and thus normal dashboard access) is down mid-restore.
-	restoreMu sync.Mutex
-	restoreSt restoreStatus
-
 	// updSt caches the last update-check results for the Updates page (nil = not
 	// checked since the dashboard started; cleared again after an apply).
 	updMu sync.Mutex
@@ -55,32 +49,12 @@ type uiServer struct {
 	setupJob string
 }
 
-// restoreStatus is the live state of the background web restore, polled by its progress page.
-type restoreStatus struct {
-	Active  bool   `json:"active"`  // a restore is running now
-	Done    bool   `json:"done"`    // the most recent restore has finished
-	OK      bool   `json:"ok"`      // ...successfully
-	Message string `json:"message"` // human-facing result
-}
-
 // config returns the live, normalized config — the pair every handler needs together
 // (Normalize fills derived fields, so a bare LoadConfig is never what you want).
 func (s *uiServer) config() Config {
 	c := LoadConfig(s.repo)
 	c.Normalize()
 	return c
-}
-
-func (s *uiServer) setRestore(st restoreStatus) {
-	s.restoreMu.Lock()
-	s.restoreSt = st
-	s.restoreMu.Unlock()
-}
-
-func (s *uiServer) getRestore() restoreStatus {
-	s.restoreMu.Lock()
-	defer s.restoreMu.Unlock()
-	return s.restoreSt
 }
 
 func runUI(cmd *cobra.Command, _ []string) error {
@@ -129,7 +103,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
-	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
+	mux.HandleFunc("/admin/backup/restore/progress", s.requireAuth(s.handleBackupRestoreProgress))
 	fmt.Printf("hsctl ui:\n")
 	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
 	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
@@ -669,12 +643,12 @@ type restoreData struct {
 	ResticOK       bool
 }
 
-// handleBackupRestore shows a confirmation page (GET) and runs the destructive DR put-back
-// (POST) — but only when the operator types RESTORE. It stops the stack, repopulates every
-// volume from the snapshot (Vaultwarden from its staged copy), and brings the stack back up.
-// The put-back runs in the BACKGROUND (it restarts Caddy, which would otherwise cut off the
-// response); the POST returns a progress page that polls handleBackupRestoreStatus and updates
-// itself once the stack — and Caddy — are back.
+// handleBackupRestore shows a confirmation page (GET) and starts the destructive DR put-back
+// (POST) — but only when the operator types RESTORE. The put-back is `hsctl backup restore
+// --into-volumes` run as a dashboard job: it extracts the snapshot, checks it, stops the stack,
+// repopulates every volume (Vaultwarden from its staged copy) and brings the stack back up. The
+// POST redirects to a progress page that follows the job, so a reload can't start a second
+// restore, and the job runs to the end even while Caddy — this page's only route — restarts.
 func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	if r.Method == http.MethodPost {
@@ -683,41 +657,28 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
 			return
 		}
-		// A restore stops the stack — Caddy included — so a synchronous response would be cut off
-		// mid-way (the dashboard is only reachable through Caddy, and no longer on the LAN). Run
-		// it in the background and hand back a page that polls for completion, tolerating the
-		// proxy being down while the stack is restarting.
-		lock, err := acquireOpLock(s.repo, "dashboard: restore", 0)
-		if err != nil {
-			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+		args := []string{"backup", "restore", "--into-volumes", "--yes"}
+		snap := strings.TrimSpace(r.FormValue("snapshot"))
+		if snap != "" {
+			if strings.HasPrefix(snap, "-") || strings.ContainsAny(snap, " \t/") {
+				http.Redirect(w, r, "/admin/backup/restore?msg="+
+					template.URLQueryEscaper("That doesn't look like a snapshot ID — nothing was changed."), http.StatusSeeOther)
+				return
+			}
+			args = append(args, snap)
+		}
+		uiLog.Warn("restore requested", "snapshot", snap, "from", remoteIP(r))
+		if holder := opLockBusy(s.repo); holder != "" {
+			http.Redirect(w, r, "/admin/backup/restore?msg="+template.URLQueryEscaper(
+				"Another operation is running ("+holder+") — try again once it finishes."), http.StatusSeeOther)
 			return
 		}
-		snap := strings.TrimSpace(r.FormValue("snapshot"))
-		uiLog.Warn("restore started", "snapshot", snap, "from", remoteIP(r))
-		s.setRestore(restoreStatus{Active: true})
-		go func() {
-			defer lock.Release()
-			defer func() {
-				if p := recover(); p != nil {
-					uiLog.Error("restore crashed", "panic", fmt.Sprint(p))
-					s.setRestore(restoreStatus{Done: true, Message: fmt.Sprintf("Restore crashed: %v", p)})
-				}
-			}()
-			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
-			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
-				uiLog.Error("restore failed", "err", err)
-				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
-				// Best-effort: make sure Caddy is back even if an earlier service failed to start,
-				// so this failure is actually visible again — the progress page can only reach the
-				// status endpoint through Caddy.
-				_ = ensureEdgeNetwork()
-				_, _ = dockerCombined(filepath.Join(s.repo, "caddy"), "compose", "up", "-d")
-			} else {
-				uiLog.Info("restore complete", "snapshot", snap)
-			}
-			s.setRestore(st)
-		}()
-		render(w, restoreProgressTmpl, nil)
+		j, err := s.jobs().start(s.repo, "restore", "Restore from backup", args)
+		if err != nil {
+			http.Redirect(w, r, "/admin/backup/restore?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/backup/restore/progress?id="+url.QueryEscape(j.ID), http.StatusSeeOther)
 		return
 	}
 	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
@@ -729,13 +690,10 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	render(w, restoreTmpl, d)
 }
 
-// handleBackupRestoreStatus reports the background restore's state as JSON. The progress page
-// polls it, tolerating failures while Caddy is down mid-restore, and shows the result once the
-// stack (and the proxy) come back up.
-func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(s.getRestore())
+// handleBackupRestoreProgress is the page a restore redirects to: it follows the restore job's
+// output, riding out the minutes the proxy is down mid-restore.
+func (s *uiServer) handleBackupRestoreProgress(w http.ResponseWriter, r *http.Request) {
+	render(w, restoreProgressTmpl, struct{ JobID string }{r.URL.Query().Get("id")})
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).

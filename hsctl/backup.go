@@ -555,30 +555,6 @@ func prepareRestoreTarget(target string) error {
 	return mkdirAllOwned(clean, 0700)
 }
 
-// restoreSnapshotIntoVolumes extracts a snapshot to <repo>/restore and writes every volume
-// back in place (the full DR put-back). Shared by the CLI `restore --into-volumes` and the
-// web UI's Restore button. Destructive — see restoreIntoVolumes.
-func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
-	if err := requireRestic(); err != nil {
-		return err
-	}
-	if err := requireBackupMount(cfg); err != nil {
-		return err
-	}
-	if snap == "" {
-		snap = "latest"
-	}
-	ensureResticPassword(repo)
-	target := filepath.Join(repo, "restore")
-	if err := prepareRestoreTarget(target); err != nil {
-		return err
-	}
-	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {
-		return err
-	}
-	return restoreIntoVolumes(repo, target)
-}
-
 // restorePlan is what a snapshot extracted under a target holds, worked out before anything is
 // stopped or wiped.
 type restorePlan struct {
