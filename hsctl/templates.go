@@ -121,11 +121,12 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 <form method="post" action="/admin/action" style="display:inline">
   <input type="hidden" name="do" value="up"><button class="btn">Start all</button></form>
-<form method="post" action="/admin/action" style="display:inline">
-  <input type="hidden" name="do" value="restart"><button class="btn gray">Restart</button></form>
 <form method="post" action="/admin/action" style="display:inline"
-  onsubmit="return confirm('Stop all services?')">
-  <input type="hidden" name="do" value="down"><button class="btn gray">Stop all</button></form>
+  onsubmit="return confirm('Restart all apps? They go offline for a minute or so. This dashboard stays up.')">
+  <input type="hidden" name="do" value="restart"><button class="btn gray">Restart apps</button></form>
+<form method="post" action="/admin/action" style="display:inline"
+  onsubmit="return confirm('Stop all apps? They stay offline (even after a reboot) until you start them again here. This dashboard stays up.')">
+  <input type="hidden" name="do" value="down"><button class="btn gray">Stop apps</button></form>
 
 <p style="margin-top:18px">
 <form method="post" action="/admin/action" style="display:inline"

@@ -578,7 +578,7 @@ func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
 // including the Vaultwarden special case (its data is in staging/, not a volume dir).
 func restoreIntoVolumes(repo, target string) error {
 	fmt.Println("\n== stopping the stack ==")
-	if err := cmdDown(false); err != nil {
+	if err := cmdDown(false, false); err != nil {
 		return fmt.Errorf("stack down: %w", err)
 	}
 

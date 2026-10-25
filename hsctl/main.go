@@ -54,8 +54,16 @@ func rootCmd() *cobra.Command {
 		RunE: func(*cobra.Command, []string) error { return cmdUp() }}
 
 	down := &cobra.Command{Use: "down", Short: "Stop the stack", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error { v, _ := c.Flags().GetBool("volumes"); return cmdDown(v) }}
+		RunE: func(c *cobra.Command, _ []string) error {
+			v, _ := c.Flags().GetBool("volumes")
+			k, _ := c.Flags().GetBool("keep-proxy")
+			return cmdDown(v, k)
+		}}
 	down.Flags().Bool("volumes", false, "also delete data volumes (DESTRUCTIVE)")
+	down.Flags().Bool("keep-proxy", false, "leave Caddy running, so the dashboard stays reachable (and with --volumes its certificate is kept)")
+
+	restart := &cobra.Command{Use: "restart", Short: "Stop the apps and start the stack again (Caddy keeps running)", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return cmdRestart() }}
 
 	status := &cobra.Command{Use: "status", Short: "Show container status", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return cmdStatus() }}
@@ -97,7 +105,7 @@ func rootCmd() *cobra.Command {
 	uninstall.Flags().Bool("all", false, "delete the app data volumes AND the backups (asks to type DESTROY)")
 	uninstall.Flags().Bool("yes", false, "skip the confirmation — only for the default, data-keeping tier")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, restart, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
 	return root
 }
 

@@ -176,7 +176,11 @@ func cmdUp() error {
 	return nil
 }
 
-func cmdDown(volumes bool) error {
+// cmdDown stops the stack. keepProxy leaves Caddy running: the dashboard is only reachable
+// through it, so a stop started FROM the dashboard must keep it up or the admin is locked out
+// (Start all would be unreachable without SSH). With volumes, Caddy's data — the certificate
+// authority every device trusts — is then kept too.
+func cmdDown(volumes, keepProxy bool) error {
 	if err := requireReadable(repoDir(), envFiles...); err != nil {
 		return err
 	}
@@ -185,13 +189,44 @@ func cmdDown(volumes bool) error {
 		down = append(down, "-v")
 		fmt.Println("!! --volumes: data volumes will be DELETED")
 	}
-	for _, s := range reversed(services) {
+	for _, s := range stopOrder(keepProxy) {
 		fmt.Printf("== down: %s ==\n", s)
 		if err := dockerRun(filepath.Join(repoDir(), s), down...); err != nil {
 			return fmt.Errorf("%s: %w", s, err)
 		}
 	}
+	if keepProxy {
+		fmt.Println("\nThe apps are stopped. Caddy (and so the dashboard) is still running — start them again")
+		fmt.Println("with Start all in the dashboard, or `hsctl up`. Stopped apps stay stopped after a reboot.")
+	} else {
+		fmt.Println("\nEverything is stopped, Caddy included, so the dashboard is unreachable until `hsctl up`.")
+		fmt.Println("Stopped containers stay stopped after a reboot too.")
+	}
 	return nil
+}
+
+// stopOrder is the order services go down in — the reverse of the start order, so Caddy stops
+// first — without Caddy when keepProxy is set. Every app is included, switched off or not, so a
+// since-disabled app's leftovers stop too.
+func stopOrder(keepProxy bool) []string {
+	var out []string
+	for _, s := range reversed(services) {
+		if keepProxy && s == "caddy" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// cmdRestart stops the apps and starts the stack again. Caddy keeps running throughout (up
+// leaves a running container alone), so the dashboard stays reachable.
+func cmdRestart() error {
+	if err := cmdDown(false, true); err != nil {
+		return err
+	}
+	fmt.Println()
+	return cmdUp()
 }
 
 func cmdStatus() error {

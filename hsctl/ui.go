@@ -490,14 +490,20 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
-// runLifecycle performs up/down across all services and returns a short summary.
+// runLifecycle performs up/down across all services and returns a short summary. down never
+// stops Caddy: this page is only reachable through it, so stopping it would lock the admin out of
+// Start all.
 func (s *uiServer) runLifecycle(action string) string {
-	order := enabledServices(s.config())
+	c := s.config()
+	order := enabledServices(c)
 	cargs := []string{"compose", "up", "-d"}
 	if action == "down" {
 		cargs = []string{"compose", "down"}
-		order = reversed(services)
+		order = stopOrder(true)
 	} else {
+		if m := missingEnvFor(s.repo, c); len(m) > 0 {
+			return "Not started: " + strings.Join(m, ", ") + " isn't configured yet — finish the setup wizard (/setup) first."
+		}
 		migrateSharedNetworkEnv(s.repo)
 		if err := ensureEdgeNetwork(); err != nil {
 			return "up: FAILED — " + err.Error()
