@@ -13,16 +13,25 @@ root unless noted; everything with secrets is `chmod 600` and git-ignored (only 
 | `backup.conf` | Backup destination, retention, replica, guards | `hsctl backup config` |
 | `.restic-password` | Backup repo password | see [Backups](#backups) |
 | `.backup-env` | Cloud credentials for the off-site replica | edit by hand |
-| `.ui-password` | Dashboard admin password | auto / env / edit |
-| `WELCOME.txt` | Printed handout of the generated logins (`0644`) | `hsctl setup` (generated) |
+| `.ui-password` | Dashboard admin password | auto / `hsctl secrets set-ui-password` |
+| `WELCOME.txt` | Printed handout of the addresses (no secrets, `0644`) | `hsctl setup` (generated) |
+
+Files hsctl writes stay **owned by the repo's owner** (you), even when root writes them — `sudo
+hsctl …`, the dashboard (a root service) or the nightly backup timer. So you can always read and
+edit your own config, and `docker compose` keeps working as you. If an older hsctl left some of
+them root-owned, any `sudo hsctl …` command (or the dashboard starting) gives them back; until
+then hsctl says which files it can't read and the `chown` that fixes them, instead of treating
+them as missing.
 
 ---
 
 ## Main settings — `setup.conf`
 
-Written by `hsctl setup` (interactive — press Enter to accept each autodetected default),
-or non-interactively with flags (`hsctl setup --yes --server-ip … --tz …`). Pre-seed by
-copying `setup.conf.example` → `setup.conf`.
+Written by `hsctl setup` (interactive — press Enter to accept each autodetected default; a
+value that doesn't look right is explained and asked again), by the dashboard's setup wizard, or
+non-interactively with flags (`hsctl setup --yes --server-ip … --tz …`, which refuses invalid
+values). Pre-seed an unattended setup by copying `setup.conf.example` → `setup.conf`; keep
+comments on their own lines (an inline `# …` after a value is ignored, as in a compose `.env`).
 
 | Key | Meaning | Flag |
 |-----|---------|------|
@@ -34,9 +43,22 @@ copying `setup.conf.example` → `setup.conf`.
 | `VW_SIGNUPS_ALLOWED` | Open Vaultwarden signups (`true`/`false`) | `--vw-signups` |
 | `DISABLED_APPS` | Comma-separated apps switched off (compose dir names, e.g. `stirling,it-tools`). `hsctl up` skips them, their tiles are hidden; data volumes are kept. Toggle from Admin → Apps or `hsctl apps enable|disable` | `--disable-apps` |
 
-Changing a value: edit `setup.conf` (or re-run `hsctl setup`), then `hsctl up`. Note that
-`hsctl setup` never overwrites an existing service `.env` (use `--force` to regenerate, which
-also rotates secrets).
+**Changing a value:** re-run `hsctl setup` (or edit `setup.conf` and run `hsctl setup --yes`),
+then `hsctl up`. Setup writes the changed settings into the existing `.env` files and lists each
+change — secrets are never touched — so the stack picks them up on the next `hsctl up`. On the
+dashboard: edit `setup.conf`, then Command Center → *Apply settings*, then *Start all services*.
+
+**Moving to a new IP** (a new box, a new router): `hsctl setup --server-ip <new IP>` updates
+Caddy's certificate address, Vaultwarden's `VW_DOMAIN` and Nextcloud's trusted domains (in its
+`.env`, and in Nextcloud's own config via `occ` once it's running), and re-derives a Pi-hole DNS
+bind that followed the old IP. Then `hsctl up`, and install the certificate again on each device
+if Caddy issued a new one.
+
+**`hsctl setup --force`** generates new secrets, in place: the Vaultwarden admin token and the
+Pi-hole and Redis passwords. Nextcloud's database and admin passwords are **kept** while Nextcloud
+has data (Postgres and Nextcloud only read them when they first initialize, so rotating them would
+lock Nextcloud out of its own database, or print a login that doesn't work). It asks you to type
+`REGENERATE` first (`--yes` skips that).
 
 ## Service / HTTPS ports — `caddy/.env`
 
@@ -58,6 +80,12 @@ To change a service's HTTPS port you edit it in **three** places so they agree: 
 the matching block in `caddy/Caddyfile`, and its tile in `services.json`. Then
 `cd caddy && docker compose up -d --force-recreate`.
 
+The **dashboard's own port** is different: it's a setting (`UI_PORT`). Change it with
+`hsctl setup` (it follows into `caddy/.env`'s `HOME_UPSTREAM`), then restart both:
+`hsctl up` and `sudo systemctl restart hsctl-ui`. The dashboard always listens on the port Caddy
+forwards to, so a `UI_PORT` edited by hand but not yet applied can't leave Caddy pointing at
+nothing.
+
 ## Dashboard tiles — `services.json`
 
 A JSON array; each entry is a tile the dashboard renders, so adding/removing one updates the
@@ -76,10 +104,18 @@ change them post-install.
 
 ## Dashboard admin password — `.ui-password`
 
-Auto-generated (random) on the first `hsctl ui`. Used to sign in at `/admin` (the `/login`
-form, with user `admin`). To set your own: `export HSCTL_UI_PASSWORD='…'` before running,
-or write the file: `printf '%s' 'yourpass' > .ui-password && chmod 600 .ui-password`. View
-it with `hsctl secrets show`.
+Generated (random) by `sudo hsctl install`, which prints it. Used to sign in at `/admin` (the
+`/login` form, with user `admin`). View it with `hsctl secrets show`. To set your own (or a new
+random one):
+
+```bash
+hsctl secrets set-ui-password 'your-new-password'   # or no argument for a random one
+```
+
+That writes `.ui-password` and restarts the dashboard, which reads it only at startup.
+(`HSCTL_UI_PASSWORD` overrides the file for a dashboard you run by hand with `hsctl ui`; the
+systemd service doesn't see your shell's environment.) Wrong passwords are throttled: after a few
+in a row, each further one locks that client out for longer, up to 15 minutes.
 
 ---
 
@@ -101,24 +137,31 @@ hsctl backup config --repo /mnt/restic \
 | Key | Meaning | Flag |
 |-----|---------|------|
 | `RESTIC_REPO` | Where backups go: local path / `sftp:user@host:/path` / `s3:…` (off-box!) | `--repo` |
-| `RETENTION` | restic forget policy applied by `backup run` / `backup forget` | `--retention` |
-| `REQUIRE_MOUNT` | A path that must be a real mount before any backup/restore runs | `--require-mount` |
+| `RETENTION` | restic `--keep-*` options applied by `backup run` / `backup forget` | `--retention` |
+| `REQUIRE_MOUNT` | A path that must be on a mounted backup disk before any backup/restore runs | `--require-mount` |
 | `RESTIC_VERSION` | Pinned restic version; `backup verify` **fails** if the installed one differs | `--pin-restic` |
-| `REPLICA_REPO` | Optional second repo that `backup replicate` copies every snapshot to | `--replica` |
+| `REPLICA_REPO` | Optional second repo every backup copies itself to | `--replica` |
+| `NOTIFY_URL` | Optional URL that gets a plain-text POST when a backup run fails (e.g. an ntfy topic) | `--notify-url` |
 
-- **`REQUIRE_MOUNT`** stops a backup silently landing on the root disk when an external HDD
-  isn't mounted — hsctl compares the path's device id against `/`'s. Set it to the repo's
-  mountpoint: `hsctl backup config --require-mount /mnt/restic` (empty string disables).
+- **`RETENTION`** only accepts restic's `--keep-*` options and `--group-by`; anything else is
+  refused (restic would take a stray word for a snapshot ID to delete). Snapshots are grouped by
+  tag unless you add `--group-by`.
+- **`REQUIRE_MOUNT`** stops a backup silently landing on the system disk when an external disk
+  isn't mounted — hsctl refuses unless the path is on a different disk from `/`, the homeserver
+  folder and Docker's data. A `RESTIC_REPO` under `/mnt/…` or `/media/…` sets it automatically
+  (`/mnt/backup/restic` → `/mnt/backup`); set it yourself with
+  `hsctl backup config --require-mount /mnt/backup` (empty string disables).
 - **`RESTIC_VERSION`** is recorded by `hsctl backup config --pin-restic`. It catches a system
   upgrade that swaps restic out from under you, instead of silently changing your backup tool.
-- **`REPLICA_REPO`** is the off-site copy. `hsctl backup replicate` creates it on first run,
-  then copies incrementally with the **same** encryption password, and applies `RETENTION` to
+- **`REPLICA_REPO`** is the off-site copy. Every backup copies itself there (the first copy
+  creates it), incrementally, with the **same** encryption password, and applies `RETENTION` to
   it as well. Details: [Backup & restore → Off-site replica](backup-restore.md#off-site-replica).
 
 ### Cloud credentials — `.backup-env`
 
 Only needed when the repo or replica is a cloud backend; local paths and `sftp:` don't use it
-(SFTP uses your SSH key). One `KEY=VALUE` per line, `chmod 600`, git-ignored, lives next to
+(SFTP uses **root's** SSH key, since backups run as root — see
+[Off-site replica](backup-restore.md#off-site-replica)). One `KEY=VALUE` per line, `chmod 600`, git-ignored, lives next to
 `.restic-password`:
 
 ```bash
@@ -131,13 +174,14 @@ AWS_SECRET_ACCESS_KEY=…
 
 This is the one people miss. Three ways to set it:
 
-1. **Auto** — leave it; `hsctl backup init` / `run` generates a random 32-char password into
-   `.restic-password` the first time.
+1. **Auto** — leave it; `hsctl backup init` generates a random 32-char password into
+   `.restic-password` when it creates the repository. Nothing else ever generates one: with the
+   file missing, every other backup command stops and asks for your saved password.
 2. **Your own, via hsctl** — `hsctl backup config --password 'YourStrongPassword'` (writes it
    to `.restic-password`). Do this **before** `backup init`.
 3. **By hand** — `printf '%s' 'YourStrongPassword' > .restic-password && chmod 600 .restic-password`.
 
-See it any time: `cat .restic-password`.
+See it any time: `hsctl secrets show` (or `cat .restic-password`).
 
 **Changing it after the repo already exists:** the repo is encrypted with the original
 password, so just editing the file to a new value will fail to open it. Rotate it through
@@ -190,8 +234,8 @@ For a **remote** repo, also export the backend's credentials before running rest
 |-----------------------|------------|
 | `var/lib/docker/volumes/<name>/_data/` | every data volume — Nextcloud files, the Postgres DB volume, Pi-hole config, Caddy certs, Vaultwarden attachments/keys |
 | `<repo>/backups/staging/vaultwarden/db.sqlite3*` | Vaultwarden's **consistent DB fileset** (`db.sqlite3` + `-wal` + `-shm`) — excluded from the volume, lives only here |
-| `<repo>/backups/staging/nextcloud-db.sql` | consistent Postgres dump (fallback if the DB volume won't start) |
-| `<repo>/*/.env`, `<repo>/setup.conf` | per-service config and the main server config |
+| `<repo>/backups/staging/nextcloud-db.sql` | consistent Postgres dump (the DB volume was copied live; restore the database from this) |
+| `<repo>/*/.env`, `<repo>/setup.conf`, `<repo>/backup.conf`, … | per-service config, the main server config, and the rest of hsctl's config |
 
 `<repo>` is the absolute path the server used, e.g. `/home/you/homeserver`.
 
@@ -218,4 +262,5 @@ restic dump latest <path-from-ls>      # stream one file to stdout (no FUSE need
 
 To actually put the extracted tree back into a running stack, follow the **Manual restore**
 steps in [Backup & restore → Restore](backup-restore.md#restore-disaster-recovery) (stop the
-stack, `cp -a` each `_data` back, overlay the Vaultwarden fileset, start up).
+stack, empty and refill each `_data`, overlay the Vaultwarden fileset, rebuild Nextcloud's
+database from the dump, start up).

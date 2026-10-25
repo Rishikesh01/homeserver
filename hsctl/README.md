@@ -26,17 +26,19 @@ group once: `sudo usermod -aG docker $USER` then log out/in.
 ## CLI
 
 ```bash
-hsctl setup             # interactive config -> writes every .env + setup.conf
-hsctl up                # start the stack (apps + tools -> caddy)
-hsctl status            # container status
-hsctl down              # stop (down --volumes also deletes data)
+hsctl setup             # interactive config -> writes every .env + setup.conf; re-run to apply changed settings
+hsctl up                # start the stack (apps + tools -> caddy), carrying on past an app that fails
+hsctl status            # container status (stopped ones too)
+hsctl down              # stop (--keep-proxy leaves Caddy up; --volumes also deletes data)
+hsctl restart           # stop the apps and start the stack again (Caddy keeps running)
 hsctl updates           # check whether newer app images are available (read-only)
 hsctl images            # check every pinned app image runs on amd64 AND arm64
-hsctl install           # dashboard as a systemd service; on a fresh box also starts Caddy + opens the setup wizard
+sudo hsctl install      # dashboard service + nightly backup timer; on a fresh box also starts Caddy + opens the setup wizard
 hsctl get-ca            # write caddy-root-ca.crt for installing on devices
 hsctl secrets show      # print the generated logins (read from the .env files)
 hsctl apps              # list apps; `apps enable|disable NAME` switches one on/off (data kept)
 hsctl secrets rotate-vw-admin   # new Vaultwarden /admin token (stored Argon2-hashed)
+hsctl secrets set-ui-password   # new dashboard password (restarts the dashboard)
 sudo hsctl uninstall    # remove the stack + hsctl; KEEPS app data + backups (--data / --all delete more)
 ```
 
@@ -59,10 +61,17 @@ will every app run on this server? `--platforms` overrides the required set.
 
 Every command above is also a card in the dashboard's Command Center (`/admin/commands`).
 
+Commands that change things take a shared operation lock (`.hsctl.lock` in the repo, an
+`flock`), so a backup, a restore, a dashboard job and a terminal command never overlap; the
+second one says what's running. Run outside the repo (and without `HOMESERVER_DIR`), commands
+that need it refuse rather than working on the current folder.
+
 `setup` autodetects the LAN IP/timezone, picks a free dashboard port (the apps aren't
 published on the LAN — Caddy reaches them over an internal network — so there are no per-app
 host ports), reads any existing `.env` so it stays consistent with a running stack, and saves
 answers to `setup.conf` (re-run non-interactively with `--yes`, or pass `--server-ip`, `--tz`, etc.).
+Re-running it applies changed settings to the existing `.env` files; `--force` rotates the
+secrets that are safe to rotate (after you type `REGENERATE`).
 
 ## Backups & restore
 
@@ -71,10 +80,12 @@ hsctl backup config --repo <dest>     # set destination (also: --retention, --pa
 sudo hsctl backup init                # create the encrypted repo (first time)
 sudo hsctl backup run                 # snapshot: Postgres dump + Vaultwarden DB + data volumes + config
 hsctl backup list                     # list snapshots
-sudo hsctl backup restore [snap] --target <dir>   # extract a snapshot (default: latest)
-sudo hsctl backup restore latest --into-volumes   # one-command DR: stop -> restore all volumes -> up
+sudo hsctl backup restore [snap] --target <dir>   # extract a snapshot (default: latest, into backups/restore)
+sudo hsctl backup restore latest --into-volumes   # one-command DR: check -> stop -> restore all volumes -> up
 sudo hsctl backup forget              # apply the retention policy + prune
-sudo hsctl backup replicate           # copy every snapshot to the off-site replica
+sudo hsctl backup replicate           # copy every snapshot to the off-site replica (every run does this too)
+sudo hsctl backup verify              # self-test the backup mechanism on throwaway data
+sudo hsctl backup check               # check the real repository (restic check + re-read 5%)
 ```
 
 Three config files (gitignored, in the repo root):
@@ -144,16 +155,18 @@ hsctl ui              # reach it at https://<server-ip> via Caddy. With no --add
 **Make it permanent (auto-start on boot):**
 
 ```bash
-hsctl install        # installs + enables the dashboard systemd service (uses sudo); first run also starts Caddy so the setup wizard is reachable
+sudo hsctl install   # installs + enables the dashboard service and the nightly backup timer; first run also starts Caddy so the setup wizard is reachable
 ```
 
 The app **containers** already come back on reboot (`restart: unless-stopped`); `hsctl
-install` does the same for the dashboard process. For the nightly backup timer too, use
-`make install-services` (it fills `__DIR__` in the unit templates with this repo's path).
+install` does the same for the dashboard process, and installs the nightly backup timer
+(switched on once a backup destination is set up). It writes the units from `systemd/`,
+filling in this repo's path and the binary's. `make install-services` builds, installs and runs
+it in one go.
 
 ## Files it creates (all gitignored)
 
-`setup.conf` (your settings, `0600`) · `WELCOME.txt` (the logins handout — `0644`, so delete
-it once you've saved them) · `.ui-password` (dashboard admin, `0600`) · `backup.conf` (backup
+`setup.conf` (your settings, `0600`) · `WELCOME.txt` (a handout of the addresses — no secrets,
+`0644`) · `.ui-password` (dashboard admin, `0600`) · `backup.conf` (backup
 destination, `0600`) · `.restic-password` (`0600` — back this up separately!) · `.backup-env`
 (cloud credentials, `0600`) · `caddy-root-ca.crt` (the CA cert, from `get-ca`).

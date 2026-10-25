@@ -284,7 +284,9 @@ sudo hsctl backup verify                   # prove it restores — five checks, 
 sudo hsctl backup restore latest --into-volumes    # one-command disaster recovery
 ```
 
-`make -C hsctl install-services` adds a nightly timer. The repo is a **vanilla restic
+`sudo hsctl install` also installs a nightly timer, switched on once backups are set up; the
+dashboard shows the last run, flags a backup overdue after 36 hours, and can send a failure
+alert. The repo is a **vanilla restic
 repository**, so you can recover from any machine with the `restic` binary and the password —
 no hsctl, no Docker, no this repo.
 
