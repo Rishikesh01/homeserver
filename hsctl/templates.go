@@ -212,6 +212,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
 <button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
 <button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
+<button class="btn gray" data-slug="backup-check" data-confirm="">Check backups</button>
 <button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
 <p id="jobstatus" class="foot" aria-live="polite"></p>
 <div id="out" class="out" data-job="{{.JobID}}">Command output appears here.</div>

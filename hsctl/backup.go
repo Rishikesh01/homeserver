@@ -264,7 +264,23 @@ func backupCmd() *cobra.Command {
 	replicateCmd := &cobra.Command{Use: "replicate", Short: "Copy all snapshots to the off-site replica repo",
 		Args: cobra.NoArgs, RunE: locked("backup replicate", 0, withRestic(runBackupReplicate))}
 
-	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, forgetCmd, replicateCmd)
+	checkCmd := &cobra.Command{Use: "check", Short: "Check your REAL backup repository is intact (restic check + re-read a sample of the data)",
+		Args: cobra.NoArgs}
+	checkCmd.RunE = locked("backup check", 0, withRestic(func(repo string, cfg backupCfg) error {
+		if err := requireResticPassword(repo); err != nil {
+			return err
+		}
+		subset, _ := checkCmd.Flags().GetString("read-data-subset")
+		fmt.Printf("checking %s (structure, plus re-reading %s of the stored data)...\n", cfg.Repo, subset)
+		if err := resticRun(repo, cfg, "check", "--read-data-subset="+subset); err != nil {
+			return fmt.Errorf("the backup repository has problems — see restic's output above: %w", err)
+		}
+		fmt.Println("\nthe backup repository is intact.")
+		return nil
+	}))
+	checkCmd.Flags().String("read-data-subset", "5%", "how much stored data to re-read and verify (e.g. 5%, 1/10, or 100% for all)")
+
+	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, checkCmd, forgetCmd, replicateCmd)
 	return b
 }
 
@@ -1008,24 +1024,43 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 		{"Vaultwarden — WAL not dropped (db+wal+shm fileset)", func() error { return verifyVaultwardenWAL(keep) }},
 		{"Nextcloud — database (pg_dump -> restic -> import)", func() error { return verifyNextcloudDB(repo, keep) }},
 	}
-	failed := 0
+	failed, skips := 0, 0
 	for _, t := range tests {
 		fmt.Printf("\n========== %s ==========\n", t.name)
-		if err := t.run(); err != nil {
+		err := t.run()
+		var sk skipErr
+		switch {
+		case errors.As(err, &sk):
+			fmt.Printf("SKIPPED: %s\n  %s\n", t.name, sk.why)
+			skips++
+		case err != nil:
 			fmt.Printf("FAIL: %s\n  %v\n", t.name, err)
 			failed++
-		} else {
+		default:
 			fmt.Printf("PASS: %s\n", t.name)
 		}
 	}
-	fmt.Printf("\n========== verify: %d/%d passed ==========\n", len(tests)-failed, len(tests))
+	passed := len(tests) - failed - skips
+	fmt.Printf("\n========== verify: %d passed, %d failed, %d skipped ==========\n", passed, failed, skips)
 	if failed > 0 {
 		return fmt.Errorf("%d backup self-test(s) FAILED — see above", failed)
 	}
+	if skips > 0 {
+		fmt.Println("Not everything was tested — see the SKIPPED checks above for what they need.")
+		return nil
+	}
 	fmt.Println("Backups verified end-to-end: restic round-trips data, Vaultwarden boots from a")
 	fmt.Println("restored volume with its DB intact, and the Nextcloud DB dump restores cleanly.")
+	fmt.Println("(This tests the backup MECHANISM on throwaway data. To check your real backups, run: sudo hsctl backup check)")
 	return nil
 }
+
+// skipErr marks a self-test that couldn't run — reported as SKIPPED, never counted as a pass.
+type skipErr struct{ why string }
+
+func (e skipErr) Error() string { return "skipped: " + e.why }
+
+func skipped(why string) error { return skipErr{why} }
 
 // newIsolatedRepo sets up a fresh restic repo under work with its own password and returns
 // a runner bound to it — so each sub-test stays isolated from the real backup repo.
@@ -1117,8 +1152,7 @@ func verifyVolumeRoundTrip(repo, image string, keep bool) error {
 func verifyVaultwarden(repo string, keep bool) error {
 	image := containerImage(repo, "vaultwarden")
 	if image == "" {
-		fmt.Println("  SKIP: vaultwarden container not found (can't determine its image)")
-		return nil
+		return skipped("the vaultwarden container isn't there, so its image is unknown — start the stack (hsctl up) to include this check")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-vw-")
 	if err != nil {
@@ -1252,8 +1286,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 // loses the row, but the full fileset (db + -wal + -shm) preserves it. Needs sqlite3; skips if absent.
 func verifyVaultwardenWAL(keep bool) error {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
-		fmt.Println("  SKIP: sqlite3 not installed (can't build a WAL fixture)")
-		return nil
+		return skipped("sqlite3 isn't installed (needed to build the WAL test database): sudo apt-get install -y sqlite3")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-wal-")
 	if err != nil {
@@ -1301,8 +1334,7 @@ func verifyVaultwardenWAL(keep bool) error {
 func verifyNextcloudDB(repo string, keep bool) error {
 	image := containerImage(repo, "nextcloud-db")
 	if image == "" {
-		fmt.Println("  SKIP: nextcloud-db container not found (can't determine its Postgres image)")
-		return nil
+		return skipped("the nextcloud-db container isn't there, so its Postgres image is unknown — start the stack (hsctl up) to include this check")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-db-")
 	if err != nil {
