@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -85,6 +86,34 @@ var stackContainers = []string{"vaultwarden", "nextcloud", "pihole", "caddy", "s
 
 func missingEnv() []string { return missingEnvIn(repoDir()) }
 
+// missingEnvFor lists what `up` needs but setup hasn't generated: the .env of every ENABLED core
+// app, plus Caddy's (without it Caddy would issue its certificate for a blank address). A switched
+// off app — Pi-hole, say — doesn't need its .env to exist.
+func missingEnvFor(repo string, c Config) []string {
+	var miss []string
+	for _, s := range append(append([]string{}, coreServices...), "caddy") {
+		if c.IsDisabled(s) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(repo, s, ".env")); err != nil {
+			miss = append(miss, s)
+		}
+	}
+	return miss
+}
+
+// upServices runs `compose up -d` for each service in order, carrying on past a failure so one
+// broken app (say Pi-hole unable to bind :53) can't keep the rest — and Caddy, the only way to
+// the dashboard — down. Caddy always goes last. run starts one service; failures are returned.
+func upServices(order []string, run func(svc string) error) (failed []string) {
+	for _, svc := range order {
+		if err := run(svc); err != nil {
+			failed = append(failed, svc)
+		}
+	}
+	return failed
+}
+
 // missingEnvIn lists the core services under repo that have no .env yet (i.e. setup hasn't
 // been run for them). Empty means the stack is configured.
 func missingEnvIn(repo string) []string {
@@ -98,26 +127,28 @@ func missingEnvIn(repo string) []string {
 }
 
 func cmdUp() error {
-	if m := missingEnv(); len(m) > 0 {
-		return fmt.Errorf("missing .env for %v — run: hsctl setup", m)
-	}
 	if err := requireReadable(repoDir(), envFiles...); err != nil {
 		return err
+	}
+	cfg := LoadConfig(repoDir())
+	if m := missingEnvFor(repoDir(), cfg); len(m) > 0 {
+		return fmt.Errorf("missing .env for %s — run: hsctl setup", strings.Join(m, ", "))
 	}
 	migrateSharedNetworkEnv(repoDir())
 	if err := ensureEdgeNetwork(); err != nil {
 		return err
 	}
-	cfg := LoadConfig(repoDir())
 	if len(cfg.DisabledApps) > 0 {
 		fmt.Printf("(skipping disabled apps: %s — `hsctl apps enable <name>` to turn one on)\n", strings.Join(cfg.DisabledApps, ", "))
 	}
-	for _, s := range enabledServices(cfg) {
-		fmt.Printf("== up: %s ==\n", s)
-		if err := dockerRun(filepath.Join(repoDir(), s), "compose", "up", "-d"); err != nil {
-			return fmt.Errorf("%s: %w", s, err)
+	failed := upServices(enabledServices(cfg), func(svc string) error {
+		fmt.Printf("== up: %s ==\n", svc)
+		err := dockerRun(filepath.Join(repoDir(), svc), "compose", "up", "-d")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "!! %s didn't start (%v) — carrying on with the rest\n", svc, err)
 		}
-	}
+		return err
+	})
 	// Nextcloud only reads NC_TRUSTED_DOMAINS on first install; keep its own list in step with
 	// the server IP so an IP change doesn't lock it behind "untrusted domain". Best-effort: a
 	// fresh Nextcloud may still be installing (and then takes the env value anyway).
@@ -130,8 +161,16 @@ func cmdUp() error {
 	if err := cmdStatus(); err != nil {
 		return err
 	}
+	if len(failed) > 0 {
+		if slices.Contains(failed, "pihole") {
+			fmt.Println("\nPi-hole needs port 53. If something else on this machine holds it, bind Pi-hole to the")
+			fmt.Println("LAN IP (hsctl setup --pihole-dns-bind <LAN IP>), or switch it off: hsctl apps disable pihole")
+			fmt.Println("(nothing else depends on Pi-hole — devices only use it if you point them at it).")
+		}
+		return fmt.Errorf("%s didn't start — see the output above", strings.Join(failed, ", "))
+	}
 	if !uiServiceActive() {
-		fmt.Println("\nNote: the dashboard isn't running as a service yet — run `hsctl install`")
+		fmt.Println("\nNote: the dashboard isn't running as a service yet — run `sudo hsctl install`")
 		fmt.Println("so it auto-starts on boot (or `hsctl ui` to just run it now).")
 	}
 	return nil
