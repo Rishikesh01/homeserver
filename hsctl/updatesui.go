@@ -106,13 +106,13 @@ func (s *uiServer) handleUpdatesApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown app or nothing to apply — run a check first", http.StatusNotFound)
 		return
 	}
-	// Applying pulls images and restarts services, so it must not overlap a
-	// running backup or restore — same collision the stack actions guard against.
-	if !s.opMu.TryLock() {
-		http.Error(w, "a backup or restore is running — try again once it finishes", http.StatusConflict)
+	// Applying pulls images and restarts services, so it must not overlap a backup, a restore
+	// or any other operation. The re-exec'd hsctl takes the shared lock itself; checking here
+	// just turns the click away with a clear answer instead of a failed run.
+	if holder := opLockBusy(s.repo); holder != "" {
+		http.Error(w, "another operation is running ("+holder+") — try again once it finishes", http.StatusConflict)
 		return
 	}
-	defer s.opMu.Unlock()
 	s.updMu.Lock()
 	s.updSt, s.updAt = nil, time.Time{}
 	s.updMu.Unlock()

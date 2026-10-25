@@ -180,13 +180,13 @@ func appsCmd() *cobra.Command {
 	} {
 		on := v.on
 		cmd.AddCommand(&cobra.Command{Use: v.use, Short: v.short, Args: cobra.ExactArgs(1),
-			RunE: func(_ *cobra.Command, args []string) error {
+			RunE: locked("apps "+strings.Fields(v.use)[0], 0, func(_ *cobra.Command, args []string) error {
 				repo, err := requireRepoDir()
 				if err != nil {
 					return err
 				}
 				return setAppEnabled(repo, args[0], on, os.Stdout)
-			}})
+			})})
 	}
 	return cmd
 }

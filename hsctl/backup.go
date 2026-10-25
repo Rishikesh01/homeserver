@@ -192,7 +192,7 @@ func backupCmd() *cobra.Command {
 	}
 
 	initCmd := &cobra.Command{Use: "init", Short: "Create the encrypted restic repo (first time)", Args: cobra.NoArgs,
-		RunE: withRestic(func(repo string, cfg backupCfg) error {
+		RunE: locked("backup init", 0, withRestic(func(repo string, cfg backupCfg) error {
 			ensureResticPassword(repo)
 			// Record the restic version we're initialising with, so `backup verify` can
 			// later catch a restic that drifted (e.g. after a system upgrade).
@@ -205,19 +205,25 @@ func backupCmd() *cobra.Command {
 			}
 			defer handBackLocalRepo(repo, cfg)
 			return resticRun(repo, cfg, "init")
-		})}
+		}))}
 	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
-		RunE: withRestic(backupRun)}
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// The nightly timer passes --wait, so it waits out a dashboard job or a terminal
+			// command instead of skipping the night's backup.
+			wait, _ := cmd.Flags().GetDuration("wait")
+			return locked("backup run", wait, withRestic(backupRun))(cmd, args)
+		}}
+	runCmd.Flags().Duration("wait", 0, "if another hsctl operation is running, wait up to this long for it (e.g. 30m)")
 	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
 		RunE: withRestic(func(repo string, cfg backupCfg) error { return resticRun(repo, cfg, "snapshots") })}
 	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
-		RunE: withRestic(func(repo string, cfg backupCfg) error {
+		RunE: locked("backup forget", 0, withRestic(func(repo string, cfg backupCfg) error {
 			defer handBackLocalRepo(repo, cfg)
 			return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
-		})}
+		}))}
 
 	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
-		Args: cobra.MaximumNArgs(1), RunE: runBackupRestore}
+		Args: cobra.MaximumNArgs(1), RunE: locked("backup restore", 0, runBackupRestore)}
 	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
 	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
@@ -229,7 +235,7 @@ func backupCmd() *cobra.Command {
 	verifyCmd.Flags().Bool("keep", false, "keep the test volume + temp repo afterwards (for debugging)")
 
 	replicateCmd := &cobra.Command{Use: "replicate", Short: "Copy all snapshots to the off-site replica repo",
-		Args: cobra.NoArgs, RunE: withRestic(runBackupReplicate)}
+		Args: cobra.NoArgs, RunE: locked("backup replicate", 0, withRestic(runBackupReplicate))}
 
 	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, forgetCmd, replicateCmd)
 	return b

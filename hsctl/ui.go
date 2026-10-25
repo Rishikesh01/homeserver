@@ -35,11 +35,6 @@ type uiServer struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 
-	// opMu serialises the in-process destructive operations (backup run, restore-into-volumes)
-	// so two clicks can't run at once — a concurrent restore + backup would wipe volumes while
-	// they're being read. Held with TryLock: a second request is turned away, not queued.
-	opMu sync.Mutex
-
 	// restoreSt tracks the async web restore so its progress page can poll for completion even
 	// while Caddy (and thus normal dashboard access) is down mid-restore.
 	restoreMu sync.Mutex
@@ -127,7 +122,6 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
 	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
-	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
 	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
@@ -463,15 +457,15 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	do := r.FormValue("do")
-	// up/down/restart/shutdown all move the stack, so they must not overlap a running backup or
-	// (now-async) restore — that's the same wipe-while-in-use collision opMu guards elsewhere.
+	// up/down/restart/shutdown all move the stack, so they must not overlap a backup, a restore or
+	// any other hsctl operation — from this dashboard, the nightly timer or a terminal.
 	if do == "up" || do == "down" || do == "restart" || do == "shutdown" {
-		if !s.opMu.TryLock() {
-			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(
-				"A backup or restore is running — try this again once it finishes."), http.StatusSeeOther)
+		l, err := acquireOpLock(s.repo, "dashboard: "+do, 0)
+		if err != nil {
+			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 			return
 		}
-		defer s.opMu.Unlock()
+		defer l.Release()
 	}
 	var msg string
 	switch do {
@@ -676,28 +670,6 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	render(w, backupTmpl, d)
 }
 
-func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
-		return
-	}
-	if !s.opMu.TryLock() {
-		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
-			"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
-		return
-	}
-	defer s.opMu.Unlock()
-	uiLog.Info("backup started", "from", remoteIP(r))
-	msg := "Backup complete."
-	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
-		uiLog.Error("backup failed", "err", err)
-		msg = "Backup failed: " + err.Error()
-	} else {
-		uiLog.Info("backup complete")
-	}
-	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
-}
-
 func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
@@ -743,16 +715,16 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		// mid-way (the dashboard is only reachable through Caddy, and no longer on the LAN). Run
 		// it in the background and hand back a page that polls for completion, tolerating the
 		// proxy being down while the stack is restarting.
-		if !s.opMu.TryLock() {
-			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
-				"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
+		lock, err := acquireOpLock(s.repo, "dashboard: restore", 0)
+		if err != nil {
+			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 			return
 		}
 		snap := strings.TrimSpace(r.FormValue("snapshot"))
 		uiLog.Warn("restore started", "snapshot", snap, "from", remoteIP(r))
 		s.setRestore(restoreStatus{Active: true})
 		go func() {
-			defer s.opMu.Unlock()
+			defer lock.Release()
 			defer func() {
 				if p := recover(); p != nil {
 					uiLog.Error("restore crashed", "panic", fmt.Sprint(p))

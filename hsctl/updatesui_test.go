@@ -36,10 +36,13 @@ func TestHandleUpdatesApplyValidation(t *testing.T) {
 	if w.Code != 405 {
 		t.Errorf("GET must be rejected, got %d", w.Code)
 	}
-	// A valid name past the guards must still be turned away while a backup or
-	// restore holds the op lock — locked here to stop the test short of exec.
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	// A valid name past the guards must still be turned away while another operation
+	// holds the shared lock — locked here to stop the test short of exec.
+	l, err := acquireOpLock(s.repo, "test", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
 	if w := post("name=vaultwarden"); w.Code != 409 {
 		t.Errorf("op-locked apply should 409, got %d", w.Code)
 	}

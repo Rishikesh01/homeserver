@@ -40,7 +40,7 @@ func rootCmd() *cobra.Command {
 		Use:   "setup",
 		Short: "Configure and generate each service's .env, or apply changed settings (interactive)",
 		Args:  setupArgs,
-		RunE:  runSetup,
+		RunE:  locked("setup", 0, runSetup),
 	}
 	setup.Flags().Bool("yes", false, "non-interactive: accept defaults/setup.conf/flags")
 	setup.Flags().Bool("force", false, "regenerate secrets (asks you to type REGENERATE; keeps the ones existing data needs)")
@@ -51,19 +51,19 @@ func rootCmd() *cobra.Command {
 	setup.Flags().String("disable-apps", "", "comma-separated apps to switch off (e.g. stirling,it-tools)")
 
 	up := &cobra.Command{Use: "up", Short: "Start the stack (apps + tools, then caddy)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdUp() }}
+		RunE: locked("up", 0, func(*cobra.Command, []string) error { return cmdUp() })}
 
 	down := &cobra.Command{Use: "down", Short: "Stop the stack", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
+		RunE: locked("down", 0, func(c *cobra.Command, _ []string) error {
 			v, _ := c.Flags().GetBool("volumes")
 			k, _ := c.Flags().GetBool("keep-proxy")
 			return cmdDown(v, k)
-		}}
+		})}
 	down.Flags().Bool("volumes", false, "also delete data volumes (DESTRUCTIVE)")
 	down.Flags().Bool("keep-proxy", false, "leave Caddy running, so the dashboard stays reachable (and with --volumes its certificate is kept)")
 
 	restart := &cobra.Command{Use: "restart", Short: "Stop the apps and start the stack again (Caddy keeps running)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdRestart() }}
+		RunE: locked("restart", 0, func(*cobra.Command, []string) error { return cmdRestart() })}
 
 	status := &cobra.Command{Use: "status", Short: "Show container status", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return cmdStatus() }}
@@ -72,16 +72,19 @@ func rootCmd() *cobra.Command {
 		RunE: func(*cobra.Command, []string) error { return cmdGetCA() }}
 
 	install := &cobra.Command{Use: "install", Short: "Run the dashboard as a systemd service (auto-start on boot)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdInstall() }}
+		RunE: locked("install", 0, func(*cobra.Command, []string) error { return cmdInstall() })}
 
 	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: runUI}
 	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
 
 	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only unless --apply)", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
+		RunE: func(c *cobra.Command, args []string) error {
 			apply, _ := c.Flags().GetStringSlice("apply")
 			yes, _ := c.Flags().GetBool("yes")
-			return cmdUpdates(apply, yes)
+			if len(apply) == 0 { // a read-only check never needs the lock
+				return cmdUpdates(nil, yes)
+			}
+			return locked("updates --apply", 0, func(*cobra.Command, []string) error { return cmdUpdates(apply, yes) })(c, args)
 		}}
 	updates.Flags().StringSlice("apply", nil,
 		"apply updates: a container name (repeatable), or \"all\" for every routine (non-major) update")
@@ -95,12 +98,12 @@ func rootCmd() *cobra.Command {
 	images.Flags().StringSlice("platforms", supportedPlatforms, "platforms every pinned image must publish")
 
 	uninstall := &cobra.Command{Use: "uninstall", Short: "Remove the stack + hsctl; keeps app data and backups unless told otherwise", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
+		RunE: locked("uninstall", 0, func(c *cobra.Command, _ []string) error {
 			data, _ := c.Flags().GetBool("data")
 			all, _ := c.Flags().GetBool("all")
 			yes, _ := c.Flags().GetBool("yes")
 			return cmdUninstall(data, all, yes)
-		}}
+		})}
 	uninstall.Flags().Bool("data", false, "also delete the app data volumes (asks to type DESTROY)")
 	uninstall.Flags().Bool("all", false, "delete the app data volumes AND the backups (asks to type DESTROY)")
 	uninstall.Flags().Bool("yes", false, "skip the confirmation — only for the default, data-keeping tier")

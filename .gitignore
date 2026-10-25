@@ -4,6 +4,8 @@
 
 # atomic-write temp files (removed on success; only linger after a crash mid-write)
 **/.hsctl-tmp-*
+# hsctl's operation lock (one state-changing operation at a time)
+.hsctl.lock
 
 # Generated, environment-specific artifacts (comments MUST be on their own lines —
 # gitignore treats a trailing "# ..." as part of the pattern).
