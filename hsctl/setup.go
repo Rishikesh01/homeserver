@@ -39,8 +39,10 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	c := LoadConfig(repo)
-	// What Caddy currently issues certificates for (the autodetected IP on a first setup).
-	deployedIP := c.ServerIP
+	// What the stack runs with now — Caddy's certificate address and where it forwards to the
+	// dashboard. setup.conf can already hold new values (edit, then `setup --yes`), so these come
+	// from caddy/.env; on a first setup they're the autodetected values.
+	deployedIP, deployedPort := deployed(repo, c)
 	// apply only the flags the user actually set, over the loaded config
 	if f.Changed("server-ip") {
 		c.ServerIP, _ = f.GetString("server-ip")
@@ -96,6 +98,9 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		if c.ServerIP != deployedIP {
 			trustNextcloudIP(repo, c.ServerIP)
 		}
+		if c.UIPort != deployedPort {
+			moveDashboard(repo, c.UIPort)
+		}
 	}
 	if len(res.Kept) > 0 {
 		fmt.Println("\nKept (rotating these would break existing data):")
@@ -122,6 +127,47 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		fmt.Println("\nNext: hsctl up   (recreates the containers whose settings changed)")
 	}
 	return nil
+}
+
+// deployed returns the server IP and dashboard port the stack runs with now (from caddy/.env),
+// falling back to c's for a stack that isn't set up yet.
+func deployed(repo string, c Config) (ip string, port int) {
+	ip, port = c.ServerIP, c.UIPort
+	if kv, err := readKV(filepath.Join(repo, "caddy/.env")); err == nil {
+		if v := kv["SERVER_IP"]; v != "" {
+			ip = v
+		}
+		if p := portFromUpstream(kv["HOME_UPSTREAM"]); p > 0 {
+			port = p
+		}
+	}
+	return ip, port
+}
+
+// moveDashboard follows a changed dashboard port through to the running pieces: the dashboard
+// (which picks its port only at startup) is restarted, and Caddy recreated so it forwards to the
+// new port. Otherwise the next `up` would point Caddy at a port nothing listens on and lock the
+// admin out of the dashboard. Run from the dashboard itself, the restart outlives this command
+// (the unit's KillMode=process keeps this job running).
+func moveDashboard(repo string, port int) {
+	fmt.Printf("  the dashboard moves to port %d:\n", port)
+	if uiServiceActive() {
+		if out, err := privCmd("systemctl", "restart", "hsctl-ui.service").CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "  couldn't restart the dashboard (%v): %s\n  run: sudo systemctl restart hsctl-ui\n",
+				err, strings.TrimSpace(string(out)))
+		} else {
+			fmt.Println("    restarted the dashboard service")
+		}
+	} else {
+		fmt.Println("    (the dashboard service isn't running — start it on the new port with: sudo hsctl install)")
+	}
+	if containerState(repo, "caddy") == "running" {
+		if out, err := dockerCombined(filepath.Join(repo, "caddy"), composeUpArgs()...); err != nil {
+			fmt.Fprintf(os.Stderr, "  couldn't recreate Caddy (%v): %s\n  run: hsctl up\n", err, strings.TrimSpace(out))
+		} else {
+			fmt.Println("    recreated Caddy so it forwards to the new port")
+		}
+	}
 }
 
 // setupArgs rejects positional arguments, with a pointed hint for the classic slip of giving

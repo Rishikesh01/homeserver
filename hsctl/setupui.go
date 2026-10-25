@@ -50,6 +50,20 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Normalize()
+	if err := validateConfig(c); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Err: err.Error(), Step: 1})
+		return
+	}
+	// Same lock as `hsctl setup`: two setups at once could write different secrets from the ones
+	// this page then shows.
+	lock, err := acquireOpLock(s.repo, "dashboard: setup", 0)
+	if err != nil {
+		w.WriteHeader(http.StatusConflict)
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Err: err.Error(), Step: 1})
+		return
+	}
+	defer lock.Release()
 	if err := c.Save(s.repo); err != nil {
 		http.Error(w, "saving setup.conf: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -121,6 +135,11 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	c.ServerIP = strings.TrimSpace(r.FormValue("server_ip"))
 	c.TZ = strings.TrimSpace(r.FormValue("tz"))
 	c.PiholeDNSBind = strings.TrimSpace(r.FormValue("pihole_dns_bind"))
+	// The bind is pre-filled from the detected IP; when the admin corrects the IP but leaves the
+	// bind as it was, let Normalize derive it from the new one.
+	if c.ServerIP != base.ServerIP && c.PiholeDNSBind == base.ServerIP {
+		c.PiholeDNSBind = ""
+	}
 	c.VWSignupsAllowed = r.FormValue("vw_signups") == "on"
 	// Apps: every checked box is on; anything unchecked is switched off (browsers omit
 	// unchecked boxes, so compute the complement against the registry).
