@@ -222,14 +222,15 @@ sudo hsctl backup restore latest --into-volumes   # add --yes to skip the confir
 
 It's destructive (it **wipes** each volume before restoring), so it confirms first, and it
 refuses to run unless the backup disk is mounted (the `REQUIRE_MOUNT` guard). The snapshot is
-checked **before** anything is stopped: one without volume data, or with Vaultwarden's files but
-not its database, is refused and the running stack is left alone. Vaultwarden's staged database
+checked **before** anything is stopped: one without volume data, with Vaultwarden's files but
+not its database, or with Nextcloud's database only in the pre-Postgres-18 `nextcloud_db-data`
+volume (restore that one by hand, below), is refused and the running stack is left alone. Vaultwarden's staged database
 is found wherever the repo lived when the backup was taken, so a restore onto a new machine or
 a different folder works the same. If something fails part-way, it says exactly which volumes
 were and weren't put back, and starts Caddy so the dashboard is reachable.
 
 The snapshot is extracted to `backups/restore/` (git-ignored) and that plaintext copy is deleted
-once it's back in the volumes.
+afterwards, whether the put-back worked or not (the snapshot still has everything).
 
 There's a **Restore from a backup** flow on the dashboard too. It runs the same command as a
 background job and follows its output; the restore restarts Caddy, so the page loses the server

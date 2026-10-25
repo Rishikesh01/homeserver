@@ -66,6 +66,11 @@ func TestPlanRestore(t *testing.T) {
 			[]file{vol("vaultwarden_vw-data", "rsa_key.pem")}, "not its database", nil, ""},
 		{"vault stopped at backup time (db in the volume)",
 			[]file{vol("vaultwarden_vw-data", "db.sqlite3")}, "", []string{"vaultwarden_vw-data"}, ""},
+		{"dump found without Vaultwarden's staging",
+			[]file{vol("nextcloud_db-data-v18", "PG_VERSION"), {"srv/hs/backups/staging/nextcloud-db.sql", "x\n" + pgDumpFooter + "\n"}},
+			"", []string{"nextcloud_db-data-v18"}, ""},
+		{"database only in the pre-18 volume",
+			[]file{vol("nextcloud_db-data", "PG_VERSION")}, "old nextcloud_db-data volume", nil, ""},
 		{"legacy layout: whole vault in staging",
 			[]file{vol("caddy_caddy-data", "x"), {"opt/homeserver/backups/staging/vaultwarden/db.sqlite3", "db"}},
 			"", []string{"caddy_caddy-data"}, "opt/homeserver/backups/staging/vaultwarden"},
@@ -97,6 +102,9 @@ func TestPlanRestore(t *testing.T) {
 			}
 			if tc.wantStaging == "" && p.vwStaging != "" || tc.wantStaging != "" && !strings.HasSuffix(p.vwStaging, tc.wantStaging) {
 				t.Errorf("staging = %q, want suffix %q", p.vwStaging, tc.wantStaging)
+			}
+			if strings.Contains(tc.name, "dump found") && p.ncDump == "" {
+				t.Error("the Nextcloud dump wasn't found")
 			}
 		})
 	}

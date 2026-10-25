@@ -711,17 +711,16 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 		}
-		if err := restoreIntoVolumes(repo, target); err != nil {
-			return err
-		}
-		// The extraction holds plaintext copies of every secret and database; once it's back in the
-		// volumes it's served its purpose. (A --target you chose is yours to keep.)
+		err := restoreIntoVolumes(repo, target)
+		// The extraction holds plaintext copies of every secret and database; whether the put-back
+		// worked or not, the snapshot still has it all, so the copy goes. (A --target you chose is
+		// yours to keep.)
 		if !userTarget {
-			if err := os.RemoveAll(target); err == nil {
+			if rerr := os.RemoveAll(target); rerr == nil {
 				fmt.Println("\nremoved the extracted copy at", target)
 			}
 		}
-		return nil
+		return err
 	}
 
 	fmt.Println("It holds plaintext copies of your data and secrets — delete it when you're done.")
@@ -755,6 +754,10 @@ func prepareRestoreTarget(target string) error {
 		return fmt.Errorf("refusing to use unsafe restore target %q", target)
 	}
 	if err := os.RemoveAll(clean); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("an earlier extraction run as root is still in %s and this user can't remove it — "+
+				"it holds plaintext copies of your data: sudo rm -rf %s", clean, clean)
+		}
 		return fmt.Errorf("clearing restore target %s: %w", clean, err)
 	}
 	return mkdirAllOwned(clean, 0700)
@@ -788,11 +791,12 @@ func planRestore(target string) (restorePlan, error) {
 		}
 	}
 	p.vwInLoop = slices.Contains(p.volumes, "vaultwarden_vw-data")
-	p.vwStaging = findVaultwardenStaging(target)
-	if p.vwStaging != "" {
-		// The dump sits next to Vaultwarden's staging dir. An older hsctl could leave a truncated
-		// dump behind; only a complete one is trusted.
-		if d := filepath.Join(filepath.Dir(p.vwStaging), nextcloudDumpFile); dumpComplete(d) {
+	if staging := findStaging(target); staging != "" {
+		if d := filepath.Join(staging, "vaultwarden"); fileExists(d) {
+			p.vwStaging = d
+		}
+		// An older hsctl could leave a truncated dump behind; only a complete one is trusted.
+		if d := filepath.Join(staging, nextcloudDumpFile); dumpComplete(d) {
 			p.ncDump = d
 		}
 	}
@@ -801,6 +805,14 @@ func planRestore(target string) (restorePlan, error) {
 			p.ncVolume = v
 			break
 		}
+	}
+	if p.ncVolume != "" && p.ncVolume != nextcloudDBVolumes[0] {
+		// A snapshot from before the move to Postgres 18: its database is in a volume this stack no
+		// longer runs, in a format Postgres 18 can't open. Putting it back would report success
+		// and leave Nextcloud on an empty database.
+		return p, fmt.Errorf("the snapshot's Nextcloud database is in the old %s volume (Postgres before 18), "+
+			"which this stack no longer uses — restore it by hand: see docs/backup-restore.md "+
+			"(Manual restore); nothing was changed", p.ncVolume)
 	}
 	if len(p.volumes) == 0 && p.vwStaging == "" {
 		return p, fmt.Errorf("the snapshot holds no volume data under %s — nothing was changed", p.volsRoot)
@@ -814,12 +826,12 @@ func planRestore(target string) (restorePlan, error) {
 	return p, nil
 }
 
-// findVaultwardenStaging returns the directory under target that holds the staged Vaultwarden DB
-// (…/backups/staging/vaultwarden), wherever the repo lived when the backup was taken. The volume
-// tree is skipped: it's big, and staging is never inside it.
-func findVaultwardenStaging(target string) string {
+// findStaging returns the directory under target that holds the backup's staged databases
+// (…/backups/staging: Vaultwarden's SQLite fileset and Nextcloud's dump), wherever the repo lived
+// when the backup was taken. The volume tree is skipped: it's big, and staging is never inside it.
+func findStaging(target string) string {
 	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
-	suffix := string(filepath.Separator) + filepath.Join("backups", "staging", "vaultwarden")
+	suffix := string(filepath.Separator) + filepath.Join("backups", "staging")
 	found := ""
 	_ = filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.IsDir() {
@@ -895,14 +907,20 @@ func restoreIntoVolumes(repo, target string) (err error) {
 		if err != nil {
 			return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
 		}
-		// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
+		// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL, owned
+		// like the volume it lands in (the staged copy belongs to the admin, not the container).
+		vuid, vgid, ok := ownerOf(mp)
 		for _, suf := range dbFilesetSuffixes {
 			f := filepath.Join(plan.vwStaging, "db.sqlite3"+suf)
 			if !fileExists(f) {
 				continue
 			}
-			if err := copyFile(f, filepath.Join(mp, "db.sqlite3"+suf)); err != nil {
+			dst := filepath.Join(mp, "db.sqlite3"+suf)
+			if err := copyFile(f, dst); err != nil {
 				return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
+			}
+			if ok {
+				_ = os.Lchown(dst, vuid, vgid)
 			}
 		}
 		fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
@@ -918,7 +936,9 @@ func restoreIntoVolumes(repo, target string) (err error) {
 	// into the volume the compose file actually runs on.
 	if plan.ncDump != "" && plan.ncVolume == nextcloudDBVolumes[0] {
 		fmt.Println("\n== nextcloud database ==")
-		restoreNextcloudDBFromDump(repo, plan.ncDump, plan.ncVolume, filepath.Join(plan.volsRoot, plan.ncVolume, "_data"))
+		if err := restoreNextcloudDBFromDump(repo, plan.ncDump, plan.ncVolume, filepath.Join(plan.volsRoot, plan.ncVolume, "_data")); err != nil {
+			return err
+		}
 	}
 
 	restoredAll = true
@@ -1571,6 +1591,15 @@ var dbFilesetSuffixes = []string{"", "-wal", "-shm"}
 // and in restoreIntoVolumes (which overlays the staged fileset onto the restored volume).
 func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	const svc = "vaultwarden"
+	// Clear the last run's copy FIRST, whatever happens next: a snapshot taken while Vaultwarden is
+	// stopped carries its database in the volume, and a stale staged copy beside it would be laid
+	// over that newer database on restore. Every path below that doesn't finish staging also
+	// leaves the folder gone, never half-filled.
+	dest := filepath.Join(staging, "vaultwarden")
+	if err := os.RemoveAll(dest); err != nil {
+		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
+		return ""
+	}
 	if containerState(repo, svc) != "running" {
 		return "" // stack down: the volume (incl. DB) isn't being written, so the live backup is consistent
 	}
@@ -1578,11 +1607,6 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	mp, err := volumeMountpoint(repo, vol)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vaultwarden: data volume not found, backing up live volume as-is: %v\n", err)
-		return ""
-	}
-	dest := filepath.Join(staging, "vaultwarden")
-	if err := os.RemoveAll(dest); err != nil { // clear a prior run's copy so a deleted DB doesn't linger
-		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
 		return ""
 	}
 	if err := mkdirAllOwned(dest, 0700); err != nil {
@@ -1620,6 +1644,7 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		close(windowDone)
 	}()
 	if !fileExists(filepath.Join(mp, "db.sqlite3")) {
+		_ = os.RemoveAll(dest)
 		fmt.Fprintln(os.Stderr, "vaultwarden: db.sqlite3 not found, backing up live volume as-is")
 		return ""
 	}
@@ -1630,10 +1655,13 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		if !fileExists(f) {
 			continue
 		}
-		if err := copyFile(f, filepath.Join(dest, "db.sqlite3"+suf)); err != nil {
+		staged := filepath.Join(dest, "db.sqlite3"+suf)
+		if err := copyFile(f, staged); err != nil {
+			_ = os.RemoveAll(dest)
 			fmt.Fprintln(os.Stderr, "vaultwarden: DB fileset copy to staging failed, backing up live volume as-is:", err)
 			return ""
 		}
+		inheritOwner(staged) // the admin's, like the rest of backups/ (restore re-owns it to match the volume)
 	}
 	fmt.Println("vaultwarden: staged the SQLite fileset (db.sqlite3 + WAL; container stopped ~1s); attachments backed up live")
 	// Exclude the live DB fileset from the volume backup — the consistent copy is in staging.
@@ -1729,31 +1757,40 @@ func dumpComplete(path string) bool {
 // config.php expects). The raw volume was copied while Postgres ran, so its tables aren't
 // guaranteed consistent; the dump is. Postgres is started on its own, the database is dropped and
 // re-created from the dump, and the rest of the stack starts afterwards. If anything goes wrong,
-// the raw volume is put back as it was in the snapshot and the restore carries on with that.
-func restoreNextcloudDBFromDump(repo, dump, volume, rawVolume string) {
-	fail := func(why string, err error) {
-		fmt.Fprintf(os.Stderr, "  nextcloud db: couldn't rebuild from the dump (%s: %v) — using the raw volume copy instead\n", why, err)
-		_, _ = dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "stop", "db")
-		if err := restoreOneVolume(repo, volume, rawVolume); err != nil {
-			fmt.Fprintf(os.Stderr, "  nextcloud db: putting the raw volume back failed too: %v\n", err)
-		}
+// the raw volume is put back as it was in the snapshot and the restore carries on with that; only
+// if that fails too — the database volume left wiped or half-imported — is it an error.
+func restoreNextcloudDBFromDump(repo, dump, volume, rawVolume string) error {
+	why, cause := rebuildNextcloudDB(repo, dump)
+	if cause == nil {
+		fmt.Println("  rebuilt the nextcloud database from its consistent dump")
+		return nil
 	}
+	fmt.Fprintf(os.Stderr, "  nextcloud db: couldn't rebuild from the dump (%s: %v) — using the raw volume copy instead\n", why, cause)
+	_, _ = dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "stop", "db")
+	if err := restoreOneVolume(repo, volume, rawVolume); err != nil {
+		return fmt.Errorf("nextcloud database: rebuilding it from the dump failed (%s: %v), and putting the "+
+			"snapshot's raw database volume back failed too: %w", why, cause, err)
+	}
+	fmt.Fprintln(os.Stderr, "  nextcloud db: restored from the raw volume copy (taken while Postgres ran — check Nextcloud once it's up)")
+	return nil
+}
+
+// rebuildNextcloudDB starts Postgres alone, drops Nextcloud's database and imports the dump. On
+// failure it says which step failed and why.
+func rebuildNextcloudDB(repo, dump string) (step string, err error) {
 	user, db := nextcloudDBNames(repo)
 	if err := ensureEdgeNetwork(); err != nil {
-		fail("network", err)
-		return
+		return "network", err
 	}
 	if out, err := dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "up", "-d", "db"); err != nil {
-		fail("start postgres", fmt.Errorf("%v: %s", err, strings.TrimSpace(out)))
-		return
+		return "start postgres", fmt.Errorf("%v: %s", err, strings.TrimSpace(out))
 	}
 	// NOT pg_isready alone: during first start Postgres may run a temporary server. Gate on a query.
 	ready := func() bool {
 		return dockerCmd(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres", "-tAc", "select 1").Run() == nil
 	}
 	if !dockerWait(120*time.Second, ready) {
-		fail("postgres didn't become ready", fmt.Errorf("timed out after 2 minutes"))
-		return
+		return "postgres didn't become ready", fmt.Errorf("timed out after 2 minutes")
 	}
 	psql := func(sql string) error {
 		out, err := dockerCombined(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres",
@@ -1764,27 +1801,23 @@ func restoreNextcloudDBFromDump(repo, dump, volume, rawVolume string) {
 		return nil
 	}
 	if err := psql(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, db)); err != nil {
-		fail("drop the copied database", err)
-		return
+		return "drop the copied database", err
 	}
 	if err := psql(fmt.Sprintf(`CREATE DATABASE "%s" OWNER "%s"`, db, user)); err != nil {
-		fail("create the database", err)
-		return
+		return "create the database", err
 	}
 	f, err := os.Open(dump)
 	if err != nil {
-		fail("open the dump", err)
-		return
+		return "open the dump", err
 	}
 	defer f.Close()
 	imp := dockerCmd(repo, "exec", "-i", "nextcloud-db", "psql", "-q", "-U", user, "-d", db, "-v", "ON_ERROR_STOP=1")
 	var errOut strings.Builder
 	imp.Stdin, imp.Stdout, imp.Stderr = f, io.Discard, &errOut
 	if err := imp.Run(); err != nil {
-		fail("import the dump", fmt.Errorf("%v: %s", err, strings.TrimSpace(errOut.String())))
-		return
+		return "import the dump", fmt.Errorf("%v: %s", err, strings.TrimSpace(errOut.String()))
 	}
-	fmt.Println("  rebuilt the nextcloud database from its consistent dump")
+	return "", nil
 }
 
 // resticEnv builds the environment to point restic at a given repository + password file.
