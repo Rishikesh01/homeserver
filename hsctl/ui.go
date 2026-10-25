@@ -342,8 +342,17 @@ func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		u := r.FormValue("username")
 		p := r.FormValue("password")
 		// One password check at a time, with a pause after a wrong one, so parallel requests can't
-		// slip a burst of guesses past the lockout.
+		// slip a burst of guesses past the lockout. The lockout is checked again once it's our
+		// turn: requests queued behind a failure must not get their guess compared anyway.
 		s.loginCheckMu.Lock()
+		if wait := s.loginBlocked(keys, time.Now()); wait > 0 {
+			s.loginCheckMu.Unlock()
+			uiLog.Warn("login throttled", "from", ip)
+			w.WriteHeader(http.StatusTooManyRequests)
+			render(w, loginTmpl, loginData{Err: fmt.Sprintf("Too many wrong passwords — wait %s and try again.",
+				shortDuration(wait)), Next: safeNext(r.FormValue("next"))})
+			return
+		}
 		ok := subtle.ConstantTimeCompare([]byte(u), []byte("admin")) == 1 &&
 			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
 		if !ok {
@@ -380,12 +389,15 @@ func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 // client (the address Caddy reports) AND per connection peer: the forwarded address can't be
 // trusted from a direct connection (anything on the box can reach us without Caddy and claim any
 // X-Forwarded-For), so the peer gets its own, larger allowance that rotating addresses can't
-// escape.
+// escape. Every LAN client reaches us through Caddy — the same peer — so the peer's lockout is
+// capped at a minute: enough to throttle guessing, too short for one noisy device to keep the
+// admin out.
 const (
 	loginFreeTries     = 5  // per client
 	loginPeerFreeTries = 30 // per connection peer (Caddy carries every LAN client)
 	loginFirstLock     = 30 * time.Second
 	loginMaxLock       = 15 * time.Minute
+	loginPeerMaxLock   = time.Minute
 	loginForgetAfter   = time.Hour // failures this old are forgotten
 )
 
@@ -440,8 +452,12 @@ func (s *uiServer) loginFailed(keys []string, now time.Time) {
 		f.last = now
 		if over := f.count - freeTries(k); over > 0 {
 			lock := loginFirstLock << min(over-1, 10)
-			if lock > loginMaxLock {
-				lock = loginMaxLock
+			maxLock := loginMaxLock
+			if strings.HasPrefix(k, "peer ") {
+				maxLock = loginPeerMaxLock
+			}
+			if lock > maxLock {
+				lock = maxLock
 			}
 			f.until = now.Add(lock)
 		}
@@ -467,14 +483,20 @@ func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // safeNext keeps post-login redirects on this site (a local path), defaulting to /admin. It
-// must reject anything that resolves off-site: a protocol-relative "//host", and — because
-// browsers fold "\" into "/" per the URL spec — any backslash (so "/\host" can't sneak through
-// as "//host"). A legitimate in-app path never contains a backslash.
+// must reject anything that resolves off-site: a protocol-relative "//host"; any backslash,
+// because browsers fold "\" into "/" per the URL spec (so "/\host" can't sneak through as
+// "//host"); and any control character or space, because browsers strip tabs and newlines from a
+// URL (so "/\t/host" would become "//host"). A legitimate in-app path has none of them.
 func safeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") && !strings.ContainsRune(next, '\\') {
-		return next
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsRune(next, '\\') {
+		return "/admin"
 	}
-	return "/admin"
+	for _, r := range next {
+		if r <= ' ' || r == 0x7f {
+			return "/admin"
+		}
+	}
+	return next
 }
 
 // isHTTPS reports whether the browser reached us over TLS, so we only flag the cookie

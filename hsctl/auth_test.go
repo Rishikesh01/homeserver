@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -94,6 +95,9 @@ func TestSafeNext(t *testing.T) {
 		`\/evil.com`:        "/admin",
 		"https://evil.com":  "/admin",
 		`/ok/\notauthority`: "/admin", // any backslash is rejected (no in-app path has one)
+		"/\t/evil.com":      "/admin", // browsers strip the tab: //evil.com
+		"/\n/evil.com":      "/admin",
+		"/admin backup":     "/admin",
 	}
 	for in, want := range cases {
 		if got := safeNext(in); got != want {
@@ -195,6 +199,7 @@ func TestLoginThrottle(t *testing.T) {
 		{"first lockout", loginFreeTries + 1, []string{"client 1.2.3.4", "peer 172.18.0.9"}, loginFirstLock, 0},
 		{"doubles", loginFreeTries + 2, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 2 * loginFirstLock, 0},
 		{"capped and expires", loginFreeTries + 20, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 0, loginMaxLock},
+		{"shared peer lockout stays short", loginPeerFreeTries + 20, []string{"peer 172.18.0.9"}, 0, loginPeerMaxLock},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,5 +270,34 @@ func TestSameOrigin(t *testing.T) {
 				t.Errorf("sameOrigin = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLoginBurstIsThrottled: a burst of parallel wrong passwords must hit the lockout — requests
+// queued behind a failure don't get their guess compared anyway.
+func TestLoginBurstIsThrottled(t *testing.T) {
+	s := &uiServer{pass: "right-password", sessions: map[string]time.Time{}, repo: t.TempDir()}
+	codes := make(chan int, 20)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=wrong"))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.RemoteAddr = "10.0.0.7:5555"
+			w := httptest.NewRecorder()
+			s.handleLogin(w, r)
+			codes <- w.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	counts := map[int]int{}
+	for c := range codes {
+		counts[c]++
+	}
+	if counts[http.StatusUnauthorized] > loginFreeTries+1 || counts[http.StatusTooManyRequests] == 0 {
+		t.Errorf("responses %v: want at most %d password checks, the rest throttled", counts, loginFreeTries+1)
 	}
 }
