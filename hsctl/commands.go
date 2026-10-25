@@ -96,7 +96,8 @@ var webCmds = []webCmd{
 		Args: []string{"backup", "list"}, Danger: dangerNone},
 	{Slug: "backup-forget", Title: "Prune old snapshots", Category: "Backups",
 		Desc: "Apply the retention policy (keep N daily/weekly/monthly) and delete + prune everything older. Frees space; old snapshots beyond the policy are gone for good.",
-		Args: []string{"backup", "forget"}, Danger: dangerCaution, NeedsRoot: true},
+		Args: []string{"backup", "forget"}, Danger: dangerCaution, NeedsRoot: true,
+		Confirm: "Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good."},
 	{Slug: "backup-verify", Title: "Self-test backups", Category: "Backups",
 		Desc: "Prove backups actually work end-to-end: back up and restore throwaway data (incl. a real Vaultwarden + Postgres round-trip). Never touches your live data. Takes a minute or two.",
 		Args: []string{"backup", "verify"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
@@ -113,7 +114,8 @@ var webCmds = []webCmd{
 		Args: []string{"secrets", "show"}, Danger: dangerNone},
 	{Slug: "secrets-rotate-vw", Title: "New Vaultwarden admin token", Category: "Secrets",
 		Desc: "Generate a fresh Vaultwarden /admin token, store it hashed, and recreate the container. Shown once in the output — save it. The old token stops working.",
-		Args: []string{"secrets", "rotate-vw-admin"}, Danger: dangerCaution},
+		Args: []string{"secrets", "rotate-vw-admin"}, Danger: dangerCaution,
+		Confirm: "Make a new Vaultwarden admin token? The current one stops working — save the new one from the output."},
 }
 
 // webCmdCategories is the display order of the Command Center sections.

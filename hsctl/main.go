@@ -75,7 +75,7 @@ func rootCmd() *cobra.Command {
 		RunE: locked("install", 0, func(*cobra.Command, []string) error { return cmdInstall() })}
 
 	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: inRepo(runUI)}
-	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
+	ui.Flags().String("addr", "", "listen address, e.g. 127.0.0.1:8088 (default: loopback + the docker bridge gateway, on the dashboard port from setup)")
 
 	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only unless --apply)", Args: cobra.NoArgs,
 		RunE: inRepo(func(c *cobra.Command, args []string) error {

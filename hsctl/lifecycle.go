@@ -239,11 +239,21 @@ func cmdStatus() error {
 	if err := requireDocker(); err != nil {
 		return err
 	}
-	args := []string{"ps", "--format", "table {{.Names}}\t{{.Status}}"}
+	// -a: a container that failed to start (Exited, Created) is exactly what status must show.
+	args := []string{"ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"}
 	for _, n := range stackContainers {
 		args = append(args, "--filter", "name="+n)
 	}
-	return dockerRun(repoDir(), args...)
+	out, err := dockerOut(repoDir(), args...)
+	if err != nil {
+		return err
+	}
+	if len(strings.Split(strings.TrimSpace(out), "\n")) <= 1 { // just the header
+		fmt.Println("no stack containers yet — start the stack with: hsctl up")
+		return nil
+	}
+	fmt.Println(out)
+	return nil
 }
 
 func cmdGetCA() error {

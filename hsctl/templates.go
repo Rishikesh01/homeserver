@@ -211,13 +211,13 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <h3 style="margin-top:24px">Operations</h3>
 <p class="foot">Output appears below as each one runs, and it keeps running if you leave this page. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
 {{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
-<button class="btn green" data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
-<button class="btn gray" data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
-<button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
-<button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old snapshots</button>
-<button class="btn green" data-slug="backup-verify" data-confirm="">Self-test backups</button>
-<button class="btn gray" data-slug="backup-check" data-confirm="">Check backups</button>
-<button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
+<button class="btn green" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
+<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
+<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-list" data-confirm="">List snapshots</button>
+<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old snapshots</button>
+<button class="btn green" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-verify" data-confirm="">Self-test backups</button>
+<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-check" data-confirm="">Check backups</button>
+<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-replicate" data-confirm="">Copy off-site</button>
 <p id="jobstatus" class="foot" aria-live="polite"></p>
 <div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}">Command output appears here.</div>
 
@@ -335,7 +335,7 @@ const helpTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 const runJS = `
 var out=document.getElementById('out'), jobStatus=document.getElementById('jobstatus');
 function jobButtons(){ return document.querySelectorAll('button[data-slug],button[data-post]'); }
-function setBusy(b){ jobButtons().forEach(function(x){ x.disabled=b; }); }
+function setBusy(b){ jobButtons().forEach(function(x){ x.disabled=b||x.dataset.off==='1'; }); }
 function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
 function say(t){ if(jobStatus) jobStatus.textContent=t; }
 async function runCmd(btn){

@@ -144,6 +144,9 @@ func secretsShow(repo string) error {
 		// it were the login; it's not reversible.
 		if it.key == "VW_ADMIN_TOKEN" && strings.Contains(v, "argon2") {
 			v = "(Argon2-hashed; shown once at setup — reset with: hsctl secrets rotate-vw-admin)"
+		} else if strings.HasPrefix(v, "change-me") {
+			// A .env copied from its .env.example: a placeholder, not a generated secret.
+			v += "   <- a PLACEHOLDER from the .env.example — set a real one (see docs/security.md)"
 		}
 		fmt.Printf("%-28s %s\n", it.label+":", v)
 		any = true

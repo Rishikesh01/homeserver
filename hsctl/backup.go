@@ -74,7 +74,7 @@ const (
 )
 
 type backupCfg struct {
-	Repo          string // restic repository (e.g. /mnt/usb/restic, sftp:user@host:/path, b2:bucket:path)
+	Repo          string // restic repository (e.g. /mnt/usb/restic, sftp:user@host:/path, s3:host/bucket)
 	Retention     string
 	ResticVersion string // pinned restic version; `backup verify` fails if the installed one differs
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
@@ -94,7 +94,7 @@ var backedUpConfigFiles = []string{
 var backupConfigFiles = []string{backupConfFile, resticPassFile, backupEnvFile}
 
 // backupEnvFile holds cloud-backend credentials restic needs for remote repos —
-// B2_ACCOUNT_ID / B2_ACCOUNT_KEY for Backblaze, AWS_ACCESS_KEY_ID / ... for S3 —
+// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for S3-compatible storage —
 // one KEY=VALUE per line. Optional: local and SFTP destinations don't need it.
 // Lives next to .restic-password, 0600, and is gitignored like it.
 const backupEnvFile = ".backup-env"
@@ -121,7 +121,7 @@ func loadBackupCfg(repo string) backupCfg {
 
 func (c backupCfg) save(repo string) error {
 	s := fmt.Sprintf(
-		"# hsctl backup config. RESTIC_REPO: local path, sftp:user@host:/path, b2:bucket:path, s3:...\n"+
+		"# hsctl backup config. RESTIC_REPO: local path, sftp:user@host:/path, s3:...\n"+
 			"RESTIC_REPO=%s\nRETENTION=%s\n", c.Repo, c.Retention)
 	if c.ResticVersion != "" {
 		s += "# Pinned restic version. `backup verify` FAILS if the installed restic differs, so a\n" +
@@ -151,7 +151,7 @@ func backupCmd() *cobra.Command {
 
 	cfgCmd := &cobra.Command{Use: "config", Short: "Set the backup destination / retention / password",
 		Args: cobra.NoArgs, RunE: runBackupConfig}
-	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp: / b2: / s3:)")
+	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp:user@host:/path / s3:…)")
 	cfgCmd.Flags().String("retention", "", "restic --keep-* options, e.g. '"+retentionExample+"'")
 	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
@@ -242,7 +242,18 @@ func backupCmd() *cobra.Command {
 			if err := requireResticPassword(repo); err != nil {
 				return err
 			}
-			return resticRun(repo, cfg, "snapshots")
+			out, err := resticOutput(repo, cfg, "snapshots")
+			fmt.Print(out)
+			if err != nil {
+				if repoMissing(out) {
+					return fmt.Errorf("there's no backup repository at %s yet — create it with: sudo hsctl backup init", cfg.Repo)
+				}
+				return err
+			}
+			if !strings.Contains(out, "snapshot") || strings.TrimSpace(out) == "" {
+				fmt.Println("no snapshots yet — take one with: sudo hsctl backup run")
+			}
+			return nil
 		})}
 	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
 		RunE: locked("backup forget", 0, withRestic(func(repo string, cfg backupCfg) error {
@@ -466,8 +477,8 @@ func backupRun(repo string, cfg backupCfg) error {
 func runBackupReplicate(repo string, cfg backupCfg) error {
 	if cfg.ReplicaRepo == "" {
 		return fmt.Errorf("no off-site replica configured. Set one first:\n"+
-			"  hsctl backup config --replica b2:bucket:homeserver   (or sftp:user@host:/path, s3:...)\n"+
-			"Cloud credentials (e.g. B2_ACCOUNT_ID / B2_ACCOUNT_KEY) go in %s, one KEY=VALUE per line.",
+			"  hsctl backup config --replica sftp:user@nas:/backups   (or s3:host/bucket, or a local path)\n"+
+			"Cloud credentials (e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) go in %s, one KEY=VALUE per line.",
 			backupEnvFile)
 	}
 	if err := requireResticPassword(repo); err != nil {
