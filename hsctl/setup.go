@@ -18,6 +18,19 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	f := cmd.Flags()
 	yes, _ := f.GetBool("yes")
 	force, _ := f.GetBool("force")
+	if force && !yes {
+		if !isTTY() {
+			return fmt.Errorf("--force regenerates secrets; to do that non-interactively, add --yes")
+		}
+		fmt.Println("--force generates NEW secrets: the Vaultwarden /admin token, the Pi-hole and Redis")
+		fmt.Println("passwords, and — only if Nextcloud has no data yet — its database and admin passwords.")
+		fmt.Println("The old ones stop working. Your app data and other settings are kept.")
+		fmt.Print("  Type REGENERATE to continue: ")
+		if line, _ := stdinReader.ReadString('\n'); strings.TrimSpace(line) != "REGENERATE" {
+			fmt.Println("aborted — nothing was changed")
+			return nil
+		}
+	}
 	repo := repoDir()
 	// A config file we can't read must stop us here: loading would silently fall back to
 	// autodetected values and then save them over the real settings.
@@ -82,6 +95,13 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		if c.ServerIP != deployedIP {
 			trustNextcloudIP(repo, c.ServerIP)
 		}
+	}
+	if len(res.Kept) > 0 {
+		fmt.Println("\nKept (rotating these would break existing data):")
+		for _, k := range res.Kept {
+			fmt.Println("  " + k)
+		}
+		fmt.Println("  For a completely fresh start, delete the data first: hsctl down --volumes")
 	}
 	if len(res.Secrets) > 0 {
 		fmt.Println("\n========== NEW LOGINS — save these into a password manager ==========")

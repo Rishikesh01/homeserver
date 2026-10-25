@@ -11,34 +11,43 @@ import (
 // Secret is a human login surfaced after generation (to save into Vaultwarden).
 type Secret struct{ Label, Value string }
 
-// generated is what Generate did: the human logins of any .env it created, and the settings it
-// changed in .env files that already existed.
+// generated is what Generate did: the human logins it created or rotated, the settings it changed
+// in .env files that already existed, and (with force) the secrets it deliberately kept.
 type generated struct {
 	Secrets []Secret
 	Changed []string
+	Kept    []string
 }
 
 // Generate writes every service's .env (with fresh secrets), pihole/custom.list, and a
-// personalized WELCOME.txt. An existing .env keeps its secrets unless force is set, but gets the
-// current settings applied (see applySettings) — so changing a setting with `hsctl setup` or the
-// wizard actually reaches the stack.
+// personalized WELCOME.txt. An existing .env gets the current settings applied (see
+// applySettings) — so changing a setting with `hsctl setup` or the wizard actually reaches the
+// stack — and keeps its secrets unless force is set.
+//
+// force rotates the secrets IN PLACE (other lines, comments and hand edits survive), except the
+// ones live data depends on: Postgres only takes POSTGRES_PASSWORD when it first creates its
+// database, and Nextcloud only reads NC_ADMIN_* when it first installs. Rotating those while that
+// data exists breaks Nextcloud (or prints a login that doesn't work), so they're kept — and
+// reported — until the data is gone (`hsctl down --volumes`).
 func (c Config) Generate(repo string, force bool) (generated, error) {
 	var res generated
-	if !force {
-		changed, err := c.applySettings(repo)
-		if err != nil {
-			return res, err
-		}
-		res.Changed = changed
+	changed, err := c.applySettings(repo)
+	if err != nil {
+		return res, err
 	}
-	var secrets []Secret
-	// writeEnv writes path only if absent (or force); reports whether it wrote.
-	writeEnv := func(rel, content string) (bool, error) {
+	res.Changed = changed
+	add := func(label, value string) { res.Secrets = append(res.Secrets, Secret{label, value}) }
+	// create writes rel when it doesn't exist yet; reports whether it did.
+	create := func(rel, content string) (bool, error) {
 		path := filepath.Join(repo, rel)
-		if fileExists(path) && !force {
+		if fileExists(path) {
 			return false, nil
 		}
 		return true, writeFile0600(path, content)
+	}
+	// rotate replaces one secret in an existing file (force only).
+	rotate := func(rel, key, value string) error {
+		return setEnvKey(filepath.Join(repo, rel), key, value)
 	}
 
 	// vaultwarden
@@ -46,48 +55,82 @@ func (c Config) Generate(repo string, force bool) (generated, error) {
 	// once below for the user to save; '$' is doubled so docker-compose passes it through.
 	vwToken := genPassword(40)
 	vwStored := escapeDollarsForCompose(argon2idPHC(vwToken))
-	if wrote, err := writeEnv("vaultwarden/.env", fmt.Sprintf(
+	const vwLabel = "Vaultwarden /admin token (SAVE — not recoverable):"
+	if wrote, err := create("vaultwarden/.env", fmt.Sprintf(
 		"VW_DOMAIN=https://%s:8443\nVW_ADMIN_TOKEN=%s\nVW_SIGNUPS_ALLOWED=%s\n",
 		c.ServerIP, vwStored, boolStr(c.VWSignupsAllowed, "true", "false"))); err != nil {
 		return res, err
 	} else if wrote {
-		secrets = append(secrets, Secret{"Vaultwarden /admin token (SAVE — not recoverable):", vwToken})
+		add(vwLabel, vwToken)
+	} else if force {
+		if err := rotate("vaultwarden/.env", "VW_ADMIN_TOKEN", vwStored); err != nil {
+			return res, err
+		}
+		add(vwLabel, vwToken)
 	}
 
 	// nextcloud
 	ncPw := genPassword(20)
-	if wrote, err := writeEnv("nextcloud/.env", fmt.Sprintf(
+	const ncLabel = "Nextcloud (user 'admin'):"
+	if wrote, err := create("nextcloud/.env", fmt.Sprintf(
 		"POSTGRES_DB=nextcloud\nPOSTGRES_USER=nextcloud\nPOSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n"+
 			"NC_ADMIN_USER=admin\nNC_ADMIN_PASSWORD=%s\nNC_TRUSTED_DOMAINS=%s\n"+
 			"NC_TRUSTED_PROXIES=172.16.0.0/12\n",
 		genPassword(32), genPassword(32), ncPw, c.ServerIP)); err != nil {
 		return res, err
 	} else if wrote {
-		secrets = append(secrets, Secret{"Nextcloud (user 'admin'):", ncPw})
+		add(ncLabel, ncPw)
+	} else if force {
+		// Redis keeps no password of its own (it's passed on the command line), so it always rotates.
+		if err := rotate("nextcloud/.env", "REDIS_PASSWORD", genPassword(32)); err != nil {
+			return res, err
+		}
+		if volumeExistsOrUnknown(repo, "nextcloud_db-data-v18") || volumeExistsOrUnknown(repo, "nextcloud_db-data") {
+			res.Kept = append(res.Kept, "POSTGRES_PASSWORD — the existing Nextcloud database was created with it")
+		} else if err := rotate("nextcloud/.env", "POSTGRES_PASSWORD", genPassword(32)); err != nil {
+			return res, err
+		}
+		if volumeExistsOrUnknown(repo, "nextcloud_nc-html") {
+			res.Kept = append(res.Kept, "NC_ADMIN_PASSWORD — Nextcloud is already installed and only reads it on first install "+
+				"(change the admin password inside Nextcloud instead)")
+		} else {
+			if err := rotate("nextcloud/.env", "NC_ADMIN_PASSWORD", ncPw); err != nil {
+				return res, err
+			}
+			add(ncLabel, ncPw)
+		}
 	}
 
-	// pihole
+	// pihole — its admin password is applied from the env on every start, so it always rotates.
 	phPw := genPassword(20)
-	if wrote, err := writeEnv("pihole/.env", fmt.Sprintf(
+	const phLabel = "Pi-hole admin:"
+	if wrote, err := create("pihole/.env", fmt.Sprintf(
 		"TZ=%s\nPIHOLE_PASSWORD=%s\nPIHOLE_UPSTREAMS=1.1.1.1;9.9.9.9\nPIHOLE_DNS_BIND=%s\n",
 		c.TZ, phPw, c.PiholeDNSBind)); err != nil {
 		return res, err
 	} else if wrote {
-		secrets = append(secrets, Secret{"Pi-hole admin:", phPw})
+		add(phLabel, phPw)
+	} else if force {
+		if err := rotate("pihole/.env", "PIHOLE_PASSWORD", phPw); err != nil {
+			return res, err
+		}
+		add(phLabel, phPw)
 	}
 
-	// pihole/custom.list — no local hostnames (apps are reached by IP:port). Kept as
-	// an almost-empty file so the bind-mount has a file to mount.
+	// pihole/custom.list — no local hostnames (apps are reached by IP:port). Kept as an
+	// almost-empty file so the bind-mount has a file to mount. Never overwritten: any records in it
+	// are the admin's.
 	listPath := filepath.Join(repo, "pihole/custom.list")
-	if !fileExists(listPath) || force {
+	if !fileExists(listPath) {
 		if err := writeFile0644(listPath,
 			"# Pi-hole local DNS records (none — apps are reached by IP:port).\n"); err != nil {
 			return res, err
 		}
 	}
 
-	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP).
-	if _, err := writeEnv("caddy/.env", c.caddyEnv()); err != nil {
+	// caddy — HTTPS per app at the server IP + port (cert SAN = the IP). No secrets, so force
+	// leaves an existing one alone (its settings were applied above).
+	if _, err := create("caddy/.env", c.caddyEnv()); err != nil {
 		return res, err
 	}
 
@@ -105,8 +148,19 @@ Step-by-step per device: see ONBOARDING.md
 		return res, err
 	}
 
-	res.Secrets = secrets
 	return res, nil
+}
+
+// volumeExistsOrUnknown reports whether a docker volume exists — and says yes when docker can't
+// be asked, because the caller uses it to decide whether rotating a secret would strand data.
+func volumeExistsOrUnknown(repo, name string) bool {
+	if err := dockerCmd(repo, "volume", "inspect", name).Run(); err == nil {
+		return true
+	}
+	if err := dockerCmd(repo, "info").Run(); err != nil {
+		return true // docker unreachable: assume the data is there
+	}
+	return false
 }
 
 // applySettings writes the non-secret settings in c into the .env files that already exist, and

@@ -54,3 +54,51 @@ func TestSetupConfExampleParses(t *testing.T) {
 		t.Errorf("VW_SIGNUPS_ALLOWED = %q, want true", kv["VW_SIGNUPS_ALLOWED"])
 	}
 }
+
+// TestGenerateForceRotatesInPlace: --force rotates the secrets that are safe to rotate, inside the
+// existing files, and never rewrites the admin's own custom.list or caddy/.env.
+func TestGenerateForceRotatesInPlace(t *testing.T) {
+	repo := setupTestRepo(t)
+	c := Config{ServerIP: "10.0.0.5", TZ: "Etc/UTC", ACMEEmail: "a@b", UIPort: 8088, PiholeDNSBind: "0.0.0.0"}
+	if _, err := c.Generate(repo, false); err != nil {
+		t.Fatal(err)
+	}
+	list := filepath.Join(repo, "pihole/custom.list")
+	if err := os.WriteFile(list, []byte("192.168.1.2 nas.lan\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setEnvKey(filepath.Join(repo, "pihole/.env"), "MY_NOTE", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]map[string]string{}
+	for _, f := range []string{"vaultwarden/.env", "pihole/.env", "caddy/.env"} {
+		before[f], _ = readKV(filepath.Join(repo, f))
+	}
+	res, err := c.Generate(repo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		file, key string
+		rotated   bool
+	}{
+		{"vaultwarden/.env", "VW_ADMIN_TOKEN", true},
+		{"pihole/.env", "PIHOLE_PASSWORD", true},
+		{"pihole/.env", "MY_NOTE", false},
+		{"caddy/.env", "SERVER_IP", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file+" "+tc.key, func(t *testing.T) {
+			after, _ := readKV(filepath.Join(repo, tc.file))
+			if got := after[tc.key] != before[tc.file][tc.key]; got != tc.rotated {
+				t.Errorf("rotated = %v, want %v", got, tc.rotated)
+			}
+		})
+	}
+	if b, _ := os.ReadFile(list); string(b) != "192.168.1.2 nas.lan\n" {
+		t.Errorf("custom.list was rewritten: %q", b)
+	}
+	if len(res.Secrets) < 2 {
+		t.Errorf("rotated logins not reported: %v", res.Secrets)
+	}
+}

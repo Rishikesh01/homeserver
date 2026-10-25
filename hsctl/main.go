@@ -43,7 +43,7 @@ func rootCmd() *cobra.Command {
 		RunE:  runSetup,
 	}
 	setup.Flags().Bool("yes", false, "non-interactive: accept defaults/setup.conf/flags")
-	setup.Flags().Bool("force", false, "regenerate ALL secrets (DESTRUCTIVE for live data)")
+	setup.Flags().Bool("force", false, "regenerate secrets (asks you to type REGENERATE; keeps the ones existing data needs)")
 	setup.Flags().String("server-ip", "", "server LAN IP")
 	setup.Flags().String("tz", "", "timezone")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
