@@ -81,6 +81,9 @@ WorkingDirectory=%s
 ExecStart=%s ui
 Restart=on-failure
 User=root
+# Restarting the dashboard (an upgrade, say) must not kill a backup or restore it started:
+# only the dashboard process itself is stopped, its jobs run on.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

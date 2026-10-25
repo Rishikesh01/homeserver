@@ -66,7 +66,8 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	render(w, setupTmpl, setupData{Cfg: c, Secrets: res.Secrets, Step: 2})
 }
 
-// setupRunStatus is kept in memory so setup progress survives a dropped browser stream.
+// setupRunStatus is what the wizard's progress view polls: the "Start everything" job's state and
+// its whole output so far.
 type setupRunStatus struct {
 	Active bool   `json:"active"`
 	Done   bool   `json:"done"`
@@ -74,44 +75,25 @@ type setupRunStatus struct {
 	Output string `json:"output"`
 }
 
-type setupRunWriter struct{ s *uiServer }
-
-func (w setupRunWriter) Write(p []byte) (int, error) {
-	w.s.setupMu.Lock()
-	w.s.setupSt.Output += string(p)
-	w.s.setupMu.Unlock()
-	return len(p), nil
-}
-
-// handleSetupUp starts `hsctl up` independently of the browser connection. The status endpoint
-// below makes it safe for the page to reconnect while images are downloading.
+// handleSetupUp starts `hsctl up` as a dashboard job, independent of the browser connection. The
+// status endpoint below makes it safe for the page to reconnect while images are downloading.
 func (s *uiServer) handleSetupUp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	uiLog.Info("setup wizard: starting stack", "from", remoteIP(r))
 	s.setupMu.Lock()
-	if s.setupSt.Active {
-		s.setupMu.Unlock()
-		w.WriteHeader(http.StatusConflict)
+	defer s.setupMu.Unlock()
+	if j, ok := s.jobs().get(s.setupJob); ok && !j.Done {
+		w.WriteHeader(http.StatusAccepted) // already starting: the page just keeps polling
 		return
 	}
-	s.setupSt = setupRunStatus{Active: true}
-	s.setupMu.Unlock()
-	go func() {
-		err := s.runHsctl(setupRunWriter{s: s}, "up")
-		s.setupMu.Lock()
-		s.setupSt.Active = false
-		s.setupSt.Done = true
-		s.setupSt.OK = err == nil
-		if err != nil {
-			s.setupSt.Output += fmt.Sprintf("\n[command exited with error: %v]\n", err)
-		} else {
-			s.setupSt.Output += "\n[done]\n"
-		}
-		s.setupMu.Unlock()
-	}()
+	uiLog.Info("setup wizard: starting stack", "from", remoteIP(r))
+	j, ok := s.startJob(w, r, "up", "Start everything", []string{"up"})
+	if !ok {
+		return
+	}
+	s.setupJob = j.ID
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -121,9 +103,15 @@ func (s *uiServer) handleSetupUpStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setupMu.Lock()
-	st := s.setupSt
+	id := s.setupJob
 	s.setupMu.Unlock()
+	var st setupRunStatus
+	if j, ok := s.jobs().get(id); ok {
+		js := j.status(0)
+		st = setupRunStatus{Active: !js.Done, Done: js.Done, OK: js.Done && js.OK, Output: js.Out}
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(st)
 }
 
@@ -253,7 +241,8 @@ start.addEventListener('click',async function(){
   }
   try{
     const res=await fetch('/setup/up',{method:'POST'});
-    if(!res.ok && res.status!==409) throw new Error('start '+res.status);
+    if(res.status===409){ out.textContent=await res.text(); start.disabled=false; saved.disabled=false; return; }
+    if(!res.ok) throw new Error('start '+res.status);
   }catch(e){ out.textContent+='\nConnection interrupted; checking whether the server started the job…\n'; }
   poll();
 });

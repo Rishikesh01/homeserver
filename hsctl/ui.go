@@ -46,9 +46,13 @@ type uiServer struct {
 	updSt []imageStatus
 	updAt time.Time
 
-	// setupRun lets the setup page resume its progress after a browser or proxy reconnect.
-	setupMu sync.Mutex
-	setupSt setupRunStatus
+	// Background jobs started from the dashboard (jobs.go), created on first use.
+	jobsOnce sync.Once
+	jobRun   *jobRunner
+
+	// setupJob is the wizard's "Start everything" job, so its page can resume after a reconnect.
+	setupMu  sync.Mutex
+	setupJob string
 }
 
 // restoreStatus is the live state of the background web restore, polled by its progress page.
@@ -109,6 +113,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/job", s.requireAuth(s.handleJob))
 	mux.HandleFunc("/admin/apps", s.requireAuth(s.handleApps))
 	mux.HandleFunc("/admin/apps/toggle", s.requireAuth(s.handleAppsToggle))
 	mux.HandleFunc("/admin/updates", s.requireAuth(s.handleUpdatesPage))
@@ -434,10 +439,13 @@ type adminData struct {
 	Sys        sysStats
 	Backup     backupFreshness
 	SetupDone  bool
+	Busy       string // what's running right now, "" if nothing
+	JobID      string // the dashboard job to follow, if one is running
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d.Busy, d.JobID = s.busyNote()
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats(s.repo) }()
@@ -451,68 +459,27 @@ func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	render(w, adminTmpl, d)
 }
 
+// handleAction powers the machine off. Start/Stop/Restart on the admin page are Command Center
+// jobs (up / down --keep-proxy / restart), so they run to the end even if the page is closed.
 func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 		return
 	}
-	do := r.FormValue("do")
-	// up/down/restart/shutdown all move the stack, so they must not overlap a backup, a restore or
-	// any other hsctl operation — from this dashboard, the nightly timer or a terminal.
-	if do == "up" || do == "down" || do == "restart" || do == "shutdown" {
-		l, err := acquireOpLock(s.repo, "dashboard: "+do, 0)
-		if err != nil {
-			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
-			return
-		}
-		defer l.Release()
+	if r.FormValue("do") != "shutdown" {
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
 	}
-	var msg string
-	switch do {
-	case "up":
-		msg = s.runLifecycle("up")
-	case "down":
-		msg = s.runLifecycle("down")
-	case "restart":
-		msg = s.runLifecycle("down") + " " + s.runLifecycle("up")
-	case "shutdown":
-		msg = s.runShutdown()
-	default:
-		msg = "unknown action"
+	// Powering off must not cut a backup or restore short.
+	l, err := acquireOpLock(s.repo, "dashboard: shutdown", 0)
+	if err != nil {
+		http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+		return
 	}
-	uiLog.Info("admin action", "do", do, "result", msg, "from", remoteIP(r))
+	defer l.Release()
+	msg := s.runShutdown()
+	uiLog.Info("admin action", "do", "shutdown", "from", remoteIP(r))
 	http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
-}
-
-// runLifecycle performs up/down across all services and returns a short summary. down never
-// stops Caddy: this page is only reachable through it, so stopping it would lock the admin out of
-// Start all.
-func (s *uiServer) runLifecycle(action string) string {
-	c := s.config()
-	order := enabledServices(c)
-	cargs := []string{"compose", "up", "-d"}
-	if action == "down" {
-		cargs = []string{"compose", "down"}
-		order = stopOrder(true)
-	} else {
-		if m := missingEnvFor(s.repo, c); len(m) > 0 {
-			return "Not started: " + strings.Join(m, ", ") + " isn't configured yet — finish the setup wizard (/setup) first."
-		}
-		migrateSharedNetworkEnv(s.repo)
-		if err := ensureEdgeNetwork(); err != nil {
-			return "up: FAILED — " + err.Error()
-		}
-	}
-	var failed []string
-	for _, svc := range order {
-		if _, err := dockerCombined(filepath.Join(s.repo, svc), cargs...); err != nil {
-			failed = append(failed, svc)
-		}
-	}
-	if len(failed) > 0 {
-		return fmt.Sprintf("%s: FAILED for %s", action, strings.Join(failed, ", "))
-	}
-	return action + ": ok"
 }
 
 // runShutdown powers the whole machine off. The poweroff is deferred to a goroutine so
@@ -542,11 +509,12 @@ type cmdGroup struct {
 }
 
 type commandsData struct {
-	Groups []cmdGroup
+	Groups      []cmdGroup
+	Busy, JobID string
 }
 
 // handleCommands renders every CLI command as an explained, runnable card, grouped by
-// category. Running happens client-side via /admin/run (streamed), so this is read-only.
+// category. Running starts a background job via /admin/run, so this page is read-only.
 func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 	var groups []cmdGroup
 	for _, cat := range webCmdCategories {
@@ -560,7 +528,9 @@ func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 			groups = append(groups, g)
 		}
 	}
-	render(w, commandsTmpl, commandsData{Groups: groups})
+	d := commandsData{Groups: groups}
+	d.Busy, d.JobID = s.busyNote()
+	render(w, commandsTmpl, d)
 }
 
 // ---- Devices (list + guided mount) ------------------------------------------
@@ -645,6 +615,7 @@ type backupData struct {
 	GuardPath                       string // REQUIRE_MOUNT path, "" if unset
 	GuardOK                         bool   // is that path a real mount right now
 	Stats                           string // restic repo stats, "" if unavailable
+	Busy, JobID                     string
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +628,7 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	if v, err := resticVersion(); err == nil {
 		d.ResticVersion = v
 	}
+	d.Busy, d.JobID = s.busyNote()
 	if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
 			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out

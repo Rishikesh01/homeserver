@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
-	"io"
+	"encoding/json"
 	"net/http"
-	"os"
-	"os/exec"
-	"strings"
 )
 
 // The Command Center: every hsctl CLI subcommand, surfaced in the admin dashboard with a
@@ -15,9 +11,9 @@ import (
 // only ever sends a slug, never raw arguments, so there's no command injection surface:
 // the worst a forged POST can do is run one of these vetted commands.
 //
-// Running a command re-execs THIS binary (os.Executable()) with the entry's args and
-// streams the combined output back to the page. Re-execing reuses all the CLI logic
-// (sudo/docker handling, restic, etc.) exactly as a terminal run would, and inherits the
+// Running a command re-execs THIS binary (os.Executable()) with the entry's args as a background
+// job (jobs.go) whose output the page follows. Re-execing reuses all the CLI logic (docker
+// handling, restic, the operation lock, etc.) exactly as a terminal run would, and inherits the
 // UI process's privileges (root, under systemd) — the same access the commands need.
 
 type danger string
@@ -146,25 +142,10 @@ func lookupWebCmd(slug string) (webCmd, bool) {
 	return webCmd{}, false
 }
 
-// flushWriter writes to the HTTP response and flushes after each chunk, so the browser
-// sees command output live instead of buffered until the end.
-type flushWriter struct {
-	w http.ResponseWriter
-	f http.Flusher
-}
-
-func (fw flushWriter) Write(p []byte) (int, error) {
-	n, err := fw.w.Write(p)
-	if fw.f != nil {
-		fw.f.Flush()
-	}
-	return n, err
-}
-
-// handleRun streams one registry command's combined output back to the browser as it
-// runs. The page-level confirmation (and Danger styling) lives in the template; here we
-// only validate the slug is real and then exec. POST-only so it isn't triggerable by a
-// plain link/GET.
+// handleRun starts one registry command as a background job (see jobs.go) and returns its ID as
+// JSON; the page then follows the job's output. The page-level confirmation (and Danger styling)
+// lives in the template; here we validate the slug and, for destructive commands, the explicit
+// confirmation token. POST-only so it isn't triggerable by a plain link/GET.
 func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -183,40 +164,14 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this command is destructive — confirmation required", http.StatusForbidden)
 		return
 	}
-	uiLog.Info("command run", "slug", c.Slug, "from", remoteIP(r))
-	s.streamHsctl(w, c.Args...)
+	if j, ok := s.startJob(w, r, c.Slug, c.Title, c.Args); ok {
+		writeJobID(w, j)
+	}
 }
 
-// streamHsctl re-execs this binary with args and streams the combined output to
-// the browser live, ending with "[done]" on success (the page JS keys off it).
-func (s *uiServer) streamHsctl(w http.ResponseWriter, args ...string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+// writeJobID answers a job-starting POST with the new job's ID for the page to follow.
+func writeJobID(w http.ResponseWriter, j job) {
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	fl, _ := w.(http.Flusher)
-	fw := flushWriter{w: w, f: fl}
-
-	if err := s.runHsctl(fw, args...); err != nil {
-		uiLog.Warn("command failed", "args", strings.Join(args, " "), "err", err)
-		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
-		return
-	}
-	fmt.Fprintf(fw, "\n[done]\n")
-}
-
-// runHsctl re-execs this binary and writes its combined output to out. It is shared by
-// live command streaming and setup's reconnectable background run.
-func (s *uiServer) runHsctl(out io.Writer, args ...string) error {
-	fmt.Fprintf(out, "$ hsctl %s\n\n", strings.Join(args, " "))
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("cannot locate hsctl binary: %w", err)
-	}
-	cmd := exec.Command(exe, args...)
-	cmd.Dir = s.repo
-	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+s.repo)
-	// Same writer for both streams: os/exec then serialises the two, so interleaved
-	// stdout/stderr stay coherent without a mutex.
-	cmd.Stdout, cmd.Stderr = out, out
-	return cmd.Run()
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": j.ID})
 }

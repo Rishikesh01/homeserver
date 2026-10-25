@@ -76,6 +76,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="sub">Server {{.Cfg.ServerIP}} · timezone {{.Cfg.TZ}}</p>
 
 {{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 {{if not .SetupDone}}<div class="note"><b>Setup isn't finished</b> — the apps aren't configured yet. <a href="/setup">Continue the setup wizard →</a></div>{{end}}
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
 
@@ -119,14 +120,11 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <td>{{.Status}}</td></tr>{{else}}<tr><td colspan="3">No stack containers found.</td></tr>{{end}}
 </table>
 
-<form method="post" action="/admin/action" style="display:inline">
-  <input type="hidden" name="do" value="up"><button class="btn">Start all</button></form>
-<form method="post" action="/admin/action" style="display:inline"
-  onsubmit="return confirm('Restart all apps? They go offline for a minute or so. This dashboard stays up.')">
-  <input type="hidden" name="do" value="restart"><button class="btn gray">Restart apps</button></form>
-<form method="post" action="/admin/action" style="display:inline"
-  onsubmit="return confirm('Stop all apps? They stay offline (even after a reboot) until you start them again here. This dashboard stays up.')">
-  <input type="hidden" name="do" value="down"><button class="btn gray">Stop apps</button></form>
+<button class="btn" data-slug="up" data-confirm="" data-reload="1">Start all</button>
+<button class="btn gray" data-slug="restart" data-confirm="Restart all apps? They go offline for a minute or so. This dashboard stays up." data-reload="1">Restart apps</button>
+<button class="btn gray" data-slug="down" data-confirm="Stop all apps? They stay offline (even after a reboot) until you start them again here. This dashboard stays up." data-reload="1">Stop apps</button>
+<p id="jobstatus" class="foot" aria-live="polite"></p>
+<div id="out" class="out" data-job="{{.JobID}}" data-reload="1" hidden></div>
 
 <p style="margin-top:18px">
 <form method="post" action="/admin/action" style="display:inline"
@@ -135,6 +133,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 </p>
 
 <p class="foot"><a href="/">← Home portal</a> · <a href="/logout">Log out</a></p>
+<script>` + runJS + `</script>
 </div></body></html>`
 
 const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
@@ -189,14 +188,16 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 </form>
 
 <h3 style="margin-top:24px">Operations</h3>
-<p class="foot">Output appears below each runs. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
+<p class="foot">Output appears below as each one runs, and it keeps running if you leave this page. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
+{{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 <button class="btn green" data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
 <button class="btn gray" data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
 <button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
 <button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
 <button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
-<div id="out" class="out" style="margin-top:12px">Snapshots and command output appear here.</div>
+<p id="jobstatus" class="foot" aria-live="polite"></p>
+<div id="out" class="out" data-job="{{.JobID}}">Command output appears here.</div>
 
 <h3 style="margin-top:24px">Snapshots</h3>
 <pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto">{{if .Snapshots}}{{.Snapshots}}{{else}}(no snapshots yet — set a destination, Initialize, then Back up now){{end}}</pre>
@@ -281,45 +282,73 @@ const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="foot"><a href="/">← Back to dashboard</a></p>
 </div></body></html>`
 
-// runJS is the shared client that POSTs a command slug to /admin/run and streams the
-// combined output into the page's #out pane live. Shared by the Command Center and the
-// Backups page. It contains no template actions, so it passes through html/template as
-// literal script text. (Careful editing: avoid literal "{{" or "}}" — they're template
-// delimiters; build any nested object so its closing braces aren't adjacent.)
+// runJS is the shared client for dashboard jobs (jobs.go). A button with data-slug starts that
+// Command Center command (POST /admin/run); one with data-post/data-body POSTs there instead (the
+// Apps and Updates pages). Either way the server answers with a job ID, and the page follows the
+// job's output in #out by polling /admin/job — through a reload (#out's data-job), a dropped
+// connection or Caddy restarting, because the job runs on the server regardless. data-confirm asks
+// first (and, for /admin/run, sends the server-side confirmation token); data-reload refreshes the
+// server-rendered panels once the job succeeds. It contains no template actions, so it passes
+// through html/template as literal script text. (Careful editing: avoid literal "{{" or "}}" —
+// they're template delimiters.)
 const runJS = `
-async function runCmd(slug, confirmMsg, reload){
+var out=document.getElementById('out'), jobStatus=document.getElementById('jobstatus');
+function jobButtons(){ return document.querySelectorAll('button[data-slug],button[data-post]'); }
+function setBusy(b){ jobButtons().forEach(function(x){ x.disabled=b; }); }
+function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
+function say(t){ if(jobStatus) jobStatus.textContent=t; }
+async function runCmd(btn){
+  var confirmMsg=btn.dataset.confirm;
   if(confirmMsg && !window.confirm(confirmMsg)) return;
-  const out=document.getElementById('out');
-  out.textContent='Running…\n';
-  document.querySelectorAll('button[data-slug]').forEach(b=>b.disabled=true);
-  var ok=false;
+  var url=btn.dataset.post||'/admin/run', body=btn.dataset.body||('slug='+encodeURIComponent(btn.dataset.slug));
+  if(btn.dataset.slug && confirmMsg) body+='&confirm='+encodeURIComponent(btn.dataset.slug); // server-side guard for destructive ops
+  setBusy(true);
+  out.hidden=false;
+  out.textContent='Starting…';
+  out.scrollIntoView({behavior:'smooth',block:'center'});
   try{
-    var body='slug='+encodeURIComponent(slug);
-    if(confirmMsg) body+='&confirm='+encodeURIComponent(slug); // server-side guard for destructive ops
-    const res=await fetch('/admin/run',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
-    if(!res.ok){ out.textContent='error '+res.status+': '+(await res.text()); return; }
-    out.textContent='';
-    const reader=res.body.getReader(), dec=new TextDecoder();
-    for(;;){
-      const step=await reader.read();
-      if(step.done) break;
-      out.textContent+=dec.decode(step.value,{stream:true});
-      out.scrollTop=out.scrollHeight;
-    }
-    ok=out.textContent.trimEnd().endsWith('[done]');
-  }catch(e){ out.textContent+='\nrequest failed: '+e; }
-  finally{ document.querySelectorAll('button[data-slug]').forEach(b=>b.disabled=false); }
-  if(ok && reload){ setTimeout(function(){ location.reload(); }, 1200); } // refresh server-rendered panels (e.g. Snapshots)
+    var res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
+    var txt=await res.text();
+    if(!res.ok){ out.textContent=txt; say('✖ Not started'); setBusy(false); return; }
+    follow(JSON.parse(txt).id, btn.dataset.reload);
+  }catch(e){ out.textContent='request failed: '+e; setBusy(false); }
 }
-document.querySelectorAll('button[data-slug]').forEach(function(b){
-  b.addEventListener('click',function(){ runCmd(b.dataset.slug, b.dataset.confirm, b.dataset.reload); });
-});`
+async function follow(id, reload){
+  var from=0;
+  setBusy(true);
+  out.hidden=false;
+  out.textContent='';
+  for(;;){
+    var wait=1000;
+    try{
+      var r=await fetch('/admin/job?id='+encodeURIComponent(id)+'&from='+from,{cache:'no-store'});
+      if(r.redirected || r.status===401){ say('You were signed out (did the dashboard restart?). The command keeps running on the server — sign in again to check on it.'); setBusy(false); return; }
+      if(r.status===404){ say('The dashboard restarted, so this job\'s output is gone. The command itself kept running on the server.'); setBusy(false); return; }
+      var j=await r.json();
+      if(j.out){ out.textContent+=j.out; out.scrollTop=out.scrollHeight; }
+      from=j.next;
+      say((j.done?(j.ok?'✔ Finished: ':'✖ Failed: '):'⏳ Running: ')+j.title+' · '+j.elapsed);
+      if(j.done){
+        setBusy(false);
+        if(j.ok && reload){ setTimeout(function(){ location.href=location.pathname; }, 1200); } // refresh server-rendered panels
+        return;
+      }
+    }catch(e){
+      say('⏳ Waiting for the server… (the command keeps running even while this page can\'t reach it)');
+      wait=3000;
+    }
+    await sleep(wait);
+  }
+}
+jobButtons().forEach(function(b){ b.addEventListener('click',function(){ runCmd(b); }); });
+if(out.dataset.job){ follow(out.dataset.job, out.dataset.reload); }`
 
 const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Commands</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🧰 Command Center</h1>
-<p class="sub">Everything the server's control tool can do — explained. Click <b>Run</b> and watch the output below.</p>
+<p class="sub">Everything the server's control tool can do — explained. Click a button and its output appears below. Commands keep running if you leave this page.</p>
+{{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 
 {{range .Groups}}<h3>{{.Name}}</h3>
 {{range .Cmds}}<div class="cmd">
@@ -330,7 +359,8 @@ const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{end}}{{end}}
 
 <h3>Output</h3>
-<div id="out" class="out">Pick a command above and click Run — its output appears here as it runs.</div>
+<p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
+<div id="out" class="out" data-job="{{.JobID}}">Pick a command above — its output appears here as it runs.</div>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/admin/terminal">Open a full terminal →</a></p>
 <script>` + runJS + `</script>
 </div></body></html>`
@@ -340,6 +370,7 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>⬆️ Updates</h1>
 <p class="sub">See which apps have a newer version, and apply updates with a click.</p>
+{{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 
 {{if .Checked}}
 <table>
@@ -348,12 +379,12 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <td>{{.Container}}</td>
   <td><code>{{.Image}}</code></td>
   <td>{{if .Stale}}<span class="tag bad">{{.State}}</span>{{if .Major}} <span class="badge caution">major upgrade</span>{{end}}{{else if eq .State "up to date"}}<span class="tag ok">up to date</span>{{else}}<span class="foot">{{.State}}</span>{{end}}</td>
-  <td>{{if .Stale}}{{if .Major}}<button class="btn gray" data-act="apply" data-name="{{.Container}}" data-confirm="{{.Container}} is a MAJOR upgrade ({{.State}}). These can need manual migration steps and are skipped by &quot;apply all&quot; on purpose. Only continue if you have tried it in the sandbox and have a fresh backup. Apply now?">Update…</button>{{else}}<button class="btn green" data-act="apply" data-name="{{.Container}}" data-confirm="Update {{.Container}} now? It will restart briefly.">Update</button>{{end}}{{end}}</td>
+  <td>{{if .Stale}}{{if .Major}}<button class="btn gray" data-post="/admin/updates/apply" data-body="name={{.Container}}" data-reload="1" data-confirm="{{.Container}} is a MAJOR upgrade ({{.State}}). These can need manual migration steps and are skipped by &quot;apply all&quot; on purpose. Only continue if you have tried it in the sandbox and have a fresh backup. Apply now?">Update…</button>{{else}}<button class="btn green" data-post="/admin/updates/apply" data-body="name={{.Container}}" data-reload="1" data-confirm="Update {{.Container}} now? It will restart briefly.">Update</button>{{end}}{{end}}</td>
 </tr>{{end}}
 </table>
 <p class="foot">Checked {{.Age}} · registries are re-checked at apply time.</p>
 
-{{if .RoutineN}}<p><button class="btn green" data-act="apply" data-name="all" data-confirm="Apply all routine updates now? The updated apps will restart briefly. (Major upgrades are skipped.)">Apply all routine updates ({{.RoutineN}})</button></p>{{end}}
+{{if .RoutineN}}<p><button class="btn green" data-post="/admin/updates/apply" data-body="name=all" data-reload="1" data-confirm="Apply all routine updates now? The updated apps will restart briefly. (Major upgrades are skipped.)">Apply all routine updates ({{.RoutineN}})</button></p>{{end}}
 {{if .StaleN}}<div class="note"><b>Routine vs major:</b> routine updates (new minor/patch versions) are safe to apply from here. <b>Major upgrades</b> — a new Nextcloud or database generation — can need manual steps, so they're never included in "apply all": try them in the sandbox first (see the README), make a fresh <a href="/admin/backup">backup</a>, then use their own Update button.</div>{{end}}
 {{else}}
 <div class="note">No check has run yet — click the button to compare every app against its registry (takes half a minute or so).</div>
@@ -362,13 +393,14 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p><button class="btn" data-act="check">Check for updates</button></p>
 
 <h3>Output</h3>
-<div id="out" class="out">Output appears here as a check or update runs.</div>
+<p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
+<div id="out" class="out" data-job="{{.JobID}}">Output appears here as a check or update runs.</div>
 <p class="foot"><a href="/admin">← Admin</a></p>
-<script>
+<script>` + runJS + `
 async function stream(url, body, reload){
   const out=document.getElementById('out');
   out.textContent='Working…\n';
-  document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=true);
+  document.querySelectorAll('button[data-act],button[data-post]').forEach(b=>b.disabled=true);
   var ok=false;
   try{
     const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
@@ -383,15 +415,11 @@ async function stream(url, body, reload){
     }
     ok=out.textContent.trimEnd().endsWith('[done]');
   }catch(e){ out.textContent+='\nrequest failed: '+e; }
-  finally{ document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=false); }
-  if(ok && reload){ setTimeout(function(){ location.reload(); }, 1200); }
+  finally{ document.querySelectorAll('button[data-act],button[data-post]').forEach(b=>b.disabled=false); }
+  if(ok && reload){ setTimeout(function(){ location.href=location.pathname; }, 1200); }
 }
 document.querySelectorAll('button[data-act]').forEach(function(b){
-  b.addEventListener('click',function(){
-    if(b.dataset.confirm && !window.confirm(b.dataset.confirm)) return;
-    if(b.dataset.act==='check') stream('/admin/updates/check','',true);
-    else stream('/admin/updates/apply','name='+encodeURIComponent(b.dataset.name),true);
-  });
+  b.addEventListener('click',function(){ stream('/admin/updates/check','',true); });
 });
 </script>
 </div></body></html>`
