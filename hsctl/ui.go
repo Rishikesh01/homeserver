@@ -523,7 +523,7 @@ func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := devicesData{Msg: r.URL.Query().Get("msg"), MountAt: mountRoot, GuardPath: cfg.RequireMount}
 	if cfg.RequireMount != "" {
-		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk already mounted there?
+		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk already mounted there?
 	}
 	devs, err := listBlockDevices()
 	if err != nil {
@@ -597,6 +597,8 @@ type backupData struct {
 	Notify                          string // failure-notification URL, "" if unset
 	Last                            backupFreshness
 	Timer                           backupTimer
+	SystemDisk                      string // the repo is on the same disk as this (no real protection)
+	GuardWarn                       string // the repo isn't on the guarded disk
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +607,7 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount,
 		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState()}
 	if cfg.RequireMount != "" {
-		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk actually mounted now?
+		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk actually mounted now?
 	}
 	if v, err := resticVersion(); err == nil {
 		d.ResticVersion = v
@@ -622,11 +624,28 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return strconv.Itoa(n)
 	}
 	d.KeepDaily, d.KeepWeekly, d.KeepMonthly, d.KeepRest = field(daily), field(weekly), field(monthly), rest
-	if d.ResticOK && requireResticPassword(s.repo) != nil {
+	if p := localRepoPath(cfg.Repo); p != "" && cfg.RequireMount == "" {
+		if same, on := onSystemDisk(s.repo, p); same {
+			d.SystemDisk = on
+		}
+	}
+	d.GuardWarn = guardMismatch(cfg)
+	switch {
+	case !d.ResticOK:
+	case backupDiskMissing(s.repo, cfg) != "":
+		// Don't ask restic: it would only say "repository does not exist", which reads like
+		// "initialize a new one" — the wrong move while the disk is merely unplugged.
+		d.Snapshots = "The backup disk isn't mounted at " + cfg.RequireMount +
+			", so the snapshots can't be read. Mount it on the Drives page."
+	case requireResticPassword(s.repo) != nil:
 		d.Snapshots = requireResticPassword(s.repo).Error()
-	} else if d.ResticOK {
+	default:
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
-			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
+			if repoMissing(out) {
+				d.Snapshots = "There's no backup repository at " + cfg.Repo + " yet — click Initialize below."
+			} else {
+				d.Snapshots = "Couldn't read the snapshots:\n\n" + out
+			}
 		} else {
 			d.Snapshots = out
 		}
@@ -642,12 +661,29 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
 		return
 	}
-	msg := "Destination saved"
+	msg := "Saved."
 	cfg := loadBackupCfg(s.repo)
-	if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
-		cfg.Repo = v
-	}
 	_ = r.ParseForm()
+	// The guard box shows the current value, so an emptied box turns the guard off — unless the
+	// destination just moved to an external-disk mountpoint, which gets the guard automatically.
+	guardEdited := false
+	if r.Form.Has("require_mount") {
+		v := strings.TrimSpace(r.FormValue("require_mount"))
+		guardEdited = v != cfg.RequireMount
+		cfg.RequireMount = v
+	}
+	if v := strings.TrimSpace(r.FormValue("repo")); v != "" && v != cfg.Repo {
+		old := cfg.Repo
+		cfg.Repo = v
+		if !guardEdited {
+			if g, changed := followGuard(cfg.RequireMount, old, v); changed {
+				cfg.RequireMount = g
+				if g != "" {
+					msg = "Saved. Backups now refuse to run unless a disk is mounted at " + g + " (the disk guard)."
+				}
+			}
+		}
+	}
 	if r.Form.Has("keep_daily") {
 		policy, err := buildRetention(r.FormValue("keep_daily"), r.FormValue("keep_weekly"),
 			r.FormValue("keep_monthly"), r.FormValue("keep_rest"))

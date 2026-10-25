@@ -102,3 +102,10 @@ func backupTimerState() backupTimer {
 	}
 	return t
 }
+
+// repoMissing reports whether restic's output says there's no repository at the location (as
+// opposed to a wrong password, a lock, or an unreachable host).
+func repoMissing(out string) bool {
+	o := strings.ToLower(out)
+	return strings.Contains(o, "repository does not exist") || strings.Contains(o, "is there a repository at")
+}

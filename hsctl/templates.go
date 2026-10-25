@@ -102,7 +102,8 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <div class="d">{{.Sys.RootDisk.Used}} of {{.Sys.RootDisk.Total}}</div></div>{{end}}
   {{if .Sys.BackupDisk.OK}}<div class="stat"><div class="k">Disk space · backup disk</div><div class="v">{{.Sys.BackupDisk.Pct}}% used</div>
     <div class="meter"><i class="{{meterClass .Sys.BackupDisk.Pct}}" style="width:{{.Sys.BackupDisk.Pct}}%"></i></div>
-    <div class="d">{{.Sys.BackupDisk.Used}} of {{.Sys.BackupDisk.Total}}</div></div>{{end}}
+    <div class="d">{{.Sys.BackupDisk.Used}} of {{.Sys.BackupDisk.Total}}</div></div>{{else if .Sys.BackupGuard}}<div class="stat"><div class="k">Backup disk</div><div class="v"><span style="color:var(--bad)">✖ not mounted</span></div>
+    <div class="d">Nothing at <code>{{.Sys.BackupGuard}}</code> — mount it on the <a href="/admin/devices">Drives</a> page, or backups will fail</div></div>{{end}}
   <div class="stat"><div class="k">Last backup</div>
     <div class="v">{{if .Backup.Failed}}<span style="color:var(--bad)">✖ failed {{.Backup.FailedAge}}</span>{{else if not .Backup.Known}}<span style="color:var(--bad)">⚠ never</span>{{else if .Backup.Stale}}<span style="color:var(--bad)">⚠ {{.Backup.Age}}</span>{{else}}<span style="color:var(--ok)">✔ {{.Backup.Age}}</span>{{end}}</div>
     <div class="d">{{if .Backup.Failed}}{{.Backup.FailedErr}}{{if .Backup.Known}} · last good one {{.Backup.Age}}{{end}} — see the <a href="/admin/backup">Backups</a> page{{else if .Backup.Stale}}Overdue — run one on the <a href="/admin/backup">Backups</a> page{{else if not .Backup.Known}}No backup yet — set one up on the <a href="/admin/backup">Backups</a> page{{else}}via the <a href="/admin/backup">Backups</a> page{{end}}</div></div>
@@ -169,7 +170,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   {{if .Last.Failed}}<div class="k">Last attempt</div><div><span style="color:var(--bad)">✖ failed {{.Last.FailedAge}}:</span> {{.Last.FailedErr}}</div>{{end}}
   <div class="k">Nightly backups</div><div>{{if .Timer.Enabled}}<span class="tag ok">on</span>{{if .Timer.Next}} · next run {{.Timer.Next}}{{end}}{{else if .Timer.Installed}}<span class="tag bad">off</span> — enable with <code>sudo systemctl enable --now hsctl-backup.timer</code>{{else}}<span class="tag bad">not set up</span> — install with <code>sudo hsctl install</code>{{end}}</div>
   <div class="k">Failure alerts</div><div>{{if .Notify}}<code>{{.Notify}}</code>{{else}}none — add a notification URL below to hear about a failed backup{{end}}</div>
-  <div class="k">Destination</div><div><code>{{.Repo}}</code></div>
+  <div class="k">Destination</div><div><code>{{.Repo}}</code>{{if .SystemDisk}}<br><span style="color:var(--bad)">⚠ This is on the same disk as {{.SystemDisk}} — that protects against mistakes, not against the disk dying. Point it at an external disk or another machine.</span>{{end}}{{if .GuardWarn}}<br><span style="color:var(--bad)">⚠ {{.GuardWarn}}</span>{{end}}</div>
   <div class="k">Retention</div><div>{{.Retention}}{{if .RetentionErr}}<br><span style="color:var(--bad)">⚠ {{.RetentionErr}} — nothing is pruned until it's fixed below.</span>{{end}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
   <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code>{{else}}none — set one below for fire/theft-proof backups{{end}}</div>
@@ -181,7 +182,9 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p>Where to store backups (off-box, or an external disk, strongly recommended):<br>
   <input class="in" name="repo" value="{{.Repo}}"></p>
   <p class="foot">Examples — external disk: <code>/mnt/backup/restic</code> · another host:
-  <code>sftp:user@host:/backups</code> · Backblaze B2: <code>b2:bucket:homeserver</code></p>
+  <code>sftp:user@host:/backups</code> · S3: <code>s3:s3.region.amazonaws.com/bucket</code></p>
+  <p>Disk guard — backups refuse to run unless a disk is mounted here (set automatically for <code>/mnt/…</code> and <code>/media/…</code> destinations; empty = off):<br>
+  <input class="in" name="require_mount" value="{{.GuardPath}}" placeholder="/mnt/backup"></p>
   <fieldset style="border:1px solid #2a2f3a;border-radius:8px;padding:8px 12px;margin:12px 0">
   <legend>How many snapshots to keep</legend>
   <label>Daily <input class="in" name="keep_daily" type="number" min="0" value="{{.KeepDaily}}" style="width:6em"></label>
@@ -193,7 +196,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
   <input class="in" name="replica" value="{{.Replica}}" placeholder="sftp:user@nas:/backups"></p>
   <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
-  (e.g. <code>B2_ACCOUNT_ID=…</code> and <code>B2_ACCOUNT_KEY=…</code>, one per line). SFTP and local paths don't.
+  (e.g. <code>AWS_ACCESS_KEY_ID=…</code> and <code>AWS_SECRET_ACCESS_KEY=…</code>, one per line). SFTP and local paths don't.
   Then use <b>Copy off-site</b> below — the first run creates the replica repo.</p>
   <p>Tell me when a backup fails (optional — a URL that gets a message, e.g. an <a href="https://ntfy.sh">ntfy</a> topic):<br>
   <input class="in" name="notify" value="{{.Notify}}" placeholder="https://ntfy.sh/your-secret-topic"></p>
