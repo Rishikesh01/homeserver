@@ -304,6 +304,17 @@ const restoreProgressTmpl = `<!doctype html><html lang="en"><head><meta charset=
 </script>
 </div></body></html>`
 
+// certMissingTmpl is shown instead of the certificate when Caddy (which makes it) isn't running —
+// the first thing a new household member clicks, so it explains rather than erroring.
+const certMissingTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Certificate not ready</title>
+<style>{{css}}</style></head><body><div class="wrap">
+<h1>📜 Certificate not ready yet</h1>
+<div class="note">The server makes its certificate when its HTTPS proxy (Caddy) first starts, and that hasn't happened yet — so there's nothing to download right now.
+Ask whoever runs the server to start it (the admin page's <b>Start all</b>, or <code>hsctl up</code>), then try again.</div>
+<p class="foot"><a href="/">← Home</a></p>
+</div></body></html>`
+
 const helpTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide</title>
 <style>{{css}}</style></head><body><div class="wrap">

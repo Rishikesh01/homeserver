@@ -935,7 +935,8 @@ func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
 		serveCert(w, []byte(out+"\n"))
 		return
 	}
-	http.Error(w, "certificate not available yet (is Caddy running?)", http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusServiceUnavailable)
+	render(w, certMissingTmpl, nil)
 }
 
 func serveCert(w http.ResponseWriter, b []byte) {

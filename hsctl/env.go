@@ -137,7 +137,7 @@ func (c Config) Generate(repo string, force bool) (generated, error) {
 	// personalized handout
 	welcome := fmt.Sprintf(`Homeserver — quick reference
   Dashboard (home page):          https://%[1]s
-  Install the certificate first:  http://%[1]s/        (download root.crt)
+  Install the certificate first:  http://%[1]s/        (download homeserver-ca.crt)
   Passwords (Vaultwarden):        https://%[1]s:8443
   Files (Nextcloud):              https://%[1]s:8444
   Pi-hole admin:                  https://%[1]s:8445/admin

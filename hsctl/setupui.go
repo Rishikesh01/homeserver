@@ -210,7 +210,7 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
 <div id="done">
 <h3 style="margin-top:26px">4 · Install the certificate on each device</h3>
 <p>Your server makes its own HTTPS certificate. Each phone or laptop trusts it <b>once</b> — then the warnings disappear and the Bitwarden / Nextcloud apps connect.</p>
-<p><a class="btn" href="/root.crt">Download root.crt</a> <a class="btn gray" href="/help">How to install it (per device)</a></p>
+<p><a class="btn" href="/root.crt">Download the certificate (homeserver-ca.crt)</a> <a class="btn gray" href="/help">How to install it (per device)</a></p>
 <p>Then you're done: <a href="/"><b>open the dashboard →</b></a> (Nextcloud takes a minute or two on its first start).</p>
 </div>
 

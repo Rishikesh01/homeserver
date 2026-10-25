@@ -34,6 +34,7 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			Flash:      flash{Msg: "hi"}, DockerErr: ""}},
 		{"login", loginTmpl, loginData{Err: "", Next: "/admin"}},
 		{"help", helpTmpl, helpData{Body: "<p>hi</p>"}},
+		{"cert-missing", certMissingTmpl, nil},
 		{"commands", commandsTmpl, commandsData{Groups: groups}},
 		{"devices", devicesTmpl, devicesData{MountAt: "/mnt", Flash: flash{Msg: "ok", Err: true}, GuardPath: "/mnt", GuardOK: false, Rows: []deviceRow{
 			{Path: "/dev/sdb1", Name: "sdb1", Parent: "Seagate", Size: "1.8T", FSType: "ext4",

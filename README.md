@@ -178,7 +178,7 @@ you through installing the certificate.
 > Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).
 
 > [!IMPORTANT]
-> Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
+> Then, **once per device**: open `http://HOST/`, download `homeserver-ca.crt`, and trust it as a
 > certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
 > per-OS steps live in [ONBOARDING.md](ONBOARDING.md), which the dashboard also serves at
 > `https://HOST/help` so you can just send someone the link.

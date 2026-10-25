@@ -100,7 +100,7 @@ Log in as `admin` with the printed password and the dashboard opens the **setup 
    hashed and can't be shown again; the rest are in *Command Center → Show logins*).
 3. **Start** — one button runs `hsctl up` and streams the progress live. The first start
    downloads the app images, so give it a few minutes.
-4. **Certificate** — download `root.crt` and follow the per-device guide.
+4. **Certificate** — download `homeserver-ca.crt` and follow the per-device guide.
 
 The wizard only appears while the apps are unconfigured; afterwards `https://HOST/` is the
 normal dashboard. (If you'd rather not use a browser, the equivalent is `hsctl setup` then
@@ -149,7 +149,7 @@ The server makes its own HTTPS certificate (there's no public domain). Each phon
 must **trust that certificate once**, or browsers show a warning and the Bitwarden/Nextcloud
 apps refuse to connect.
 
-1. On the device, open **http://HOST/** in a browser and download **`root.crt`**.
+1. On the device, open **http://HOST/** in a browser and download **`homeserver-ca.crt`**.
 2. Install it as a *trusted certificate authority*. Step-by-step per OS (Android, iPhone,
    Windows, macOS, Linux), plus the whole "add a family member" flow, is in
    **[ONBOARDING.md](../ONBOARDING.md)** — which the dashboard also serves as a rendered page
