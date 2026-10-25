@@ -153,7 +153,7 @@ func backupCmd() *cobra.Command {
 		Args: cobra.NoArgs, RunE: runBackupConfig}
 	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp:user@host:/path / s3:…)")
 	cfgCmd.Flags().String("retention", "", "restic --keep-* options, e.g. '"+retentionExample+"'")
-	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
+	cfgCmd.Flags().String("password", "", "set or change the backup password (\"-\" reads it from stdin); changing it re-keys the repository")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
 	cfgCmd.Flags().String("replica", "", "off-site replica repository for 'backup replicate' (empty string disables)")
@@ -344,8 +344,12 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	if f.Changed("notify-url") {
 		cfg.NotifyURL, _ = f.GetString("notify-url") // empty string turns notifications off
 	}
-	if pw, _ := f.GetString("password"); pw != "" {
-		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
+	if v, _ := f.GetString("password"); v != "" {
+		pw, err := readPasswordArg(v)
+		if err != nil {
+			return err
+		}
+		if err := setResticPassword(repo, cfg, pw, os.Stdout); err != nil {
 			return err
 		}
 	}

@@ -109,6 +109,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
+	mux.HandleFunc("/admin/backup/password", s.requireAuth(s.handleBackupPassword))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
 	mux.HandleFunc("/admin/backup/restore/progress", s.requireAuth(s.handleBackupRestoreProgress))
 	fmt.Printf("hsctl ui:\n")
@@ -786,6 +787,7 @@ type backupData struct {
 	Timer                      backupTimer
 	SystemDisk                 string // the repo is on the same disk as this (no real protection)
 	ReplicaAge                 string // when the off-site replica last got a copy, "" if never
+	HasPassword                bool   // .restic-password exists
 	GuardWarn                  string // the repo isn't on the guarded disk
 }
 
@@ -794,7 +796,7 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
 		ResticOK: resticInstalled(), Flash: takeFlash(w, r), GuardPath: cfg.RequireMount,
 		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState(),
-		ReplicaAge: stampAge(s.repo, lastReplicaFile)}
+		ReplicaAge: stampAge(s.repo, lastReplicaFile), HasPassword: fileExists(filepath.Join(s.repo, resticPassFile))}
 	if cfg.RequireMount != "" {
 		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk actually mounted now?
 	}
@@ -900,6 +902,36 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		msg, isErr = "Save failed: "+err.Error(), true
 	}
 	redirectFlash(w, r, "/admin/backup", msg, isErr)
+}
+
+// handleBackupPassword sets or changes the backup password (see setResticPassword): it puts back a
+// saved password, sets one before Initialize, or changes the repository's own password — never
+// just overwrites the file under existing backups. It takes the operation lock, so it can't run
+// under a backup.
+func (s *uiServer) handleBackupPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
+		return
+	}
+	pw := r.FormValue("password")
+	if pw != r.FormValue("confirm") {
+		redirectFlash(w, r, "/admin/backup", "Not saved — the two passwords don't match.", true)
+		return
+	}
+	lock, err := acquireOpLock(s.repo, "dashboard: backup password", 0)
+	if err != nil {
+		redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
+		return
+	}
+	defer lock.Release()
+	var out strings.Builder
+	if err := setResticPassword(s.repo, loadBackupCfg(s.repo), pw, &out); err != nil {
+		uiLog.Warn("backup password not set", "err", err, "from", remoteIP(r))
+		redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
+		return
+	}
+	uiLog.Info("backup password set", "from", remoteIP(r))
+	redirectFlash(w, r, "/admin/backup", strings.TrimSpace(strings.ReplaceAll(out.String(), "\n", " ")), false)
 }
 
 type restoreData struct {

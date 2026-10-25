@@ -172,25 +172,27 @@ AWS_SECRET_ACCESS_KEY=…
 
 ### The repo password — `.restic-password`
 
-This is the one people miss. Three ways to set it:
+This is the one people miss. Ways to set it:
 
 1. **Auto** — leave it; `hsctl backup init` generates a random 32-char password into
    `.restic-password` when it creates the repository. Nothing else ever generates one: with the
    file missing, every other backup command stops and asks for your saved password.
-2. **Your own, via hsctl** — `hsctl backup config --password 'YourStrongPassword'` (writes it
-   to `.restic-password`). Do this **before** `backup init`.
-3. **By hand** — `printf '%s' 'YourStrongPassword' > .restic-password && chmod 600 .restic-password`.
+2. **The dashboard** — Backups page → *Backup password*.
+3. **The CLI** — `hsctl backup config --password -` (reads it from stdin, so it stays out of your
+   shell history and `ps`; `--password 'YourStrongPassword'` works too).
 
-See it any time: `hsctl secrets show` (or `cat .restic-password`).
+Either way, hsctl does what keeps the backups readable:
 
-**Changing it after the repo already exists:** the repo is encrypted with the original
-password, so just editing the file to a new value will fail to open it. Rotate it through
-restic instead:
+- **No repository yet:** it's saved, and Initialize creates the repository with it (12+ characters).
+- **It opens the existing repository** (a new machine, a reinstall): you're putting your saved
+  password back — it's saved.
+- **The saved password opens the repository:** it's a **change** — the repository's own password
+  is changed with `restic key passwd`, on the off-site replica too (they share one), and only then
+  is the file updated. Every existing snapshot stays readable with the new password; the old one
+  stops working.
+- **Neither opens it:** refused, nothing changes.
 
-```bash
-RESTIC_PASSWORD_FILE=.restic-password restic -r "$RESTIC_REPO" key passwd   # prompts for a new one
-# then put the new password into .restic-password
-```
+See it any time: `hsctl secrets show` (or Command Center → Show logins).
 
 **Two musts:**
 - **Keep a copy of the password OFF the server** (write it down / another vault). It lives in

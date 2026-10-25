@@ -208,6 +208,16 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <button class="btn gray">Save</button>
 </form>
 
+<h3 style="margin-top:24px">Backup password</h3>
+<p>{{if .HasPassword}}<span class="tag ok">set</span> It encrypts every backup — see it with Command Center → <b>Show logins</b>.{{else}}<span class="tag bad">not set</span> <b>Initialize repo</b> generates one. Have backups already (a new machine, a reinstall)? Enter the password they were made with.{{end}}</p>
+<form method="post" action="/admin/backup/password" autocomplete="off">
+  <p>{{if .HasPassword}}New password{{else}}Password{{end}} (at least 12 characters for a new one):<br>
+  <input class="in" type="password" name="password" autocomplete="new-password" required></p>
+  <p>Again:<br><input class="in" type="password" name="confirm" autocomplete="new-password" required></p>
+  <p class="foot">With backups already made, changing it changes the repository's own password — and the off-site replica's — so every existing snapshot stays readable with the new one, and the old one stops working. Keep a copy off this machine: without it the backups can't be read.</p>
+  <button class="btn gray"{{if .HasPassword}} onclick="return confirm('Change the backup password? The old one stops working for every snapshot.')"{{end}}>{{if .HasPassword}}Change password{{else}}Save password{{end}}</button>
+</form>
+
 <h3 style="margin-top:24px">Operations</h3>
 <p class="foot">Output appears below as each one runs, and it keeps running if you leave this page. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
 {{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
@@ -225,7 +235,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto">{{if .Snapshots}}{{.Snapshots}}{{else}}(no snapshots yet — set a destination, Initialize, then Back up now){{end}}</pre>
 
 <div class="note">First time: set a destination above, then click <b>Initialize repo</b>, then <b>Back up now</b>.
-Keep the repo password file (<code>.restic-password</code>) safe — without it, backups can't be decrypted.</div>
+Keep a copy of the backup password off this machine — without it, backups can't be decrypted.</div>
 
 <h3 style="margin-top:24px">Restore</h3>
 <p>Recover the whole server from a snapshot (stops the stack, puts every volume back, starts it again).</p>
