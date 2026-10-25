@@ -197,7 +197,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <input type="hidden" name="keep_rest" value="{{.KeepRest}}">
   <p class="foot" style="margin-top:6px">Older snapshots are pruned after each backup. Leave a box empty (or 0) to not keep any of that kind.{{if .KeepRest}} Also kept, from your config: <code>{{.KeepRest}}</code>.{{end}}</p>
   </fieldset>
-  <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
+  <p>Off-site replica (optional second copy — another machine over SFTP, or S3 storage):<br>
   <input class="in" name="replica" value="{{.Replica}}" placeholder="sftp:user@nas:/backups"></p>
   <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
   (e.g. <code>AWS_ACCESS_KEY_ID=…</code> and <code>AWS_SECRET_ACCESS_KEY=…</code>, one per line). SFTP and local paths don't.
