@@ -11,8 +11,10 @@ h1{font-size:26px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 24px}
 .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;margin-left:6px}
 .tag.ok{background:rgba(63,185,80,.15);color:var(--ok)}.tag.bad{background:rgba(248,81,73,.15);color:var(--bad)}
 table{width:100%;border-collapse:collapse;margin:8px 0 18px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid #262b34}
-.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:15px;cursor:pointer;margin-right:8px}
-.btn.gray{background:#2a2f3a}.btn.red{background:var(--bad)}.banner{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb4ae;padding:12px;border-radius:10px;margin-bottom:18px}
+.btn{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:15px;cursor:pointer;margin:0 8px 6px 0}
+.btn.gray{background:#2a2f3a}.btn.red{background:#cf222e}
+.btn:focus-visible,a:focus-visible,.in:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.banner{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb4ae;padding:12px;border-radius:10px;margin-bottom:18px}
 .flash{background:rgba(79,140,255,.12);border:1px solid var(--accent);padding:10px;border-radius:10px;margin-bottom:18px}
 .flash.err{background:rgba(248,81,73,.12);border-color:var(--bad);color:#ffb4ae}
 .note{background:rgba(255,196,0,.1);border:1px solid #6b5800;color:#ffd98a;padding:12px;border-radius:10px;margin:18px 0}
@@ -29,7 +31,7 @@ a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}co
 .md pre code{background:none;padding:0}
 .md blockquote{border-left:3px solid var(--accent);margin:14px 0;padding:6px 14px;color:var(--muted);background:rgba(79,140,255,.06)}
 .md hr{border:0;border-top:1px solid #262b34;margin:24px 0}
-.btn.green{background:var(--ok)}.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.green{background:#1a7f37}.btn:disabled{opacity:.5;cursor:not-allowed}
 .cmd{background:var(--card);border:1px solid #262b34;border-radius:12px;padding:16px;margin:0 0 12px}
 .cmd h4{margin:0 0 4px;font-size:16px}.cmd p{margin:0 0 12px;color:var(--muted);font-size:14px}
 .badge{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:99px;margin-left:8px;vertical-align:middle}
@@ -48,7 +50,7 @@ a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}co
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:8px 0 22px}
 `
 
-const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const homeTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Home server</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🏠 Home server</h1>
@@ -64,14 +66,14 @@ const homeTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <p>Install this once per device so the apps load without warnings.</p></a>
   <a class="card" href="/help"><h3>📖 Setup guide</h3>
     <p>First-time setup &amp; per-device help — cert, accounts, the apps.</p></a>
-  <a class="card" href="/admin/backup"><h3>💾 Backup &amp; restore</h3>
+  <a class="card" href="/admin/backup"><h3>💾 Backups</h3>
     <p>Back the server up, or restore it from a backup (admin login).</p></a>
 </div>
 <p class="foot">Trouble? Open the <a href="/help">Setup guide</a>, or ask your admin. · <a href="/admin">Admin</a></p>
 </div></body></html>`
 
-const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>hsctl admin</title>
+const adminTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin · Home server</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>⚙️ Admin</h1>
 <p class="sub">Server {{.Cfg.ServerIP}} · timezone {{.Cfg.TZ}}</p>
@@ -83,7 +85,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 <div class="tools">
   <a class="tool" href="/admin/apps"><div class="ico">🧩</div><div class="t">Apps</div></a>
-  <a class="tool" href="/admin/commands"><div class="ico">🧰</div><div class="t">Commands</div></a>
+  <a class="tool" href="/admin/commands"><div class="ico">🧰</div><div class="t">Command Center</div></a>
   <a class="tool" href="/admin/updates"><div class="ico">⬆️</div><div class="t">Updates</div></a>
   <a class="tool" href="/admin/devices"><div class="ico">💽</div><div class="t">Drives</div></a>
   <a class="tool" href="/admin/backup"><div class="ico">💾</div><div class="t">Backups</div></a>
@@ -116,17 +118,17 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{if .Sys.DisksErr}}<div class="banner">Couldn't check the disks: {{.Sys.DisksErr}}</div>{{end}}
 
 <h3>Services</h3>
-<table><tr><th>Container</th><th>State</th><th>Status</th></tr>
+<div class="scroll"><table><tr><th>Container</th><th>State</th><th>Status</th></tr>
 {{range .Containers}}<tr><td>{{.Name}}</td>
 <td>{{if .Running}}<span class="tag ok">running</span>{{else}}<span class="tag bad">{{.State}}</span>{{end}}</td>
-<td>{{.Status}}</td></tr>{{else}}<tr><td colspan="3">No stack containers found.</td></tr>{{end}}
-</table>
+<td>{{.Status}}</td></tr>{{else}}<tr><td colspan="3">No stack containers yet.{{if not .SetupDone}} Finish the <a href="/setup">setup wizard</a> first.{{end}}</td></tr>{{end}}
+</table></div>
 
 <button class="btn" data-slug="up" data-confirm="" data-reload="1">Start all</button>
 <button class="btn gray" data-slug="restart" data-confirm="Restart all apps? They go offline for a minute or so. This dashboard stays up." data-reload="1">Restart apps</button>
 <button class="btn gray" data-slug="down" data-confirm="Stop all apps? They stay offline (even after a reboot) until you start them again here. This dashboard stays up." data-reload="1">Stop apps</button>
 <p id="jobstatus" class="foot" aria-live="polite"></p>
-<div id="out" class="out" data-job="{{.JobID}}" data-reload="1" hidden></div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}" data-reload="1" hidden></div>
 
 <p style="margin-top:18px">
 <form method="post" action="/admin/action" style="display:inline"
@@ -138,7 +140,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <script>` + runJS + `</script>
 </div></body></html>`
 
-const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const loginTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin login</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🔒 Admin login</h1>
@@ -156,7 +158,7 @@ const loginTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="foot"><a href="/">← Home portal</a></p>
 </div></body></html>`
 
-const backupTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const backupTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Backups</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>💾 Backups</h1>
@@ -212,12 +214,12 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <button class="btn green" data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
 <button class="btn gray" data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
 <button class="btn gray" data-slug="backup-list" data-confirm="">List snapshots</button>
-<button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old</button>
-<button class="btn green" data-slug="backup-verify" data-confirm="">Self-test</button>
+<button class="btn gray" data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old snapshots</button>
+<button class="btn green" data-slug="backup-verify" data-confirm="">Self-test backups</button>
 <button class="btn gray" data-slug="backup-check" data-confirm="">Check backups</button>
 <button class="btn gray" data-slug="backup-replicate" data-confirm="">Copy off-site</button>
 <p id="jobstatus" class="foot" aria-live="polite"></p>
-<div id="out" class="out" data-job="{{.JobID}}">Command output appears here.</div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}">Command output appears here.</div>
 
 <h3 style="margin-top:24px">Snapshots</h3>
 <pre style="background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px;padding:12px;overflow:auto">{{if .Snapshots}}{{.Snapshots}}{{else}}(no snapshots yet — set a destination, Initialize, then Back up now){{end}}</pre>
@@ -233,7 +235,7 @@ Keep the repo password file (<code>.restic-password</code>) safe — without it,
 <script>` + runJS + `</script>
 </div></body></html>`
 
-const restoreTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const restoreTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Restore</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>♻️ Restore from backup</h1>
@@ -262,7 +264,7 @@ when it's done, so you don't need to reload or do anything.</div>
 // restoreProgressTmpl follows the restore job (jobs.go). It keeps polling through the window
 // where Caddy (the proxy) is down mid-restore, shows the job's output as it lands, and ends with
 // the outcome — including exactly what failed, if anything did.
-const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const restoreProgressTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Restoring…</title>
 <style>{{css}}
 .spin{display:inline-block;width:15px;height:15px;border:3px solid #2a2f3a;border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:9px}
@@ -271,7 +273,7 @@ const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <p class="sub">Putting your backup back into the stack.</p>
 <div class="note" role="status" aria-live="polite"><span class="spin" id="spin"></span><span id="status">Restore in progress. The services — including this dashboard's proxy — go offline for a few minutes while it runs; <b>that's expected</b>. The restore runs on the server whether or not this page is open; it keeps checking on its own and updates when it's done.</span></div>
 <p class="banner" id="hint" style="display:none">The server hasn't answered for a while. The stack is probably still restarting — keep waiting. If nothing changes after several more minutes, check on the server itself: <code>hsctl status</code>, and <code>journalctl -u hsctl-ui</code> for the dashboard's log.</p>
-<div id="out" class="out" data-job="{{.JobID}}"></div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}"></div>
 <p class="foot" id="link" style="display:none"><a href="/admin/backup">← Back to Backups</a> · <a href="/admin">Admin</a></p>
 <script>
 (function(){
@@ -302,7 +304,7 @@ const restoreProgressTmpl = `<!doctype html><html><head><meta charset="utf-8">
 </script>
 </div></body></html>`
 
-const helpTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const helpTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <p><a href="/">← Dashboard</a></p>
@@ -371,8 +373,8 @@ async function follow(id, reload){
 jobButtons().forEach(function(b){ b.addEventListener('click',function(){ runCmd(b); }); });
 if(out.dataset.job){ follow(out.dataset.job, out.dataset.reload); }`
 
-const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Commands</title>
+const commandsTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Command Center</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>🧰 Command Center</h1>
 <p class="sub">Everything the server's control tool can do — explained. Click a button and its output appears below. Commands keep running if you leave this page.</p>
@@ -382,18 +384,18 @@ const commandsTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{range .Cmds}}<div class="cmd">
   <h4>{{.Title}}{{if .IsDestructive}}<span class="badge destructive">destructive</span>{{else if .IsCaution}}<span class="badge caution">changes things</span>{{end}}{{if .NeedsRoot}}<span class="badge root">needs root</span>{{end}}{{if .Slow}}<span class="badge slow">may take a while</span>{{end}}</h4>
   <p>{{.Desc}}</p>
-  <button class="btn {{.BtnClass}}" data-slug="{{.Slug}}" data-confirm="{{.Confirm}}">Run</button>
+  <button class="btn {{.BtnClass}}" data-slug="{{.Slug}}" data-confirm="{{.Confirm}}">{{.Title}}</button>
 </div>
 {{end}}{{end}}
 
 <h3>Output</h3>
 <p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
-<div id="out" class="out" data-job="{{.JobID}}">Pick a command above — its output appears here as it runs.</div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}">Pick a command above — its output appears here as it runs.</div>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/admin/terminal">Open a full terminal →</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `</script>
 </div></body></html>`
 
-const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const updatesTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Updates</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>⬆️ Updates</h1>
@@ -401,7 +403,7 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 
 {{if .Checked}}
-<table>
+<div class="scroll"><table>
 <tr><th>App</th><th>Installed</th><th>Status</th><th></th></tr>
 {{range .Rows}}<tr>
   <td>{{.Container}}</td>
@@ -409,7 +411,7 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <td>{{if .Stale}}<span class="tag bad">{{.State}}</span>{{if .Major}} <span class="badge caution">major upgrade</span>{{end}}{{else if eq .State "up to date"}}<span class="tag ok">up to date</span>{{else}}<span class="foot">{{.State}}</span>{{end}}</td>
   <td>{{if .Stale}}{{if .Major}}<button class="btn gray" data-post="/admin/updates/apply" data-body="name={{.Container}}" data-reload="1" data-confirm="{{.Container}} is a MAJOR upgrade ({{.State}}). These can need manual migration steps and are skipped by &quot;apply all&quot; on purpose. Only continue if you have tried it in the sandbox and have a fresh backup. Apply now?">Update…</button>{{else}}<button class="btn green" data-post="/admin/updates/apply" data-body="name={{.Container}}" data-reload="1" data-confirm="Update {{.Container}} now? It will restart briefly.">Update</button>{{end}}{{end}}</td>
 </tr>{{end}}
-</table>
+</table></div>
 <p class="foot">Checked {{.Age}} · registries are re-checked at apply time.</p>
 
 {{if .RoutineN}}<p><button class="btn green" data-post="/admin/updates/apply" data-body="name=all" data-reload="1" data-confirm="Apply all routine updates now? The updated apps will restart briefly. (Major upgrades are skipped.)">Apply all routine updates ({{.RoutineN}})</button></p>{{end}}
@@ -422,7 +424,7 @@ const updatesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 
 <h3>Output</h3>
 <p id="jobstatus" class="foot" style="margin-top:0" aria-live="polite"></p>
-<div id="out" class="out" data-job="{{.JobID}}">Output appears here as a check or update runs.</div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}">Output appears here as a check or update runs.</div>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `
 async function stream(url, body, reload){
@@ -452,7 +454,7 @@ document.querySelectorAll('button[data-act]').forEach(function(b){
 </script>
 </div></body></html>`
 
-const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const devicesTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Drives</title>
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>💽 Drives</h1>
@@ -461,7 +463,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 {{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
 {{if and .GuardPath (not .GuardOK)}}<div class="note">Your backups require a disk mounted at <code>{{.GuardPath}}</code>, which isn't mounted right now — use the green <b>Mount for backups</b> button next to the right drive so the <a href="/admin/backup">Backups</a> page will run.</div>{{end}}
 
-<table>
+<div class="scroll"><table>
 <tr><th>Device</th><th>Size</th><th>Format</th><th>Label</th><th>Mounted at</th><th></th></tr>
 {{range .Rows}}<tr>
   <td><code>{{.Path}}</code><br><span class="foot">{{.Parent}}{{if .Removable}} · removable{{end}}{{if .ReadOnly}} · read-only{{end}}</span></td>
@@ -471,20 +473,20 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
   <td>{{if .Mountpoint}}<span class="tag ok">{{.Mountpoint}}</span>{{else}}<span class="foot">not mounted</span>{{end}}</td>
   <td>{{if .Ejectable}}<form method="post" action="/admin/devices/unmount" style="margin:0" onsubmit="return confirm('Eject {{.Path}} (mounted at {{.Mountpoint}})? Make sure nothing is reading or writing it — no backup running.')"><input type="hidden" name="dev" value="{{.Path}}"><button class="btn gray">Eject</button></form>{{else if .Mountpoint}}<span class="foot">{{.Why}}</span>{{else if .Mountable}}<form method="post" action="/admin/devices/mount" style="margin:0 0 4px;display:flex;gap:6px;align-items:center"><input type="hidden" name="dev" value="{{.Path}}"><input class="in" name="target" value="{{.Suggest}}" title="Mount directory — edit to mount it wherever you want" style="width:150px;padding:6px"><button class="btn">Mount</button></form>{{if and $.GuardPath (not $.GuardOK)}}<form method="post" action="/admin/devices/mount" style="margin:0" onsubmit="return confirm('Mount {{.Path}} at {{$.GuardPath}} for backups?')"><input type="hidden" name="dev" value="{{.Path}}"><input type="hidden" name="target" value="{{$.GuardPath}}"><button class="btn green">Mount for backups</button></form>{{end}}{{else}}<span class="foot">{{.Why}}</span>{{end}}</td>
 </tr>{{else}}<tr><td colspan="6">No drives detected.</td></tr>{{end}}
-</table>
+</table></div>
 
 <div class="note"><b>You choose where each disk mounts</b> — the box is pre-filled with a suggestion under <code>{{.MountAt}}</code>, but edit it to mount wherever you like (same as a manual <code>mount</code> on the server). Mounts are <b>temporary</b> — they clear on reboot and no permanent (fstab) entry is written, matching the by-hand way the backup disk is attached. After mounting a disk for backups, set it as the destination on the <a href="/admin/backup">Backups</a> page.</div>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 </div></body></html>`
 
-const terminalTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const terminalTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Terminal</title>
 <link rel="stylesheet" href="/admin/assets/xterm.css">
 <style>{{css}}
 #term{height:76vh;padding:8px;background:#0b0d11;border:1px solid #2a2f3a;border-radius:8px}</style>
 </head><body><div class="wrap">
 <h1>⌨️ Terminal</h1>
-<p class="sub">A real shell on the server, running as the dashboard's user.</p>
+<p class="sub">A real shell on the server, running as root (the dashboard's user).</p>
 <div class="banner"><b>This is a full shell (root under the service).</b> Anything you type runs for real. Only the admin login can reach it, and it isn't exposed outside your network — but treat it with the same care as sitting at the machine.</div>
 <div id="term"></div>
 <p class="foot"><a href="/admin">← Admin</a> · blank screen? Click it and press Enter. · <a href="/logout">Log out</a></p>

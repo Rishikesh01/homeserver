@@ -222,7 +222,7 @@ func (s *uiServer) handleAppsToggle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-const appsTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const appsTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Apps</title>
 <style>{{css}}
 .app{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;background:var(--card);border:1px solid #262b34;border-radius:12px;padding:14px 16px;margin:0 0 10px}
@@ -240,7 +240,7 @@ const appsTmpl = `<!doctype html><html><head><meta charset="utf-8">
     {{else}}<button class="btn green" data-post="/admin/apps/toggle" data-body="app={{.Dir}}&amp;action=enable" data-reload="1" data-confirm="">Switch on</button>{{end}}</div>
 </div>{{end}}
 <p id="jobstatus" class="foot" aria-live="polite"></p>
-<div id="out" class="out" data-job="{{.JobID}}" data-reload="1" hidden></div>
+<div id="out" class="out" role="log" aria-live="polite" data-job="{{.JobID}}" data-reload="1" hidden></div>
 <p class="foot">Anyone who opens a switched-off app's address sees a “this app isn't running” page that points back here. Caddy (the HTTPS front door) and this dashboard can't be switched off. To remove an app for good, including its data, use the terminal: <code>hsctl apps disable NAME</code> then <code>docker compose -f NAME/docker-compose.yml down -v</code>.</p>
 <p class="foot"><a href="/admin">← Admin</a> · <a href="/logout">Log out</a></p>
 <script>` + runJS + `</script>

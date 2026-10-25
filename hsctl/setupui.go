@@ -151,7 +151,7 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	return c, nil
 }
 
-const setupTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const setupTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up your home server</title>
 <style>{{css}}
 .steps{display:flex;gap:8px;margin:0 0 22px;font-size:14px;color:var(--muted)}
@@ -205,7 +205,7 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
 <p class="hint">Downloads the apps the first time (a few minutes on a slow connection) and starts them. Watch the progress below.</p>
 <p><label style="display:inline;font-weight:400"><input type="checkbox" id="saved"> I've saved the logins above</label></p>
 <p><button class="btn green" id="start" disabled>Start everything</button></p>
-<div id="out" class="out">Waiting…</div>
+<div id="out" class="out" role="log" aria-live="polite">Waiting…</div>
 
 <div id="done">
 <h3 style="margin-top:26px">4 · Install the certificate on each device</h3>
