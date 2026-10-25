@@ -21,9 +21,10 @@ import (
 )
 
 // Backups use restic: encrypted, deduplicated, snapshotted, many backends (local
-// path, USB, SFTP to another host, S3/Backblaze B2). What we protect:
+// path, USB, SFTP to another host, S3). What we protect:
 //   - a fresh Postgres dump (consistent DB) + every data volume's files
-//   - the per-service .env + setup.conf (so a restore can rebuild the stack)
+//   - the per-service .env, setup.conf and the rest of hsctl's config (so a restore can
+//     rebuild the stack)
 // Volume files live under /var/lib/docker/volumes, so `backup run` needs root
 // (run via sudo, or from the root-owned systemd timer).
 
@@ -79,6 +80,13 @@ type backupCfg struct {
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
 	ReplicaRepo   string // optional second restic repo (off-site) that `backup replicate` copies to
 	NotifyURL     string // optional URL that gets a POST when a backup run fails (ntfy-style)
+}
+
+// backedUpConfigFiles are the repo files (besides each app's .env) every snapshot carries alongside
+// the data: what a rebuild on new hardware needs to come back as it was. (.restic-password isn't
+// one — a snapshot is useless without it, so it must live elsewhere.)
+var backedUpConfigFiles = []string{
+	confFile, "pihole/custom.list", ".ui-password", "services.json", backupConfFile, backupEnvFile,
 }
 
 // backupConfigFiles are the backup settings a run depends on. If one exists but can't be read,
@@ -399,13 +407,15 @@ func backupRun(repo string, cfg backupCfg) error {
 		paths = append(paths, mp)
 	}
 	paths = append(paths, staging)
-	for _, s := range services {
+	for _, s := range services { // every app's .env: secrets, settings and any applied image update
 		if p := filepath.Join(repo, s, ".env"); fileExists(p) {
 			paths = append(paths, p)
 		}
 	}
-	if p := filepath.Join(repo, confFile); fileExists(p) {
-		paths = append(paths, p)
+	for _, rel := range backedUpConfigFiles {
+		if p := filepath.Join(repo, rel); fileExists(p) {
+			paths = append(paths, p)
+		}
 	}
 
 	args := []string{"backup", "--tag", "homeserver"}
