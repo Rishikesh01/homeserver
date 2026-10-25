@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1426,7 +1427,25 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		fmt.Fprintln(os.Stderr, "vaultwarden: staging mkdir:", err)
 		return ""
 	}
+	// An interrupt (Ctrl-C, systemd stopping the timer's run, a reboot) during the stop window
+	// would skip the deferred restart below and leave the password manager down — and stopped on
+	// purpose, so `restart: unless-stopped` wouldn't even bring it back after a reboot. Catch it,
+	// restart Vaultwarden, then exit.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	windowDone := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigs:
+			fmt.Fprintf(os.Stderr, "\nvaultwarden: interrupted (%v) during the backup's brief stop — restarting it before exiting\n", sig)
+			_, _ = dockerOut(repo, "start", svc)
+			os.Exit(130)
+		case <-windowDone:
+		}
+	}()
 	if _, err := dockerOut(repo, "stop", svc); err != nil {
+		signal.Stop(sigs)
+		close(windowDone)
 		fmt.Fprintf(os.Stderr, "vaultwarden: stop failed, backing up live volume as-is: %v\n", err)
 		return ""
 	}
@@ -1435,6 +1454,8 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		if _, err := dockerOut(repo, "start", svc); err != nil {
 			fmt.Fprintln(os.Stderr, "vaultwarden: WARNING — failed to restart after backup, start it manually:", err)
 		}
+		signal.Stop(sigs)
+		close(windowDone)
 	}()
 	if !fileExists(filepath.Join(mp, "db.sqlite3")) {
 		fmt.Fprintln(os.Stderr, "vaultwarden: db.sqlite3 not found, backing up live volume as-is")
