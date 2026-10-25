@@ -30,7 +30,49 @@ func secretsCmd() *cobra.Command {
 			}
 			return rotateVWAdmin(repo)
 		})})
+	s.AddCommand(&cobra.Command{Use: "set-ui-password [password]",
+		Short: "Set the dashboard's admin password (random if you don't give one) and restart the dashboard",
+		Args:  cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
+			repo, err := requireRepoDir()
+			if err != nil {
+				return err
+			}
+			pw := ""
+			if len(args) == 1 {
+				pw = args[0]
+			}
+			return setUIPassword(repo, pw)
+		}})
 	return s
+}
+
+// setUIPassword writes the dashboard password (a generated one when pw is empty) and restarts the
+// running dashboard, which reads it only at startup — otherwise the new password silently
+// wouldn't work until the next reboot.
+func setUIPassword(repo, pw string) error {
+	if pw == "" {
+		pw = genPassword(16)
+	} else if len(pw) < 8 {
+		return fmt.Errorf("pick a password of at least 8 characters (the dashboard grants a root shell)")
+	}
+	if err := writeFile0600(filepath.Join(repo, ".ui-password"), pw+"\n"); err != nil {
+		return err
+	}
+	fmt.Printf("Dashboard login: user 'admin', password %s\n", pw)
+	switch {
+	case os.Getenv("HSCTL_FROM_DASHBOARD") != "":
+		fmt.Println("It takes effect when the dashboard restarts: sudo systemctl restart hsctl-ui")
+	case uiServiceActive():
+		cmd := privCmd("systemctl", "restart", "hsctl-ui.service")
+		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("restart the dashboard: %w (run: sudo systemctl restart hsctl-ui)", err)
+		}
+		fmt.Println("Restarted the dashboard — sign in again with the new password.")
+	default:
+		fmt.Println("(The dashboard service isn't running; the next `hsctl ui` / `sudo hsctl install` uses it.)")
+	}
+	return nil
 }
 
 // rotateVWAdmin issues a fresh /admin token, stores only its Argon2id hash in
