@@ -104,8 +104,8 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
     <div class="meter"><i class="{{meterClass .Sys.BackupDisk.Pct}}" style="width:{{.Sys.BackupDisk.Pct}}%"></i></div>
     <div class="d">{{.Sys.BackupDisk.Used}} of {{.Sys.BackupDisk.Total}}</div></div>{{end}}
   <div class="stat"><div class="k">Last backup</div>
-    <div class="v">{{if not .Backup.Known}}<span style="color:var(--muted)">never</span>{{else if .Backup.Stale}}<span style="color:var(--bad)">⚠ {{.Backup.Age}}</span>{{else}}<span style="color:var(--ok)">✔ {{.Backup.Age}}</span>{{end}}</div>
-    <div class="d">{{if .Backup.Stale}}Overdue — run one on the <a href="/admin/backup">Backups</a> page{{else if not .Backup.Known}}None recorded yet — set one up on the <a href="/admin/backup">Backups</a> page{{else}}via the <a href="/admin/backup">Backups</a> page{{end}}</div></div>
+    <div class="v">{{if .Backup.Failed}}<span style="color:var(--bad)">✖ failed {{.Backup.FailedAge}}</span>{{else if not .Backup.Known}}<span style="color:var(--bad)">⚠ never</span>{{else if .Backup.Stale}}<span style="color:var(--bad)">⚠ {{.Backup.Age}}</span>{{else}}<span style="color:var(--ok)">✔ {{.Backup.Age}}</span>{{end}}</div>
+    <div class="d">{{if .Backup.Failed}}{{.Backup.FailedErr}}{{if .Backup.Known}} · last good one {{.Backup.Age}}{{end}} — see the <a href="/admin/backup">Backups</a> page{{else if .Backup.Stale}}Overdue — run one on the <a href="/admin/backup">Backups</a> page{{else if not .Backup.Known}}No backup yet — set one up on the <a href="/admin/backup">Backups</a> page{{else}}via the <a href="/admin/backup">Backups</a> page{{end}}</div></div>
   {{range .Sys.Disks}}<div class="stat"><div class="k">Disk health · <code>{{.Path}}</code></div>
     <div class="v">{{if .OK}}<span style="color:var(--ok)">✔ healthy</span>{{else if eq .Status "FAILING"}}<span style="color:var(--bad)">✖ FAILING — back up now</span>{{else}}<span style="color:var(--muted)">unknown</span>{{end}}</div>
     <div class="d">{{if .Model}}{{.Model}} · {{end}}{{.Size}}</div></div>{{end}}
@@ -165,6 +165,10 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <h3>Status</h3>
 <div class="kv">
   <div class="k">restic</div><div>{{if .ResticOK}}installed{{if .ResticVersion}} · v{{.ResticVersion}}{{end}}{{else}}<span style="color:var(--bad)">not installed</span>{{end}}</div>
+  <div class="k">Last backup</div><div>{{if .Last.Known}}{{if .Last.Stale}}<span style="color:var(--bad)">⚠ {{.Last.Age}} — overdue</span>{{else}}<span style="color:var(--ok)">✔ {{.Last.Age}}</span>{{end}}{{else}}<span style="color:var(--bad)">⚠ never</span>{{end}}</div>
+  {{if .Last.Failed}}<div class="k">Last attempt</div><div><span style="color:var(--bad)">✖ failed {{.Last.FailedAge}}:</span> {{.Last.FailedErr}}</div>{{end}}
+  <div class="k">Nightly backups</div><div>{{if .Timer.Enabled}}<span class="tag ok">on</span>{{if .Timer.Next}} · next run {{.Timer.Next}}{{end}}{{else if .Timer.Installed}}<span class="tag bad">off</span> — enable with <code>sudo systemctl enable --now hsctl-backup.timer</code>{{else}}<span class="tag bad">not set up</span> — install with <code>sudo hsctl install</code>{{end}}</div>
+  <div class="k">Failure alerts</div><div>{{if .Notify}}<code>{{.Notify}}</code>{{else}}none — add a notification URL below to hear about a failed backup{{end}}</div>
   <div class="k">Destination</div><div><code>{{.Repo}}</code></div>
   <div class="k">Retention</div><div>{{.Retention}}{{if .RetentionErr}}<br><span style="color:var(--bad)">⚠ {{.RetentionErr}} — nothing is pruned until it's fixed below.</span>{{end}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
@@ -187,11 +191,14 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p class="foot" style="margin-top:6px">Older snapshots are pruned after each backup. Leave a box empty (or 0) to not keep any of that kind.{{if .KeepRest}} Also kept, from your config: <code>{{.KeepRest}}</code>.{{end}}</p>
   </fieldset>
   <p>Off-site replica (optional second copy, e.g. Backblaze B2 or another host):<br>
-  <input class="in" name="replica" value="{{.Replica}}" placeholder="b2:bucket:homeserver"></p>
+  <input class="in" name="replica" value="{{.Replica}}" placeholder="sftp:user@nas:/backups"></p>
   <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
   (e.g. <code>B2_ACCOUNT_ID=…</code> and <code>B2_ACCOUNT_KEY=…</code>, one per line). SFTP and local paths don't.
   Then use <b>Copy off-site</b> below — the first run creates the replica repo.</p>
-  <button class="btn gray">Save destination</button>
+  <p>Tell me when a backup fails (optional — a URL that gets a message, e.g. an <a href="https://ntfy.sh">ntfy</a> topic):<br>
+  <input class="in" name="notify" value="{{.Notify}}" placeholder="https://ntfy.sh/your-secret-topic"></p>
+  <p class="foot">Clearing the replica or notification box and saving turns it off.</p>
+  <button class="btn gray">Save</button>
 </form>
 
 <h3 style="margin-top:24px">Operations</h3>

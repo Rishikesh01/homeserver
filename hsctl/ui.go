@@ -594,12 +594,16 @@ type backupData struct {
 	KeepDaily, KeepWeekly           string // the retention form's fields ("" = not set)
 	KeepMonthly, KeepRest           string
 	RetentionErr                    string // the saved policy is invalid (nothing gets pruned)
+	Notify                          string // failure-notification URL, "" if unset
+	Last                            backupFreshness
+	Timer                           backupTimer
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
-		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount}
+		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount,
+		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState()}
 	if cfg.RequireMount != "" {
 		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk actually mounted now?
 	}
@@ -653,8 +657,16 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.Retention = policy
 	}
-	if v := strings.TrimSpace(r.FormValue("replica")); v != "" {
-		cfg.ReplicaRepo = v // clear it via: hsctl backup config --replica ""
+	if r.Form.Has("replica") {
+		cfg.ReplicaRepo = strings.TrimSpace(r.FormValue("replica")) // an empty box clears it
+	}
+	if r.Form.Has("notify") {
+		v := strings.TrimSpace(r.FormValue("notify"))
+		if v != "" && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://") {
+			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper("Not saved — the notification address must be an http(s):// URL"), http.StatusSeeOther)
+			return
+		}
+		cfg.NotifyURL = v
 	}
 	if err := cfg.save(s.repo); err != nil {
 		msg = "Save failed: " + err.Error()

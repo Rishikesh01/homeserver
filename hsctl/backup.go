@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -77,6 +78,7 @@ type backupCfg struct {
 	ResticVersion string // pinned restic version; `backup verify` fails if the installed one differs
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
 	ReplicaRepo   string // optional second restic repo (off-site) that `backup replicate` copies to
+	NotifyURL     string // optional URL that gets a POST when a backup run fails (ntfy-style)
 }
 
 // backupConfigFiles are the backup settings a run depends on. If one exists but can't be read,
@@ -134,6 +136,7 @@ func loadBackupCfg(repo string) backupCfg {
 		c.ResticVersion = kv["RESTIC_VERSION"] // empty = no version pinned yet
 		c.RequireMount = kv["REQUIRE_MOUNT"]   // empty = no mount guard (e.g. default repo on root disk)
 		c.ReplicaRepo = kv["REPLICA_REPO"]     // empty = no off-site replica configured
+		c.NotifyURL = kv["NOTIFY_URL"]         // empty = no failure notifications
 	}
 	return c
 }
@@ -157,6 +160,10 @@ func (c backupCfg) save(repo string) error {
 			"# password). Cloud credentials go in " + backupEnvFile + " (KEY=VALUE per line).\n" +
 			"REPLICA_REPO=" + c.ReplicaRepo + "\n"
 	}
+	if c.NotifyURL != "" {
+		s += "# POSTed a plain-text message when a backup run fails (e.g. an ntfy topic URL).\n" +
+			"NOTIFY_URL=" + c.NotifyURL + "\n"
+	}
 	return writeFile0600(filepath.Join(repo, backupConfFile), s)
 }
 
@@ -171,7 +178,8 @@ func backupCmd() *cobra.Command {
 	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
-	cfgCmd.Flags().String("replica", "", "off-site replica repository for `backup replicate` (empty string disables)")
+	cfgCmd.Flags().String("replica", "", "off-site replica repository for 'backup replicate' (empty string disables)")
+	cfgCmd.Flags().String("notify-url", "", "URL to POST a message to when a backup fails, e.g. https://ntfy.sh/<topic> (empty string disables)")
 
 	// withRestic wraps a run that needs restic + a loaded config.
 	withRestic := func(run func(repo string, cfg backupCfg) error) func(*cobra.Command, []string) error {
@@ -228,7 +236,14 @@ func backupCmd() *cobra.Command {
 			// The nightly timer passes --wait, so it waits out a dashboard job or a terminal
 			// command instead of skipping the night's backup.
 			wait, _ := cmd.Flags().GetDuration("wait")
-			return locked("backup run", wait, withRestic(backupRun))(cmd, args)
+			// Record every outcome — including a run refused before it started (another operation
+			// holding the lock, disk not mounted, no password) — so a failing nightly backup shows
+			// on the dashboard and, if configured, sends a notification.
+			err := locked("backup run", wait, withRestic(backupRun))(cmd, args)
+			if repo := repoDir(); isRepo(repo) {
+				recordLastRun(repo, err)
+			}
+			return err
 		}}
 	runCmd.Flags().Duration("wait", 0, "if another hsctl operation is running, wait up to this long for it (e.g. 30m)")
 	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
@@ -295,6 +310,9 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	}
 	if f.Changed("replica") {
 		cfg.ReplicaRepo, _ = f.GetString("replica") // empty string clears the replica
+	}
+	if f.Changed("notify-url") {
+		cfg.NotifyURL, _ = f.GetString("notify-url") // empty string turns notifications off
 	}
 	if pw, _ := f.GetString("password"); pw != "" {
 		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
@@ -379,6 +397,13 @@ func backupRun(repo string, cfg backupCfg) error {
 		args = append(args, "--exclude", vwExclude)
 	}
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 3 {
+			// restic saved a snapshot, but some files couldn't be read. Don't prune behind an
+			// incomplete snapshot, and say so plainly instead of "exit status 3".
+			return fmt.Errorf("the snapshot is INCOMPLETE — restic couldn't read some files (see above); " +
+				"old snapshots were not pruned")
+		}
 		return err
 	}
 	// The snapshot is safely written — record that now, so a later prune failure doesn't
@@ -480,15 +505,30 @@ type backupFreshness struct {
 	Known bool   // a stamp exists
 	Age   string // "3 days ago"
 	Stale bool   // older than backupStaleAfter — time to warn
+	// The most recent run, when it FAILED after the last good one (a run that refused to start —
+	// disk not mounted, say — counts).
+	Failed    bool
+	FailedAge string
+	FailedErr string
 }
 
-// backupStaleAfter is when the dashboard starts flagging the backup as overdue. A week
-// matches the default retention's daily-keep window.
-const backupStaleAfter = 7 * 24 * time.Hour
+// backupStaleAfter is when the dashboard starts flagging the backup as overdue. Backups run
+// nightly, so a day and a half without one means at least one night was missed.
+const backupStaleAfter = 36 * time.Hour
 
 func backupFreshnessFor(repo string) backupFreshness {
 	t, ok := lastBackupTime(repo)
-	return freshness(t, ok, time.Now())
+	f := freshness(t, ok, time.Now())
+	if r, ok := readLastRun(repo); ok && !r.OK && r.Time.After(t) {
+		f.Failed, f.FailedAge, f.FailedErr = true, humanAge(time.Since(r.Time)), firstLine(r.Error)
+	}
+	return f
+}
+
+// firstLine returns s up to its first newline (a long error's headline).
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
 }
 
 // freshness is the pure core of backupFreshnessFor, split out for tests.
