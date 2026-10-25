@@ -34,8 +34,7 @@ type setupData struct {
 
 func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if s.setupDone() {
-		http.Redirect(w, r, "/admin?msg="+
-			"Setup is already complete. Settings live in setup.conf; secrets can be regenerated from the Command Center.", http.StatusSeeOther)
+		redirectFlash(w, r, "/admin", "Setup is already complete. Change settings with “Apply settings” in the Command Center (after editing setup.conf), or hsctl setup.", false)
 		return
 	}
 	if r.Method != http.MethodPost {

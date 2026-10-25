@@ -410,7 +410,7 @@ type adminData struct {
 	Cfg        Config
 	Containers []containerStatus
 	DockerErr  string
-	Msg        string
+	Flash      flash
 	Sys        sysStats
 	Backup     backupFreshness
 	SetupDone  bool
@@ -419,7 +419,7 @@ type adminData struct {
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d := adminData{Cfg: s.config(), Flash: takeFlash(w, r), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
 	d.Busy, d.JobID = s.busyNote()
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
@@ -450,13 +450,13 @@ func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 	// Powering off must not cut a backup or restore short.
 	l, err := acquireOpLock(s.repo, "dashboard: shutdown", 0)
 	if err != nil {
-		http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+		redirectFlash(w, r, "/admin", err.Error(), true)
 		return
 	}
 	defer l.Release()
 	msg := s.runShutdown()
 	uiLog.Info("admin action", "do", "shutdown", "from", remoteIP(r))
-	http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+	redirectFlash(w, r, "/admin", msg, false)
 }
 
 // runShutdown powers the whole machine off. The poweroff is deferred to a goroutine so
@@ -515,7 +515,7 @@ func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 type devicesData struct {
 	Rows      []deviceRow
 	Err       string
-	Msg       string
+	Flash     flash
 	MountAt   string // where mounts land (/mnt), shown to the user
 	GuardPath string // configured backup REQUIRE_MOUNT path, "" if none
 	GuardOK   bool   // is that path a real mount right now
@@ -523,7 +523,7 @@ type devicesData struct {
 
 func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
-	d := devicesData{Msg: r.URL.Query().Get("msg"), MountAt: mountRoot, GuardPath: cfg.RequireMount}
+	d := devicesData{Flash: takeFlash(w, r), MountAt: mountRoot, GuardPath: cfg.RequireMount}
 	if cfg.RequireMount != "" {
 		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk already mounted there?
 	}
@@ -546,15 +546,13 @@ func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	dev := strings.TrimSpace(r.FormValue("dev"))
-	var msg string
 	if mp, err := mountDeviceAt(dev, target); err != nil {
 		uiLog.Warn("mount failed", "dev", dev, "target", target, "err", err)
-		msg = "Mount failed: " + err.Error()
+		redirectFlash(w, r, "/admin/devices", "Mount failed: "+err.Error(), true)
 	} else {
 		uiLog.Info("mounted device", "dev", dev, "at", mp, "from", remoteIP(r))
-		msg = "Mounted at " + mp
+		redirectFlash(w, r, "/admin/devices", "Mounted at "+mp, false)
 	}
-	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
 // deviceActionHandler builds the POST handler for a device action (currently Eject): run it
@@ -565,16 +563,14 @@ func (s *uiServer) deviceActionHandler(action func(string) (string, error), errP
 			http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
 			return
 		}
-		var msg string
 		dev := strings.TrimSpace(r.FormValue("dev"))
 		if res, err := action(dev); err != nil {
 			uiLog.Warn("device action failed", "dev", dev, "err", err)
-			msg = errPrefix + err.Error()
+			redirectFlash(w, r, "/admin/devices", errPrefix+err.Error(), true)
 		} else {
 			uiLog.Info("device action ok", "dev", dev, "result", res, "from", remoteIP(r))
-			msg = ok(res)
+			redirectFlash(w, r, "/admin/devices", ok(res), false)
 		}
-		http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 	}
 }
 
@@ -585,29 +581,30 @@ func (s *uiServer) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type backupData struct {
-	Repo, Retention, Snapshots, Msg string
-	Replica                         string // off-site replica repo, "" if unset
-	ResticOK                        bool
-	ResticVersion                   string
-	GuardPath                       string // REQUIRE_MOUNT path, "" if unset
-	GuardOK                         bool   // is that path a real mount right now
-	Stats                           string // restic repo stats, "" if unavailable
-	Busy, JobID                     string
-	KeepDaily, KeepWeekly           string // the retention form's fields ("" = not set)
-	KeepMonthly, KeepRest           string
-	RetentionErr                    string // the saved policy is invalid (nothing gets pruned)
-	Notify                          string // failure-notification URL, "" if unset
-	Last                            backupFreshness
-	Timer                           backupTimer
-	SystemDisk                      string // the repo is on the same disk as this (no real protection)
-	ReplicaAge                      string // when the off-site replica last got a copy, "" if never
-	GuardWarn                       string // the repo isn't on the guarded disk
+	Repo, Retention, Snapshots string
+	Flash                      flash
+	Replica                    string // off-site replica repo, "" if unset
+	ResticOK                   bool
+	ResticVersion              string
+	GuardPath                  string // REQUIRE_MOUNT path, "" if unset
+	GuardOK                    bool   // is that path a real mount right now
+	Stats                      string // restic repo stats, "" if unavailable
+	Busy, JobID                string
+	KeepDaily, KeepWeekly      string // the retention form's fields ("" = not set)
+	KeepMonthly, KeepRest      string
+	RetentionErr               string // the saved policy is invalid (nothing gets pruned)
+	Notify                     string // failure-notification URL, "" if unset
+	Last                       backupFreshness
+	Timer                      backupTimer
+	SystemDisk                 string // the repo is on the same disk as this (no real protection)
+	ReplicaAge                 string // when the off-site replica last got a copy, "" if never
+	GuardWarn                  string // the repo isn't on the guarded disk
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
-		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount,
+		ResticOK: resticInstalled(), Flash: takeFlash(w, r), GuardPath: cfg.RequireMount,
 		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState(),
 		ReplicaAge: stampAge(s.repo, lastReplicaFile)}
 	if cfg.RequireMount != "" {
@@ -665,7 +662,7 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
 		return
 	}
-	msg := "Saved."
+	msg, isErr := "Saved.", false
 	cfg := loadBackupCfg(s.repo)
 	_ = r.ParseForm()
 	// The guard box shows the current value, so an emptied box turns the guard off — unless the
@@ -692,7 +689,7 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 		policy, err := buildRetention(r.FormValue("keep_daily"), r.FormValue("keep_weekly"),
 			r.FormValue("keep_monthly"), r.FormValue("keep_rest"))
 		if err != nil {
-			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper("Not saved — "+err.Error()), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
 			return
 		}
 		cfg.Retention = policy
@@ -703,20 +700,21 @@ func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Form.Has("notify") {
 		v := strings.TrimSpace(r.FormValue("notify"))
 		if v != "" && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://") {
-			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper("Not saved — the notification address must be an http(s):// URL"), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup", "Not saved — the notification address must be an http(s):// URL", true)
 			return
 		}
 		cfg.NotifyURL = v
 	}
 	if err := cfg.save(s.repo); err != nil {
-		msg = "Save failed: " + err.Error()
+		msg, isErr = "Save failed: "+err.Error(), true
 	}
-	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+	redirectFlash(w, r, "/admin/backup", msg, isErr)
 }
 
 type restoreData struct {
-	Snapshots, Msg string
-	ResticOK       bool
+	Snapshots string
+	Flash     flash
+	ResticOK  bool
 }
 
 // handleBackupRestore shows a confirmation page (GET) and starts the destructive DR put-back
@@ -729,35 +727,32 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	if r.Method == http.MethodPost {
 		if strings.TrimSpace(r.FormValue("confirm")) != "RESTORE" {
-			http.Redirect(w, r, "/admin/backup/restore?msg="+
-				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup/restore", "Type RESTORE to confirm — nothing was changed.", true)
 			return
 		}
 		args := []string{"backup", "restore", "--into-volumes", "--yes"}
 		snap := strings.TrimSpace(r.FormValue("snapshot"))
 		if snap != "" {
 			if strings.HasPrefix(snap, "-") || strings.ContainsAny(snap, " \t/") {
-				http.Redirect(w, r, "/admin/backup/restore?msg="+
-					template.URLQueryEscaper("That doesn't look like a snapshot ID — nothing was changed."), http.StatusSeeOther)
+				redirectFlash(w, r, "/admin/backup/restore", "That doesn't look like a snapshot ID — nothing was changed.", true)
 				return
 			}
 			args = append(args, snap)
 		}
 		uiLog.Warn("restore requested", "snapshot", snap, "from", remoteIP(r))
 		if holder := opLockBusy(s.repo); holder != "" {
-			http.Redirect(w, r, "/admin/backup/restore?msg="+template.URLQueryEscaper(
-				"Another operation is running ("+holder+") — try again once it finishes."), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup/restore", "Another operation is running ("+holder+") — try again once it finishes.", true)
 			return
 		}
 		j, err := s.jobs().start(s.repo, "restore", "Restore from backup", args)
 		if err != nil {
-			http.Redirect(w, r, "/admin/backup/restore?msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup/restore", err.Error(), true)
 			return
 		}
 		http.Redirect(w, r, "/admin/backup/restore/progress?id="+url.QueryEscape(j.ID), http.StatusSeeOther)
 		return
 	}
-	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
+	d := restoreData{Flash: takeFlash(w, r), ResticOK: resticInstalled()}
 	if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err == nil {
 			d.Snapshots = out

@@ -137,3 +137,43 @@ func TestWSOriginOK(t *testing.T) {
 		})
 	}
 }
+
+// TestFlashRoundTrip: an action's result is carried to the next page in a cookie and shown once;
+// a crafted ?msg= link puts nothing on the page.
+func TestFlashRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		err  bool
+	}{
+		{"info", "Mounted at /mnt/backup", false},
+		{"error", "Mount failed: no such device", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			redirectFlash(w, httptest.NewRequest("POST", "/admin/devices/mount", nil), "/admin/devices", tc.msg, tc.err)
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/devices" {
+				t.Fatalf("redirect = %d %q", w.Code, w.Header().Get("Location"))
+			}
+			r := httptest.NewRequest("GET", "/admin/devices?msg=Run+curl+evil+|+sudo+bash", nil)
+			for _, c := range w.Result().Cookies() {
+				r.AddCookie(c)
+			}
+			w2 := httptest.NewRecorder()
+			if f := takeFlash(w2, r); f.Msg != tc.msg || f.Err != tc.err {
+				t.Errorf("takeFlash = %+v, want %q err=%v", f, tc.msg, tc.err)
+			}
+			cleared := false
+			for _, c := range w2.Result().Cookies() {
+				cleared = cleared || (c.Name == flashCookie && c.MaxAge < 0)
+			}
+			if !cleared {
+				t.Error("flash cookie not cleared after showing")
+			}
+			if f := takeFlash(httptest.NewRecorder(), httptest.NewRequest("GET", "/admin?msg=forged", nil)); f.Msg != "" {
+				t.Errorf("a ?msg= link produced a flash: %q", f.Msg)
+			}
+		})
+	}
+}

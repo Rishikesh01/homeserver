@@ -14,6 +14,7 @@ table{width:100%;border-collapse:collapse;margin:8px 0 18px}td,th{text-align:lef
 .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:15px;cursor:pointer;margin-right:8px}
 .btn.gray{background:#2a2f3a}.btn.red{background:var(--bad)}.banner{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb4ae;padding:12px;border-radius:10px;margin-bottom:18px}
 .flash{background:rgba(79,140,255,.12);border:1px solid var(--accent);padding:10px;border-radius:10px;margin-bottom:18px}
+.flash.err{background:rgba(248,81,73,.12);border-color:var(--bad);color:#ffb4ae}
 .note{background:rgba(255,196,0,.1);border:1px solid #6b5800;color:#ffd98a;padding:12px;border-radius:10px;margin:18px 0}
 a{color:var(--accent)}.foot{color:var(--muted);font-size:13px;margin-top:28px}code{background:#000;padding:1px 6px;border-radius:5px}
 .md{font-size:15.5px;line-height:1.65}
@@ -75,7 +76,7 @@ const adminTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <h1>⚙️ Admin</h1>
 <p class="sub">Server {{.Cfg.ServerIP}} · timezone {{.Cfg.TZ}}</p>
 
-{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{with .Flash}}{{if .Msg}}<div class="flash{{if .Err}} err{{end}}" role="status">{{.Msg}}</div>{{end}}{{end}}
 {{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 {{if not .SetupDone}}<div class="note"><b>Setup isn't finished</b> — the apps aren't configured yet. <a href="/setup">Continue the setup wizard →</a></div>{{end}}
 {{if .DockerErr}}<div class="banner">{{.DockerErr}}</div>{{end}}
@@ -159,7 +160,7 @@ const backupTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>💾 Backups</h1>
 <p class="sub">Encrypted, deduplicated snapshots via restic — your passwords, files, and settings.</p>
-{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{with .Flash}}{{if .Msg}}<div class="flash{{if .Err}} err{{end}}" role="status">{{.Msg}}</div>{{end}}{{end}}
 {{if not .ResticOK}}<div class="banner">restic isn't installed on the server yet.
 Install it: <code>sudo apt-get install -y restic</code>, then reload this page.</div>{{end}}
 
@@ -236,7 +237,7 @@ const restoreTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>♻️ Restore from backup</h1>
 <p class="sub">Disaster recovery — put a snapshot's data back into the stack.</p>
-{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{with .Flash}}{{if .Msg}}<div class="flash{{if .Err}} err{{end}}" role="status">{{.Msg}}</div>{{end}}{{end}}
 <div class="banner"><b>This is destructive.</b> It STOPS all services, WIPES every data volume,
 and replaces it with the snapshot's contents (Vaultwarden from its staged copy), then starts
 everything again. Anything not in the snapshot is lost. The apps — including this dashboard —
@@ -455,7 +456,7 @@ const devicesTmpl = `<!doctype html><html><head><meta charset="utf-8">
 <style>{{css}}</style></head><body><div class="wrap">
 <h1>💽 Drives</h1>
 <p class="sub">Storage attached to the server. Mount one to start using it (for example, as a backup destination).</p>
-{{if .Msg}}<div class="flash">{{.Msg}}</div>{{end}}
+{{with .Flash}}{{if .Msg}}<div class="flash{{if .Err}} err{{end}}" role="status">{{.Msg}}</div>{{end}}{{end}}
 {{if .Err}}<div class="banner">{{.Err}}</div>{{end}}
 {{if and .GuardPath (not .GuardOK)}}<div class="note">Your backups require a disk mounted at <code>{{.GuardPath}}</code>, which isn't mounted right now — use the green <b>Mount for backups</b> button next to the right drive so the <a href="/admin/backup">Backups</a> page will run.</div>{{end}}
 
