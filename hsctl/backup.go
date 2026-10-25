@@ -420,6 +420,13 @@ func backupRun(repo string, cfg backupCfg) error {
 			return err
 		}
 	}
+	// The off-site copy goes with every backup — nightly included — so it never quietly falls behind.
+	if cfg.ReplicaRepo != "" {
+		fmt.Println("\n== off-site replica ==")
+		if err := runBackupReplicate(repo, cfg); err != nil {
+			problems = append(problems, "copying it off-site failed: "+firstLine(err.Error()))
+		}
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("the snapshot was saved, but with problems:\n  %s", strings.Join(problems, "\n  "))
 	}
@@ -441,8 +448,13 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 		return err
 	}
 	pass := filepath.Join(repo, resticPassFile)
-	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe.
-	if err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
+	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe — but only
+	// "no repository there" means create one; anything else (wrong password, host unreachable)
+	// is the real problem to report, not a reason to try `init` over an existing repo.
+	if out, err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
+		if !repoMissing(out) {
+			return fmt.Errorf("can't open the replica %s: %s", cfg.ReplicaRepo, firstLine(out))
+		}
 		fmt.Println("replica repo not initialized yet — creating it...")
 		if err := resticAt(repo, cfg.ReplicaRepo, "init"); err != nil {
 			return fmt.Errorf("initialize replica %s: %w", cfg.ReplicaRepo, err)
@@ -453,6 +465,7 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 		"--from-repo", cfg.Repo, "--from-password-file", pass); err != nil {
 		return fmt.Errorf("copy to replica: %w", err)
 	}
+	stampFile(repo, lastReplicaFile)
 	if cfg.Retention != "" {
 		args, err := forgetArgs(cfg.Retention)
 		if err != nil {
@@ -481,12 +494,13 @@ func handBackLocalRepo(repo string, cfg backupCfg) {
 	handBackTree(filepath.Join(repo, top), repo)
 }
 
-// resticQuiet runs restic against the given repository, discarding output — for probes
-// whose failure is expected (does the replica exist yet?).
-func resticQuiet(repo, repository string, args ...string) error {
+// resticQuiet runs restic against the given repository and returns its combined output instead
+// of showing it — for probes whose failure is expected (does the replica exist yet?).
+func resticQuiet(repo, repository string, args ...string) (string, error) {
 	c := exec.Command("restic", args...)
 	c.Env = backupEnv(repo, repository)
-	return c.Run()
+	out, err := c.CombinedOutput()
+	return string(out), err
 }
 
 // lastBackupFile records (relative to the repo) when the last successful backup snapshot
@@ -495,10 +509,29 @@ func resticQuiet(repo, repository string, args ...string) error {
 // backup goes through backupRun (CLI, web, timer), so the stamp tracks them all.
 const lastBackupFile = "backups/.last-backup"
 
-func stampLastBackup(repo string) {
-	path := filepath.Join(repo, lastBackupFile)
+func stampLastBackup(repo string) { stampFile(repo, lastBackupFile) }
+
+// lastReplicaFile records when the off-site replica last received a copy.
+const lastReplicaFile = "backups/.last-replica"
+
+// stampFile writes the current time into a repo-relative stamp file.
+func stampFile(repo, rel string) {
+	path := filepath.Join(repo, rel)
 	_ = mkdirAllOwned(filepath.Dir(path), 0755)
 	_ = writeFile0644(path, time.Now().Format(time.RFC3339)+"\n")
+}
+
+// stampAge reads a stamp file as "3 hours ago", or "" when there isn't one.
+func stampAge(repo, rel string) string {
+	b, err := os.ReadFile(filepath.Join(repo, rel))
+	if err != nil {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return ""
+	}
+	return humanAge(time.Since(t))
 }
 
 // backupFreshness is the dashboard's view of how recent the last backup is.

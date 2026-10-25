@@ -101,7 +101,7 @@ var webCmds = []webCmd{
 		Desc: "Prove backups actually work end-to-end: back up and restore throwaway data (incl. a real Vaultwarden + Postgres round-trip). Never touches your live data. Takes a minute or two.",
 		Args: []string{"backup", "verify"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
 	{Slug: "backup-replicate", Title: "Copy backups off-site", Category: "Backups",
-		Desc: "Copy every snapshot to the off-site replica (set it on the Backups page). Incremental and encrypted with the same password; first run creates the replica repo. Needs the primary repo reachable.",
+		Desc: "Copy every snapshot to the off-site replica now (set it on the Backups page) — every backup also does this on its own. Incremental and encrypted with the same password; the first run creates the replica repo. Needs the primary repo reachable.",
 		Args: []string{"backup", "replicate"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
 
 	// ---- Secrets -------------------------------------------------------------

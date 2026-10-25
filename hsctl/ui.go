@@ -600,6 +600,7 @@ type backupData struct {
 	Last                            backupFreshness
 	Timer                           backupTimer
 	SystemDisk                      string // the repo is on the same disk as this (no real protection)
+	ReplicaAge                      string // when the off-site replica last got a copy, "" if never
 	GuardWarn                       string // the repo isn't on the guarded disk
 }
 
@@ -607,7 +608,8 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
 		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount,
-		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState()}
+		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState(),
+		ReplicaAge: stampAge(s.repo, lastReplicaFile)}
 	if cfg.RequireMount != "" {
 		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk actually mounted now?
 	}

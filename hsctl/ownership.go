@@ -114,7 +114,7 @@ func within(path, dir string) bool {
 // ownedConfigPaths are the repo-relative files and directories hsctl writes, parents before
 // children. repairOwnership walks them; unreadableConfig checks them.
 var ownedConfigPaths = []string{
-	"backups", "backups/staging", "backups/.last-backup", "backups/.last-run",
+	"backups", "backups/staging", "backups/.last-backup", "backups/.last-run", "backups/.last-replica",
 	"setup.conf", "backup.conf", ".restic-password", ".backup-env", ".ui-password",
 	"vaultwarden/.env", "nextcloud/.env", "pihole/.env", "caddy/.env",
 	"stirling/.env", "it-tools/.env", "imagetools/.env",

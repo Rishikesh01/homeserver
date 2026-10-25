@@ -173,7 +173,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <div class="k">Destination</div><div><code>{{.Repo}}</code>{{if .SystemDisk}}<br><span style="color:var(--bad)">⚠ This is on the same disk as {{.SystemDisk}} — that protects against mistakes, not against the disk dying. Point it at an external disk or another machine.</span>{{end}}{{if .GuardWarn}}<br><span style="color:var(--bad)">⚠ {{.GuardWarn}}</span>{{end}}</div>
   <div class="k">Retention</div><div>{{.Retention}}{{if .RetentionErr}}<br><span style="color:var(--bad)">⚠ {{.RetentionErr}} — nothing is pruned until it's fixed below.</span>{{end}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
-  <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code>{{else}}none — set one below for fire/theft-proof backups{{end}}</div>
+  <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code> — {{if .ReplicaAge}}last copied {{.ReplicaAge}}{{else}}<span style="color:var(--bad)">never copied yet</span>{{end}} (copied after every backup){{else}}none — set one below for fire/theft-proof backups{{end}}</div>
   {{if .Stats}}<div class="k">Repo size</div><div><span class="foot">{{.Stats}}</span></div>{{end}}
 </div>
 
@@ -197,7 +197,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <input class="in" name="replica" value="{{.Replica}}" placeholder="sftp:user@nas:/backups"></p>
   <p class="foot">Cloud replicas need credentials in <code>.backup-env</code> next to the repo
   (e.g. <code>AWS_ACCESS_KEY_ID=…</code> and <code>AWS_SECRET_ACCESS_KEY=…</code>, one per line). SFTP and local paths don't.
-  Then use <b>Copy off-site</b> below — the first run creates the replica repo.</p>
+  Every backup then copies itself there (the first one creates the replica repo); <b>Copy off-site</b> below does it now.</p>
   <p>Tell me when a backup fails (optional — a URL that gets a message, e.g. an <a href="https://ntfy.sh">ntfy</a> topic):<br>
   <input class="in" name="notify" value="{{.Notify}}" placeholder="https://ntfy.sh/your-secret-topic"></p>
   <p class="foot">Clearing the replica or notification box and saving turns it off.</p>
