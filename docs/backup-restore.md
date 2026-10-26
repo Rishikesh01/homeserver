@@ -297,9 +297,10 @@ that has the `restic` binary. Step-by-step:
 risking the live stack, use the sandbox:
 
 ```bash
-make sandbox REPO=/mnt/restic    # boot an isolated copy of the stack, real repo mounted read-only
-make sandbox-restore             # restore latest into it, bring the stack up
+make sandbox BACKUP_DISK=LABEL=Backup REPO=/mnt/restic_v2   # the disk at /mnt inside the sandbox
 ```
 
-The real repo is mounted **read-only** and read with `restic restore --no-lock`, so your live
-backup is never written or even locked. Full details: **[sandbox/README.md](../sandbox/README.md)**.
+then restore from the sandbox's dashboard (Backups → Restore), or `make sandbox-restore`. restic
+writes a lock even to restore, so the repository is mounted read-write: point the sandbox at a
+**copy** of your repository, not the one the live server backs up to. Full details:
+**[sandbox/README.md](../sandbox/README.md)**.

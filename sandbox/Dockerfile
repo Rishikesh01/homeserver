@@ -16,7 +16,7 @@ RUN apk add --no-cache bash util-linux e2fsprogs eudev restic coreutils ca-certi
 # hsctl is built on the host from the working tree (so you test YOUR hsctl) and dropped
 # in by the Makefile before this build — see `make sandbox`.
 COPY sandbox/_build/hsctl /usr/local/bin/hsctl
-COPY sandbox/entrypoint.sh sandbox/apply-images.sh sandbox/restore.sh /sandbox/
+COPY sandbox/entrypoint.sh sandbox/apply-images.sh /sandbox/
 COPY sandbox/images.env /sandbox/images.env
 
 # The repo (compose files, services.json, …). Secrets/data are kept out by .dockerignore;
