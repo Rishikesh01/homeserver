@@ -13,9 +13,7 @@ import (
 )
 
 // lsblk does the discovery (rich, scriptable, present on every Debian/Ubuntu box) and the plain
-// `mount`/`umount` commands the action. We use
-// lsblk for discovery (rich, scriptable, present on every Debian/Ubuntu box) and the
-// plain `mount`/`umount` commands for the action. We deliberately DON'T touch
+// `mount`/`umount` commands the action. We deliberately DON'T touch
 // /etc/fstab: this stack mounts its backup HDD by hand on purpose (see the
 // backup-disk-manual-mount note), so a mount here is a one-shot that disappears on
 // reboot — exactly the manual model the operator already relies on.

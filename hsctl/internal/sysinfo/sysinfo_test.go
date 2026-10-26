@@ -1,92 +1,112 @@
-package sysinfo
+//go:build integration
+
+package sysinfo_test
 
 import (
+	"os/exec"
+	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/Rishikesh01/homeserver/hsctl/internal/devices"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/priv"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/sysinfo"
 )
 
-func TestParseCPULine(t *testing.T) {
-	// user nice system idle iowait irq softirq steal
-	s, err := ParseCPULine("cpu  100 0 50 800 40 5 5 0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.total != 1000 {
-		t.Errorf("total = %d, want 1000", s.total)
-	}
-	if s.busy != 160 { // everything except idle (800) and iowait (40)
-		t.Errorf("busy = %d, want 160", s.busy)
-	}
-	if _, err := ParseCPULine("cpu0 1 2 3 4 5"); err == nil {
-		t.Error("per-core line should be rejected")
-	}
-	if _, err := ParseCPULine("intr 12345"); err == nil {
-		t.Error("non-cpu line should be rejected")
-	}
-	if _, err := ParseCPULine("cpu 1 2 x 4 5"); err == nil {
-		t.Error("garbage field should be rejected")
-	}
-}
-
-func TestCPUUsagePercent(t *testing.T) {
-	a := CPUSample{busy: 100, total: 1000}
-	if got := CPUPercent(a, CPUSample{busy: 150, total: 1100}); got != 50 {
-		t.Errorf("usage = %d, want 50", got)
-	}
-	// No elapsed time (or a counter reset) must not divide by zero.
-	if got := CPUPercent(a, a); got != 0 {
-		t.Errorf("same-sample usage = %d, want 0", got)
-	}
-	if got := CPUPercent(a, CPUSample{busy: 10, total: 100}); got != 0 {
-		t.Errorf("reset-counter usage = %d, want 0", got)
-	}
-}
-
-func TestParseMemInfo(t *testing.T) {
-	total, avail, err := ParseMemInfo("MemTotal:       16326428 kB\nMemFree:         1000000 kB\nMemAvailable:   10000000 kB\nBuffers:          500000 kB\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 16326428 || avail != 10000000 {
-		t.Errorf("got total=%d avail=%d", total, avail)
-	}
-	if _, _, err := ParseMemInfo("MemFree: 12345 kB\n"); err == nil {
-		t.Error("missing MemTotal/MemAvailable should be an error")
-	}
-}
-
-func TestHumanGiB(t *testing.T) {
-	if got := HumanGiB(16 * 1024 * 1024); got != "16.0 GiB" {
-		t.Errorf("humanGiB = %q", got)
-	}
-}
-
-func TestSmartVerdict(t *testing.T) {
+// TestParsers read /proc's formats and smartctl's verdicts.
+func TestParsers(t *testing.T) {
+	a, errA := sysinfo.ParseCPULine("cpu  100 0 50 800 40 5 5 0") // user nice system idle iowait irq softirq steal
+	b, errB := sysinfo.ParseCPULine("cpu  150 0 50 850 40 5 5 0")
+	total, avail, errM := sysinfo.ParseMemInfo("MemTotal:       16326428 kB\nMemFree:         1000000 kB\nMemAvailable:   10000000 kB\n")
+	_, _, errMissing := sysinfo.ParseMemInfo("MemFree: 12345 kB\n")
+	bad := []string{"cpu0 1 2 3 4 5", "intr 12345", "cpu 1 2 x 4 5"}
 	cases := []struct {
-		name, out, status string
-		ok                bool
+		name string
+		got  any
+		want any
 	}{
-		{"ata passed", "=== START OF READ SMART DATA SECTION ===\nSMART overall-health self-assessment test result: PASSED\n", "healthy", true},
-		{"scsi ok", "SMART Health Status: OK\n", "healthy", true},
-		{"nvme passed", "SMART overall-health self-assessment test result: PASSED\n", "healthy", true},
-		{"ata failed", "SMART overall-health self-assessment test result: FAILED!\nDrive failure expected in less than 24 hours.\n", "FAILING", false},
-		{"scsi failing", "SMART Health Status: FAILING\n", "FAILING", false},
-		{"usb bridge", "/dev/sdb: Unknown USB bridge [0x1234:0x5678]\nPlease specify device type with the -d option.\n", "unknown", false},
-		{"empty", "", "unknown", false},
+		{"cpu line parses", errA == nil && errB == nil, true},
+		{"busy share between samples", sysinfo.CPUPercent(a, b), 50},
+		{"no elapsed time", sysinfo.CPUPercent(a, a), 0},
+		{"counter reset", sysinfo.CPUPercent(b, a), 0},
+		{"meminfo", errM == nil && total == 16326428 && avail == 10000000, true},
+		{"meminfo without the fields", errMissing != nil, true},
+		{"GiB", sysinfo.HumanGiB(16 * 1024 * 1024), "16.0 GiB"},
 	}
-	for _, c := range cases {
-		status, ok := SmartVerdict(c.out)
-		if status != c.status || ok != c.ok {
-			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.name, status, ok, c.status, c.ok)
+	for _, s := range bad {
+		_, err := sysinfo.ParseCPULine(s)
+		cases = append(cases, struct {
+			name string
+			got  any
+			want any
+		}{"rejects " + s, err != nil, true})
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+	verdicts := []struct {
+		out, status string
+		ok          bool
+	}{
+		{"SMART overall-health self-assessment test result: PASSED\n", "healthy", true},
+		{"SMART Health Status: OK\n", "healthy", true},
+		{"SMART overall-health self-assessment test result: FAILED!\n", "FAILING", false},
+		{"SMART Health Status: FAILING\n", "FAILING", false},
+		{"/dev/sdb: Unknown USB bridge [0x1234:0x5678]\nPlease specify device type with the -d option.\n", "unknown", false},
+		{"", "unknown", false},
+	}
+	for _, v := range verdicts {
+		if status, ok := sysinfo.SmartVerdict(v.out); status != v.status || ok != v.ok {
+			t.Errorf("SmartVerdict(%q) = %s %v", v.out, status, ok)
 		}
 	}
 }
 
-func TestStatDiskSpace(t *testing.T) {
-	ds := DiskSpaceOf("/")
-	if !ds.OK || ds.Pct < 0 || ds.Pct > 100 || ds.Used == "" || ds.Total == "" {
-		t.Errorf("implausible root disk space: %+v", ds)
+// TestGather reads this machine: CPU and memory from /proc, disk space, the disk list — and the
+// backup disk's card when its guard is set, or the guard's warning when it isn't mounted.
+func TestGather(t *testing.T) {
+	mounted := t.TempDir()
+	cases := []struct {
+		name      string
+		disk      func() (string, bool)
+		wantDisk  bool
+		wantGuard string
+	}{
+		{"no guard", func() (string, bool) { return "", false }, false, ""},
+		{"backup disk mounted", func() (string, bool) { return mounted, true }, true, ""},
+		{"backup disk missing", func() (string, bool) { return "/mnt/backup", false }, false, "/mnt/backup"},
 	}
-	if ds := DiskSpaceOf("/nonexistent-path-xyz"); ds.OK {
-		t.Errorf("missing path should not be OK: %+v", ds)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := sysinfo.New(devices.New(priv.Root{}), priv.Root{}, tc.disk).Gather()
+			if st.Cores != runtime.NumCPU() || !st.CPUOK || st.CPUPct < 0 || st.CPUPct > 100 || st.Load1 == "" {
+				t.Errorf("CPU: %+v", st)
+			}
+			if !st.MemOK || st.MemPct <= 0 || st.MemPct >= 100 || !strings.HasSuffix(st.MemTotal, " GiB") {
+				t.Errorf("memory: %+v", st)
+			}
+			if !st.RootDisk.OK || st.RootDisk.Total == "" {
+				t.Errorf("root disk: %+v", st.RootDisk)
+			}
+			if st.BackupDisk.OK != tc.wantDisk || st.BackupGuard != tc.wantGuard {
+				t.Errorf("backup disk %+v, guard %q", st.BackupDisk, st.BackupGuard)
+			}
+			if st.DisksErr != "" {
+				t.Errorf("listing disks: %s", st.DisksErr)
+			}
+			if _, err := exec.LookPath("smartctl"); err != nil && !strings.Contains(st.SmartMsg, "apt-get install -y smartmontools") {
+				t.Errorf("without smartctl there should be a hint: %q", st.SmartMsg)
+			}
+			for _, d := range st.Disks {
+				if !strings.HasPrefix(d.Path, "/dev/") || strings.Contains(d.Path, "loop") {
+					t.Errorf("not a physical disk: %+v", d)
+				}
+			}
+		})
+	}
+	if ds := sysinfo.DiskSpaceOf("/nonexistent-path-xyz"); ds.OK {
+		t.Errorf("a missing path should not be OK: %+v", ds)
 	}
 }

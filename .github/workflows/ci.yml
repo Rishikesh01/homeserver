@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: vet + test
+  vet:
+    name: gofmt + vet
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,11 +23,6 @@ jobs:
           go-version-file: hsctl/go.mod
           cache-dependency-path: hsctl/go.sum
 
-      # The backup package's TestReplicate round-trips a real restic repo; without restic it skips itself,
-      # so install it here to actually exercise that path.
-      - name: Install restic
-        run: sudo apt-get update && sudo apt-get install -y restic
-
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
@@ -37,11 +32,27 @@ jobs:
             exit 1
           fi
 
+      # The tests are behind the integration build tag, so vet them with it too.
       - name: go vet
-        run: go vet ./...
+        run: go vet ./... && go vet -tags integration ./...
 
-      - name: go test
-        run: go test ./...
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hsctl/go.mod
+          cache-dependency-path: hsctl/go.sum
+
+      # Compiles each package's tests and runs them as root against a real Docker daemon, restic,
+      # a registry and the stack's own images, inside a throwaway privileged Docker-in-Docker
+      # container (hsctl/test/run-integration.sh).
+      - name: make test-integration
+        run: make -C hsctl test-integration
 
   build:
     name: build

@@ -1,31 +1,36 @@
-package envfile
+//go:build integration
+
+package envfile_test
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/Rishikesh01/homeserver/hsctl/internal/envfile"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/itest"
 )
 
-// TestReadKVInlineComments: values are read the way docker compose reads a .env — an unquoted
-// value stops at " #", a quoted one keeps everything between its quotes.
-func TestReadKVInlineComments(t *testing.T) {
+// TestRead: values are read the way docker compose reads a .env — an unquoted value stops at " #",
+// a quoted one keeps everything between its quotes; comments and junk lines are skipped.
+func TestRead(t *testing.T) {
 	cases := []struct{ line, key, want string }{
 		{"SERVER_IP=192.168.1.10          # this host's LAN IP", "SERVER_IP", "192.168.1.10"},
 		{"VW_SIGNUPS_ALLOWED=false\t# invitation-only", "VW_SIGNUPS_ALLOWED", "false"},
 		{"PASS=abc#def", "PASS", "abc#def"},
 		{`QUOTED="a # b"   # comment`, "QUOTED", "a # b"},
 		{`SINGLE='x y'`, "SINGLE", "x y"},
+		{`OPEN="unterminated`, "OPEN", `"unterminated`},
 		{"VW_ADMIN_TOKEN=$$argon2id$$v=19$$m=65540", "VW_ADMIN_TOKEN", "$$argon2id$$v=19$$m=65540"},
+		{"  SPACED = value  ", "SPACED", "value"},
 		{"EMPTY=", "EMPTY", ""},
+		{"# COMMENTED=1", "COMMENTED", ""},
+		{"no equals sign", "no equals sign", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "f")
-			if err := os.WriteFile(p, []byte("# header\n"+tc.line+"\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			kv, err := Read(p)
+			p := itest.WriteFile(t, t.TempDir(), ".env", "# header\n\n"+tc.line+"\n")
+			kv, err := envfile.Read(p)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -34,71 +39,83 @@ func TestReadKVInlineComments(t *testing.T) {
 			}
 		})
 	}
-}
-func TestUpsertEnvKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".env")
-	// Missing file: created — it-tools/imagetools have no .env until their first update.
-	if err := Upsert(path, "ITTOOLS_IMAGE", "a:1"); err != nil {
-		t.Fatal(err)
-	}
-	// Existing file: other keys survive, the key is replaced in place.
-	if err := Upsert(path, "OTHER", "x"); err != nil {
-		t.Fatal(err)
-	}
-	if err := Upsert(path, "ITTOOLS_IMAGE", "a:2"); err != nil {
-		t.Fatal(err)
-	}
-	kv, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if kv["ITTOOLS_IMAGE"] != "a:2" || kv["OTHER"] != "x" {
-		t.Errorf("readKV = %v, want ITTOOLS_IMAGE=a:2 and OTHER=x", kv)
+	if _, err := envfile.Read(filepath.Join(t.TempDir(), "missing")); !os.IsNotExist(err) {
+		t.Errorf("a missing file must be reported as such, got %v", err)
 	}
 }
 
-func TestRemoveEnvKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".env")
-	orig := "SERVER_IP=192.168.0.150\n" +
+// TestEdit: every edit changes only its own lines — other keys, comments and order survive — and
+// reports whether it changed anything.
+func TestEdit(t *testing.T) {
+	const orig = "SERVER_IP=192.168.0.150\n" +
 		"VAULT_UPSTREAM=host.docker.internal:8082\n" +
-		"HOME_UPSTREAM=host.docker.internal:8088\n" +
 		"# a comment stays\n" +
 		"CLOUD_UPSTREAM=host.docker.internal:8081\n" +
 		"VAULT_HTTPS=8443\n"
-	if err := os.WriteFile(path, []byte(orig), 0600); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name    string
+		missing bool // start without the file
+		edit    func(path string) (bool, error)
+		want    string // the whole file afterwards ("" = must not exist)
+		changed bool
+		wantErr bool
+	}{
+		{"set replaces in place", false, func(p string) (bool, error) {
+			return true, envfile.Set(p, "VAULT_HTTPS", "9443")
+		}, "SERVER_IP=192.168.0.150\nVAULT_UPSTREAM=host.docker.internal:8082\n# a comment stays\n" +
+			"CLOUD_UPSTREAM=host.docker.internal:8081\nVAULT_HTTPS=9443\n", true, false},
+		{"set appends a new key", false, func(p string) (bool, error) {
+			return true, envfile.Set(p, "NEW", "x")
+		}, orig + "NEW=x\n", true, false},
+		{"set on a missing file fails", true, func(p string) (bool, error) {
+			return false, envfile.Set(p, "NEW", "x")
+		}, "", false, true},
+		{"upsert creates a missing file", true, func(p string) (bool, error) {
+			return true, envfile.Upsert(p, "ITTOOLS_IMAGE", "a:1")
+		}, "ITTOOLS_IMAGE=a:1\n", true, false},
+		{"upsert replaces in an existing file", false, func(p string) (bool, error) {
+			return true, envfile.Upsert(p, "SERVER_IP", "10.0.0.2")
+		}, "SERVER_IP=10.0.0.2\nVAULT_UPSTREAM=host.docker.internal:8082\n# a comment stays\n" +
+			"CLOUD_UPSTREAM=host.docker.internal:8081\nVAULT_HTTPS=8443\n", true, false},
+		{"remove keys", false, func(p string) (bool, error) {
+			return envfile.RemoveKeys(p, "VAULT_UPSTREAM", "CLOUD_UPSTREAM", "PIHOLE_UPSTREAM")
+		}, "SERVER_IP=192.168.0.150\n# a comment stays\nVAULT_HTTPS=8443\n", true, false},
+		{"remove keys that aren't there", false, func(p string) (bool, error) {
+			return envfile.RemoveKeys(p, "PIHOLE_UPSTREAM")
+		}, orig, false, false},
+		{"remove from a missing file", true, func(p string) (bool, error) {
+			return envfile.RemoveKeys(p, "X")
+		}, "", false, false},
+		{"remove matching values", false, func(p string) (bool, error) {
+			return envfile.RemoveMatching(p, func(_, v string) bool { return v == "host.docker.internal:8081" })
+		}, "SERVER_IP=192.168.0.150\nVAULT_UPSTREAM=host.docker.internal:8082\n# a comment stays\nVAULT_HTTPS=8443\n", true, false},
 	}
-
-	changed, err := RemoveKeys(path, "VAULT_UPSTREAM", "CLOUD_UPSTREAM", "PIHOLE_UPSTREAM")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("expected changed=true when keys are present")
-	}
-	got, _ := os.ReadFile(path)
-	for _, gone := range []string{"VAULT_UPSTREAM", "CLOUD_UPSTREAM"} {
-		if strings.Contains(string(got), gone) {
-			t.Errorf("%s should have been removed, file is:\n%s", gone, got)
-		}
-	}
-	// The dashboard upstream (still a host process), other settings, and comments must survive.
-	for _, keep := range []string{
-		"SERVER_IP=192.168.0.150", "HOME_UPSTREAM=host.docker.internal:8088",
-		"# a comment stays", "VAULT_HTTPS=8443",
-	} {
-		if !strings.Contains(string(got), keep) {
-			t.Errorf("%q should have been preserved, file is:\n%s", keep, got)
-		}
-	}
-
-	// Second run is a no-op (nothing left to remove).
-	if changed, err := RemoveKeys(path, "VAULT_UPSTREAM", "CLOUD_UPSTREAM"); err != nil || changed {
-		t.Errorf("second run should be a no-op, got changed=%v err=%v", changed, err)
-	}
-	// Missing file is a silent no-op, not an error.
-	if changed, err := RemoveKeys(filepath.Join(dir, "absent.env"), "X"); err != nil || changed {
-		t.Errorf("missing file should be a no-op, got changed=%v err=%v", changed, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), ".env")
+			if !tc.missing {
+				itest.WriteFile(t, filepath.Dir(p), ".env", orig)
+			}
+			changed, err := tc.edit(p)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if changed != tc.changed {
+				t.Errorf("changed = %v, want %v", changed, tc.changed)
+			}
+			got, readErr := os.ReadFile(p)
+			if tc.want == "" {
+				if readErr == nil {
+					t.Errorf("the file must not exist, has %q", got)
+				}
+				return
+			}
+			if string(got) != tc.want {
+				t.Errorf("file =\n%q\nwant\n%q", got, tc.want)
+			}
+			if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0600 {
+				t.Errorf("an edited .env must stay private (0600): %v %v", fi.Mode(), err)
+			}
+		})
 	}
 }

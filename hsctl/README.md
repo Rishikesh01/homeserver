@@ -11,14 +11,15 @@ back to `~/sdk/go/bin/go` for a hand-unpacked toolchain — override with `make 
 ```bash
 cd hsctl
 make build              # -> ./hsctl   (version stamped from the git tag; see below)
-make vet                # go vet ./...
-make test               # go test ./...
+make vet                # go vet, the integration tests included
+make test               # integration tests, in a throwaway Docker-in-Docker container
 make install            # -> /usr/local/bin/hsctl (uses sudo); restarts hsctl-ui if it's running
 ```
 
 The code is one package per service under `internal/` (backup, stack, web, …): each is a struct
 built with `New`, taking what it depends on as interfaces. `main` only wires them together
-(`app.go`) and defines the Cobra commands (`main.go`, `cli_*.go`).
+(`app.go`) and defines the Cobra commands (`main.go`, `cli_*.go`). The tests are table-driven
+integration tests against real dependencies — see [CONTRIBUTING.md](../CONTRIBUTING.md#the-tests).
 
 `make build`/`make install` bake the version into `hsctl --version` from the git tag via
 `-ldflags` (e.g. `v1.1.0`, or `v1.1.0-3-gabc123` past a tag). A bare `go build .` (no ldflags)
