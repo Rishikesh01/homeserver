@@ -4,7 +4,8 @@
 # reaches the host's Docker, containers, or volumes.
 #
 #   make sandbox           build + start the sandbox (admin UI on http://localhost:PORT)
-#   make sandbox-restore   restore a real backup into it so you can see your data
+#   make sandbox-restore   restore a real backup into it so you can see your data (the
+#                          dashboard's Backups -> Restore does the same)
 #   make sandbox-shell     open a shell inside the sandbox
 #   make sandbox-logs      follow the sandbox logs
 #   make sandbox-down      stop + clean up everything
@@ -25,7 +26,11 @@
 #   IMAGES    image manifest to use            (default sandbox/images.env)
 #   PORT      host port for the admin UI        (default 18088)
 #   PASS      admin password in the sandbox     (default test)
-#   REPO      LOCAL restic repo to restore from (default: RESTIC_REPO from backup.conf)
+#   BACKUP_DISK  the disk holding your backups, mounted READ-WRITE at /mnt inside the sandbox:
+#             a device or LABEL=/UUID= (e.g. LABEL=Backup). It must not be mounted on the host.
+#   REPO      restic repo the sandbox backs up to and restores from: a path inside the
+#             sandbox's /mnt with BACKUP_DISK (e.g. /mnt/restic_v2), else a local folder on the
+#             host, mounted read-write. Point it at a COPY of your repo, not the live one.
 #   SNAPSHOT  snapshot id to restore            (default latest)
 
 SANDBOX_IMAGE ?= hsctl-sandbox
@@ -39,11 +44,16 @@ PASS          ?= test
 ACCESS_HOST   ?= $(shell ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
 PASSFILE      ?= .restic-password
 SNAPSHOT      ?= latest
+BACKUP_DISK   ?=
 REPO          ?= $(shell sed -n 's/^RESTIC_REPO=//p' backup.conf 2>/dev/null)
 
-# Mount the backup repo (read-only) + its password only when REPO is a local path present
-# on disk; remote (sftp:/b2:) repos aren't wired in, and an absent path just skips it.
-REPO_MOUNT := $(if $(wildcard $(REPO)),-v $(abspath $(REPO)):/backup-repo:ro -v $(abspath $(PASSFILE)):/backup-pass:ro,)
+# restic needs its repository writable even to restore (it takes a lock), so the repo is never
+# mounted read-only. With BACKUP_DISK the whole disk is mounted at /mnt inside the sandbox (it
+# must not be mounted on the host too: two read-write mounts of one filesystem corrupt it);
+# otherwise a local REPO folder on the host is bind-mounted at the same path. The password file,
+# when there is one, goes in read-only; without it, set it on the sandbox's Backups page.
+REPO_MOUNT := $(if $(BACKUP_DISK),,$(if $(wildcard $(REPO)),-v $(abspath $(REPO)):$(abspath $(REPO))))
+PASS_MOUNT := $(if $(wildcard $(PASSFILE)),-v $(abspath $(PASSFILE)):/backup-pass:ro)
 
 .PHONY: sandbox sandbox-restore sandbox-shell sandbox-logs sandbox-down sandbox-purge uninstall uninstall-all help
 
@@ -53,30 +63,36 @@ help:
 sandbox: ## build the sandbox image (with your current hsctl) and start it
 	@mkdir -p sandbox/_build
 	CGO_ENABLED=0 go build -C hsctl -ldflags "-X main.version=$(VERSION)" -o ../sandbox/_build/hsctl .
+	@if [ -n "$(BACKUP_DISK)" ] && findmnt -rn -S "$(BACKUP_DISK)" >/dev/null 2>&1; then \
+		echo "$(BACKUP_DISK) is mounted on this machine — unmount it first: the sandbox mounts it read-write itself"; exit 1; fi
 	docker build -f sandbox/Dockerfile -t $(SANDBOX_IMAGE) .
 	-docker stop -t 8 $(SANDBOX_NAME) >/dev/null 2>&1   # graceful: lets the old loopback detach
 	-docker rm -f $(SANDBOX_NAME) >/dev/null 2>&1       # belt-and-suspenders (no-op after --rm)
+	@# A --rm container is still being removed for a moment after it stops; its name is taken until then.
+	@for _ in $$(seq 1 30); do docker container inspect $(SANDBOX_NAME) >/dev/null 2>&1 || exit 0; sleep 1; done; \
+		echo "the old $(SANDBOX_NAME) container is still there"; exit 1
 	docker run -d --rm --privileged --name $(SANDBOX_NAME) \
 		-p $(PORT):8088 \
 		-p 18443:18443 -p 18444:18444 -p 18445:18445 \
 		-p 18446:18446 -p 18447:18447 -p 18448:18448 \
 		-e HSCTL_UI_PASSWORD=$(PASS) -e ACCESS_HOST=$(ACCESS_HOST) -e SANDBOX_PORT=$(PORT) \
+		-e BACKUP_DISK="$(BACKUP_DISK)" -e SANDBOX_REPO="$(if $(BACKUP_DISK),$(REPO),$(if $(wildcard $(REPO)),$(abspath $(REPO))))" \
 		-v $(DATA_VOL):/var/lib/docker \
 		-v $(abspath $(IMAGES)):/sandbox/images.env:ro \
-		$(REPO_MOUNT) \
+		$(REPO_MOUNT) $(PASS_MOUNT) \
 		$(SANDBOX_IMAGE)
 	@echo ""
 	@echo "Sandbox starting: http://$(ACCESS_HOST):$(PORT)/admin   (admin / $(PASS))"
 	@echo "  Bring the stack up:  in the UI -> Commands -> 'Start all services',"
-	@echo "                       or (with your real data):  make sandbox-restore"
+	@echo "                       or restore your real data: UI -> Backups -> Restore (or make sandbox-restore)"
 	@echo "  Then open the RESTORED apps over HTTPS (your trusted cert; live ports + 10000):"
 	@echo "    Vaultwarden : https://$(ACCESS_HOST):18443    (passwords)"
 	@echo "    Nextcloud   : https://$(ACCESS_HOST):18444    (files)"
 	@echo "    Pi-hole     : https://$(ACCESS_HOST):18445/admin"
-	@if [ -z "$(REPO_MOUNT)" ]; then echo "  (no local REPO mounted — pass REPO=/mnt/restic to enable 'make sandbox-restore')"; fi
+	@if [ -z "$(BACKUP_DISK)$(REPO_MOUNT)" ]; then echo "  (no backups wired in — pass BACKUP_DISK=LABEL=<label> REPO=/mnt/<repo>, or a local REPO=<folder>)"; fi
 
-sandbox-restore: ## restore a real backup into the running sandbox (SNAPSHOT=latest)
-	docker exec -it $(SANDBOX_NAME) /sandbox/restore.sh $(SNAPSHOT)
+sandbox-restore: ## restore a real backup into the running sandbox (SNAPSHOT=latest) — the dashboard's Restore, from the terminal
+	docker exec -it $(SANDBOX_NAME) hsctl backup restore --into-volumes --yes $(filter-out latest,$(SNAPSHOT))
 
 sandbox-shell: ## open a shell inside the sandbox
 	docker exec -it $(SANDBOX_NAME) bash

@@ -12,5 +12,12 @@ caddy-root-ca.crt
 **/.ui-password
 .restic-password
 **/.restic-password*
+.backup-env
+# the host's own settings (the sandbox makes its own)
+setup.conf
+backup.conf
+WELCOME.txt
 # host build leftovers we don't need inside the image
 **/*.test
+hsctl/hsctl
+hsctl/dist/
