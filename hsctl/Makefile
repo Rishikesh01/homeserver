@@ -39,7 +39,7 @@ dist:
 	@cd dist && sha256sum *.tar.gz > checksums.txt && cat checksums.txt
 
 
-# Unit tests — no Docker needed. The restic replica round-trip in replica_test.go skips
+# Unit tests — no Docker needed. The restic replica round-trip (internal/backup) skips
 # itself if restic isn't installed, so install restic to exercise that path too.
 test:
 	$(GO) test ./...
@@ -59,8 +59,8 @@ install: build
 	fi
 
 # Install the dashboard service + nightly backup timer. `hsctl install` is the one installer (it
-# fills the repo and binary paths into the units in systemd/); this target just runs the
-# system-wide binary's copy of it from this repo.
+# fills the repo and binary paths into the units in internal/install/systemd/); this target just
+# runs the system-wide binary's copy of it from this repo.
 install-services: install
 	cd .. && sudo $(PREFIX)/bin/hsctl install
 

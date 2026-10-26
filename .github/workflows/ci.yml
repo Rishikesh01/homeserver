@@ -23,7 +23,7 @@ jobs:
           go-version-file: hsctl/go.mod
           cache-dependency-path: hsctl/go.sum
 
-      # replica_test.go round-trips a real restic repo; without restic it skips itself,
+      # The backup package's TestReplicate round-trips a real restic repo; without restic it skips itself,
       # so install it here to actually exercise that path.
       - name: Install restic
         run: sudo apt-get update && sudo apt-get install -y restic
