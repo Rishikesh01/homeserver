@@ -85,7 +85,7 @@ backup path, `hsctl up`/`down` — **try it in the sandbox** rather than on a li
 
 ```bash
 make sandbox            # an isolated copy of the whole stack in a nested Docker daemon
-make sandbox-restore    # restore a real backup into it (repo mounted read-only)
+make sandbox-restore    # restore a real backup into it (see sandbox/README.md)
 make sandbox-down       # stop and clean up
 ```
 
