@@ -13,7 +13,7 @@ build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o hsctl .
 
 vet:
-	$(GO) vet ./...
+	$(GO) vet ./... && $(GO) vet -tags integration ./...
 
 # Cross-compile the release archives into hsctl/dist/ — one tarball per platform, plus
 # the checksums file. These are exactly the artifacts .github/workflows/release.yml
@@ -39,10 +39,15 @@ dist:
 	@cd dist && sha256sum *.tar.gz > checksums.txt && cat checksums.txt
 
 
-# Unit tests — no Docker needed. The restic replica round-trip (internal/backup) skips
-# itself if restic isn't installed, so install restic to exercise that path too.
-test:
-	$(GO) test ./...
+# The tests are integration tests (build tag `integration`): table-driven, through each package's
+# public API, against REAL dependencies — the filesystem, restic, a Docker daemon, root, block
+# devices. They run in a throwaway privileged Docker-in-Docker container (test/run-integration.sh),
+# so the host's Docker is never touched. Narrow a run with PKG=./internal/backup, TESTRUN=<regexp>,
+# TESTV=1.
+test: test-integration
+
+test-integration:
+	GO=$(GO) ./test/run-integration.sh
 
 # Install the binary system-wide (so systemd + everyone can run `hsctl`). The web UI
 # runs the binary as a long-lived process, so a new binary on disk doesn't take effect
@@ -64,4 +69,4 @@ install: build
 install-services: install
 	cd .. && sudo $(PREFIX)/bin/hsctl install
 
-.PHONY: build vet test install install-services
+.PHONY: build vet test test-integration install install-services

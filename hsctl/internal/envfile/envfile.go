@@ -72,7 +72,13 @@ func Set(path, key, value string) error {
 		}
 	}
 	if !found {
-		lines = append(lines, key+"="+value)
+		// Before the file's final newline, so the new key doesn't follow a blank line and the file
+		// still ends with a newline.
+		if n := len(lines); n > 0 && lines[n-1] == "" {
+			lines = append(lines[:n-1], key+"="+value, "")
+		} else {
+			lines = append(lines, key+"="+value)
+		}
 	}
 	return fsutil.WritePrivate(path, strings.Join(lines, "\n"))
 }

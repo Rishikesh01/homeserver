@@ -315,8 +315,8 @@ Contributions are welcome. The short version:
 
 ```bash
 make -C hsctl build     # build
-make -C hsctl vet       # go vet
-make -C hsctl test      # go test ./...
+make -C hsctl vet       # go vet, the integration tests included
+make -C hsctl test      # integration tests, in a throwaway Docker-in-Docker container
 make sandbox            # try changes in an isolated copy of the whole stack
 ```
 

@@ -1,48 +1,84 @@
-package backup
+//go:build integration
+
+package backup_test
 
 import (
-	"os"
-	"path/filepath"
+	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/Rishikesh01/homeserver/hsctl/internal/docker"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/backup"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/itest"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/paths"
-	"github.com/Rishikesh01/homeserver/hsctl/internal/restic"
 )
 
-// newSvc is the backup service for a repo at root, with the real Docker and restic clients.
-func newSvc(t *testing.T, root string) *Service {
-	t.Helper()
-	repo := paths.Repo{Root: root}
-	s := New(repo, docker.New(root), restic.New(repo.Path(paths.ResticPassword), CredentialsEnv(repo)), nil, nil)
-	s.Out, s.Err = os.Stderr, os.Stderr
-	return s
-}
+func ptr(s string) *string { return &s }
 
-// TestSettingsRoundTrip: what SaveSettings writes, Settings reads back — including clearing.
-func TestSettingsRoundTrip(t *testing.T) {
+// TestSettings: what SaveSettings writes, Settings reads back — and Configure changes only what it's
+// given, gives an external-disk destination its guard, and refuses a bad retention policy.
+func TestSettings(t *testing.T) {
+	itest.NeedRestic(t)
+	ver, _ := exec.Command("restic", "version").Output()
 	cases := []struct {
-		name string
-		in   Settings
+		name    string
+		steps   []backup.Options
+		want    backup.Settings
+		wantErr string
+		wantOut string
 	}{
-		{"replica and alerts", Settings{Repo: "/mnt/backup/restic", Retention: DefaultRetention, ReplicaRepo: "sftp:nas:/b", NotifyURL: "https://ntfy.sh/x", RequireMount: "/mnt/backup"}},
-		{"cleared", Settings{Repo: "/mnt/backup/restic", Retention: DefaultRetention}},
+		{"defaults", nil, backup.Settings{Retention: backup.DefaultRetention}, "", ""},
+		{"everything", []backup.Options{{Repo: ptr("/srv/restic"), Retention: ptr("--keep-last 3"), Replica: ptr("sftp:nas:/b"),
+			NotifyURL: ptr("https://ntfy.sh/x"), RequireMount: ptr("/srv")}},
+			backup.Settings{Repo: "/srv/restic", Retention: "--keep-last 3", ReplicaRepo: "sftp:nas:/b", NotifyURL: "https://ntfy.sh/x", RequireMount: "/srv"},
+			"", "saved backup.conf (repo=/srv/restic)"},
+		{"cleared again", []backup.Options{{Repo: ptr("/srv/restic"), Replica: ptr("sftp:nas:/b"), NotifyURL: ptr("https://x")},
+			{Replica: ptr(""), NotifyURL: ptr("")}},
+			backup.Settings{Repo: "/srv/restic", Retention: backup.DefaultRetention}, "", ""},
+		{"an external disk gets its guard", []backup.Options{{Repo: ptr("/mnt/usb/restic")}},
+			backup.Settings{Repo: "/mnt/usb/restic", Retention: backup.DefaultRetention, RequireMount: "/mnt/usb"}, "", "set the backup-disk guard to /mnt/usb"},
+		{"the guard follows the disk", []backup.Options{{Repo: ptr("/mnt/usb/restic")}, {Repo: ptr("/mnt/big/restic")}},
+			backup.Settings{Repo: "/mnt/big/restic", Retention: backup.DefaultRetention, RequireMount: "/mnt/big"}, "", ""},
+		{"a guard that protects nothing is pointed out", []backup.Options{{Repo: ptr("/srv/restic"), RequireMount: ptr("/mnt/usb")}},
+			backup.Settings{Repo: "/srv/restic", Retention: backup.DefaultRetention, RequireMount: "/mnt/usb"}, "", "isn't on the guarded disk"},
+		{"pin restic", []backup.Options{{PinRestic: true}},
+			backup.Settings{Retention: backup.DefaultRetention, ResticVersion: strings.Fields(string(ver))[1]}, "", "pinned restic version"},
+		{"a bad policy", []backup.Options{{Retention: ptr("keep 7 daily")}}, backup.Settings{Retention: backup.DefaultRetention}, "retention", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newSvc(t, t.TempDir())
-			if err := s.SaveSettings(tc.in); err != nil {
+			repo := itest.Repo(t)
+			s, out := newService(t, repo)
+			var err error
+			for _, o := range tc.steps {
+				if err = s.Configure(o); err != nil {
+					break
+				}
+			}
+			if (err == nil) != (tc.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("Configure = %v, want %q", err, tc.wantErr)
+			}
+			want := tc.want
+			if want.Repo == "" { // the default: a local repository inside the checkout
+				want.Repo = repo.Path("backups", "restic")
+			}
+			if got := s.Settings(); got != want {
+				t.Errorf("settings = %+v, want %+v", got, want)
+			}
+			if !strings.Contains(out.String(), tc.wantOut) {
+				t.Errorf("output lacks %q:\n%s", tc.wantOut, out.String())
+			}
+			if err := s.SaveSettings(want); err != nil {
 				t.Fatal(err)
 			}
-			if got := s.Settings(); got != tc.in {
-				t.Errorf("round-trip = %+v, want %+v", got, tc.in)
+			if got := s.Settings(); got != want {
+				t.Errorf("round-trip = %+v", got)
 			}
 		})
 	}
 }
 
-// TestCredentialsEnv passes .backup-env's credentials to restic, and copes with no file.
+// TestCredentialsEnv hands .backup-env's credentials to restic, and copes without the file.
 func TestCredentialsEnv(t *testing.T) {
 	cases := []struct {
 		name, file string
@@ -53,72 +89,14 @@ func TestCredentialsEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := paths.Repo{Root: t.TempDir()}
+			repo := itest.Repo(t)
 			if tc.file != "" {
-				if err := os.WriteFile(repo.Path(paths.BackupEnv), []byte(tc.file), 0600); err != nil {
-					t.Fatal(err)
-				}
+				itest.WriteFile(t, repo.Root, paths.BackupEnv, tc.file)
 			}
-			env := strings.Join(CredentialsEnv(repo)(), "\n")
-			for _, w := range tc.want {
-				if !strings.Contains(env, w) {
-					t.Errorf("env lacks %q", w)
-				}
-			}
-		})
-	}
-}
-
-// TestReplicate proves the replica copy for real with two local restic repos: it creates the
-// replica on the first run, copies the snapshot, and a second run is a clean no-op; without a
-// replica configured it says how to set one.
-func TestReplicate(t *testing.T) {
-	root := t.TempDir()
-	s := newSvc(t, root)
-	if !s.Restic.Installed() {
-		t.Skip("restic not installed")
-	}
-	if err := os.WriteFile(filepath.Join(root, paths.ResticPassword), []byte("test-password\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	data := filepath.Join(root, "data")
-	if err := os.MkdirAll(data, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(data, "proof.txt"), []byte("replicate me"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Settings{Repo: filepath.Join(root, "primary"), ReplicaRepo: filepath.Join(root, "replica")}
-	if err := s.Restic.Run(cfg.Repo, "init", "-q"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Restic.Run(cfg.Repo, "backup", "-q", data); err != nil {
-		t.Fatal(err)
-	}
-	cases := []struct {
-		name    string
-		cfg     Settings
-		wantErr string
-	}{
-		{"first copy creates the replica", cfg, ""},
-		{"second copy is a no-op", cfg, ""},
-		{"unconfigured", Settings{Repo: cfg.Repo}, "no off-site replica configured"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := s.replicate(tc.cfg)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want %q", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			out, err := s.Restic.Output(cfg.ReplicaRepo, "snapshots")
-			if err != nil || !strings.Contains(out, "1 snapshots") {
-				t.Errorf("replica snapshots: %v\n%s", err, out)
+			env := backup.CredentialsEnv(repo)()
+			slices.Sort(env)
+			if !slices.Equal(env, tc.want) {
+				t.Errorf("env = %v, want %v", env, tc.want)
 			}
 		})
 	}
