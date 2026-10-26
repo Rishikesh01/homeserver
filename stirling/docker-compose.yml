@@ -1,7 +1,7 @@
 services:
   stirling-pdf:
     # Self-hosted PDF toolkit: compress to size, merge/split, images<->PDF, OCR, etc.
-    image: ${STIRLING_IMAGE:-ghcr.io/stirling-tools/stirling-pdf:2.14.3}
+    image: ${STIRLING_IMAGE:-ghcr.io/stirling-tools/stirling-pdf:3.2.2}
     container_name: stirling-pdf
     restart: unless-stopped
     # No published port: Caddy reaches it over the shared "edge" network as stirling-pdf:8080.
@@ -10,12 +10,20 @@ services:
     environment:
       DISABLE_ADDITIONAL_FEATURES: "true"   # lighter; flip on for OCR/extra tools
       LANG: en_US.UTF-8
+      # Stirling-PDF 3 builds its account system in and turns it on by default, which would put a
+      # login page in front of the tools. Everyone on the LAN uses them without accounts, as on 2.x.
+      SECURITY_ENABLELOGIN: "false"
+      # 3.x asks the admin about usage analytics on first launch; a home server answers no.
+      SYSTEM_ENABLEANALYTICS: "false"
     volumes:
       - stirling-config:/configs
+    # The same probe as the image's own: 3.x serves its status API once the app is up, and the JVM
+    # needs a minute or two on first start.
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
+      test: ["CMD-SHELL", "curl -fs --max-time 10 http://localhost:8080/api/v1/info/status || exit 1"]
       interval: 30s
-      timeout: 5s
+      timeout: 15s
+      start_period: 120s
       retries: 5
 
 volumes:

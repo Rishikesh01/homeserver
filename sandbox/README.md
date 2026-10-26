@@ -54,7 +54,7 @@ image, leaving the real compose files untouched. Confirm it works, *then* bump t
 
 ```bash
 # e.g. try a Nextcloud major bump
-echo 'nextcloud-app=nextcloud:31-apache' >> sandbox/images.env
+echo 'nextcloud-app=nextcloud:36.0.0-apache' >> sandbox/images.env
 make sandbox        # boot, click "Start all services", log in, look around
 ```
 
