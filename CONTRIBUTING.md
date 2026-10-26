@@ -30,13 +30,55 @@ If `go` isn't on your `PATH`, point the Makefile at it: `make -C hsctl build GO=
 ## Before you open a PR
 
 ```bash
-make -C hsctl vet       # go vet ./...
-make -C hsctl test      # go test ./...
+make -C hsctl vet       # go vet, the integration tests included
+make -C hsctl test      # the integration tests, in a throwaway Docker-in-Docker container
 ```
 
-The suite is plain Go unit tests — no Docker required. The backup package's `TestReplicate`
-exercises a real restic repo round-trip and skips itself if `restic` isn't installed, so install restic if you
-touch backup code. CI runs both commands on every push and pull request.
+### The tests
+
+Every test is an **integration test**, behind the `integration` build tag, and **table-driven**:
+each one drives a package through its public API (the tests live in `package x_test`) against real
+dependencies — the filesystem, restic, a Docker daemon running the stack's own compose files and
+images, a TLS container registry, a loop-device disk, a real PTY and real HTTP for the dashboard,
+and root (the ownership rules, mounts, Docker's volume files). Where a test needs a normal user it
+re-runs itself as one (`itest.Unprivileged`); where it needs an installed binary it re-runs from a
+root-owned copy (`itest.Installed`). The one stand-in is `systemctl`, since the test container runs
+no systemd (`itest.FakeSystemctl`).
+
+`make -C hsctl test` (also `make -C hsctl test-integration`) compiles each package's tests and the
+hsctl binary, and runs them as root inside a throwaway privileged Docker-in-Docker container
+(`hsctl/test/run-integration.sh`), so nothing touches your Docker, containers or volumes. The
+images the tests pull are cached in the `hsctl-itest-docker` volume between runs
+(`docker volume rm hsctl-itest-docker` drops them). Narrow a run while you work:
+
+```bash
+PKG=./internal/backup make -C hsctl test                    # one package (or several, space-separated)
+TESTRUN='TestBackupAndRestore' TESTV=1 make -C hsctl test   # matching tests, verbose
+```
+
+A plain `go test -tags integration ./...` also works on your machine, but skips what it lacks
+(Docker, restic, root) — so it isn't the real check. CI runs `make -C hsctl test-integration` on
+every push and pull request.
+
+### Where the code lives
+
+`hsctl/main.go` and the `cli_*.go` files only wire the services together (`app.go`) and define the
+commands. The work is in `hsctl/internal/`, one package per service, each a struct built with
+`New(…)` from what it depends on, taken as interfaces:
+
+| Package | What it does |
+|---|---|
+| `paths`, `fsutil`, `envfile`, `secret` | the checkout's layout; atomic writes that keep the admin's ownership; .env files; generated secrets |
+| `docker`, `restic`, `registry`, `prompt`, `priv` | the Docker, restic and registry clients; asking at the terminal; running things as root |
+| `config`, `provision`, `setup` | `setup.conf`, the generated .env files, and `hsctl setup` |
+| `layout`, `catalog`, `stack` | the stack's shape; the home page's tiles; starting, stopping and switching apps |
+| `images`, `updates` | platform checks of the pins; checking for and applying newer images |
+| `oplock`, `jobs` | the operation lock every state-changing command takes; the dashboard's background jobs |
+| `backup` | backups, restores, the off-site replica and the self-test |
+| `devices`, `sysinfo` | the Drives page; system health |
+| `install`, `secrets` | the systemd units and uninstall; the logins |
+| `web` | the dashboard |
+| `itest` | test helpers |
 
 If you changed anything that touches the stack itself — a compose file, the Caddyfile, the
 backup path, `hsctl up`/`down` — **try it in the sandbox** rather than on a live box:
