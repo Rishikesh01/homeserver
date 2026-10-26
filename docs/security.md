@@ -44,18 +44,21 @@ browser on a trusted device, or someone with physical access to an unlocked, run
   bound to the LAN, so it needs no rule.
 - **Use strong, unique passwords and turn on 2FA.** Especially the Vaultwarden master
   password (nobody can reset it for you) and the Nextcloud/Pi-hole admin logins.
-- **Keep things updated.** Run `hsctl updates` to see what's behind; bump the tag in that
-  service's `docker-compose.yml` and `docker compose pull && docker compose up -d`. Keep the
+- **Keep things updated.** Run `hsctl updates` (or the dashboard's Updates page) to see what's
+  behind, and `hsctl updates --apply <container>` to move one app to its newer release — the new
+  pin is recorded in that app's gitignored `.env`, never in the tracked compose files. Keep the
   OS patched too. Want to try a new image (or a newer restic) **before** touching the live
   box? Test it in the [sandbox](../sandbox/README.md) first.
 - **Encrypt Nextcloud (optional).** Server-side encryption is off by default; enable it in
   *Nextcloud → Admin → Settings → Security* if you want it on top of disk encryption.
 
-**On image pinning:** the application images are pinned to exact versions, so a rebuild is
-reproducible — `vaultwarden/server:1.36.0`, `nextcloud:30-apache`, `pihole/pihole:2025.04.0`,
-`stirling-tools/stirling-pdf:2.12.0`, `it-tools:2024.10.22-7ca5933`. The supporting images
-(`caddy:2.8-alpine`, `postgres:16-alpine`, `redis:7-alpine`, `nginx:1.27-alpine`) track a
-minor tag and pick up patch releases when you pull.
+**On image pinning:** every image is pinned to an exact release, so an install — or a rebuild
+from a backup — runs exactly what was tested: `vaultwarden/server:1.37.4`, `nextcloud:35.0.2-apache`,
+`pihole/pihole:2026.10.0`, `stirling-tools/stirling-pdf:3.2.2`, `it-tools:2024.10.22-7ca5933`,
+and the supporting `caddy:2.11.7-alpine`, `postgres:18.6-alpine`, `redis:8.10.2-alpine`,
+`nginx:1.31.8-alpine`. `hsctl updates` reports newer releases: a new patch or minor release is a
+routine update, a new major (Nextcloud 36, Postgres 19) is applied one app at a time, after a
+sandbox test. Postgres majors also need their data migrated, so they're never applied in place.
 
 ---
 
