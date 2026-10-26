@@ -32,6 +32,8 @@ type sysStats struct {
 	SmartMsg   string // hint when smartctl isn't installed
 	RootDisk   diskSpace
 	BackupDisk diskSpace // the REQUIRE_MOUNT disk, when configured and mounted
+	// BackupGuard is the REQUIRE_MOUNT path, when configured but NOT mounted.
+	BackupGuard string
 }
 
 // diskSpace is one filesystem's usage for the UI. OK=false hides the card.
@@ -190,8 +192,12 @@ func gatherSysStats(repo string) sysStats {
 	var st sysStats
 	st.Cores = runtime.NumCPU()
 	st.RootDisk = statDiskSpace("/")
-	if cfg := loadBackupCfg(repo); cfg.RequireMount != "" && requireBackupMount(cfg) == nil {
-		st.BackupDisk = statDiskSpace(cfg.RequireMount)
+	if cfg := loadBackupCfg(repo); cfg.RequireMount != "" {
+		if requireBackupMount(repo, cfg) == nil {
+			st.BackupDisk = statDiskSpace(cfg.RequireMount)
+		} else {
+			st.BackupGuard = cfg.RequireMount
+		}
 	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		if f := strings.Fields(string(b)); len(f) > 0 {

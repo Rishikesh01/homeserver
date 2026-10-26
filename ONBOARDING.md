@@ -1,124 +1,85 @@
-# Onboarding a person / device
+# Getting set up on the home server
 
-A short checklist for adding someone (and each of their devices) to the homeserver. Do
-the **one-time certificate step** on every device, then the per-app steps. Hand someone
-this page and they can self-serve most of it.
+A short guide for adding a person (and each of their devices) to the home server. Do the
+**certificate step** once on every device, then set up the apps you want.
 
-Everything is reached over HTTPS at the **server's IP + a port** (no names). Replace
-**`SERVER_IP`** below with the server's LAN address (ask your admin; it's also on the
-dashboard). The **dashboard** at `https://SERVER_IP` links to every app.
+The server's address is **SERVER_IP**. Everything is reached at that address plus a port, over
+HTTPS — and only on the home network.
 
-| | URL |
-|--|--|
-| 🏠 Dashboard (start here) | `https://SERVER_IP` |
-| 🔑 Passwords (Vaultwarden) | `https://SERVER_IP:8443` |
-| ☁️ Files (Nextcloud) | `https://SERVER_IP:8444` |
-| 🛡️ Pi-hole | `https://SERVER_IP:8445/admin` |
+| | Open | What it's for |
+|--|--|--|
+| 🏠 Home page | [https://SERVER_IP](https://SERVER_IP) | links to everything below — start here |
+| 🔑 Passwords | [https://SERVER_IP:8443](https://SERVER_IP:8443) | Vaultwarden — works with the Bitwarden apps |
+| ☁️ Files | [https://SERVER_IP:8444](https://SERVER_IP:8444) | Nextcloud — files, photos, calendar |
+| 📄 PDF tools | [https://SERVER_IP:8446](https://SERVER_IP:8446) | compress, merge, split, convert PDFs |
+| 🧰 Utilities | [https://SERVER_IP:8447](https://SERVER_IP:8447) | converters, QR codes, hashes |
+| 🖼️ Image tool | [https://SERVER_IP:8448](https://SERVER_IP:8448) | resize / compress / convert images, in your browser |
+| 🛡️ Ad blocker | [https://SERVER_IP:8445/admin](https://SERVER_IP:8445/admin) | Pi-hole's admin page, if your server runs it |
 
 ---
 
 ## 1. Install the certificate (once per device) — do this first
 
-The server runs its own certificate authority (there's no public domain). Each device
-must trust it once, or browsers warn and the **Bitwarden / Nextcloud apps refuse to
+The server runs its own certificate authority (there's no public domain). Each device must
+trust it once, or browsers show warnings and the **Bitwarden and Nextcloud apps refuse to
 connect**.
 
-**Get the cert:** on the home WiFi, open **http://SERVER_IP/** in a browser and tap
-**Download root.crt**. Then install it:
+**Get it:** on the home Wi-Fi, open [http://SERVER_IP/](http://SERVER_IP/) (plain `http`) and tap
+**Download the certificate** — the file is `homeserver-ca.crt`. Then install it:
 
-- **Android:** Settings → Security → *Encryption & credentials* → *Install a
-  certificate* → **CA certificate** → pick the file → accept the warning.
-- **iPhone/iPad:** open the file → *Settings → Profile Downloaded → Install*. Then
+- **Android:** Settings → Security → *Encryption & credentials* → *Install a certificate* →
+  **CA certificate** → pick `homeserver-ca.crt` → accept the warning.
+- **iPhone/iPad:** open the downloaded file → *Settings → Profile Downloaded → Install*. Then
   **Settings → General → About → Certificate Trust Settings** → turn it **on**.
-- **Windows:** double-click → *Install Certificate* → **Local Machine** → *Place in*
-  → **Trusted Root Certification Authorities**.
-- **macOS:** open in Keychain Access → **System** → double-click the cert → *Trust*
-  → **Always Trust**.
+- **Windows:** double-click `homeserver-ca.crt` → *Install Certificate* → **Local Machine** →
+  *Place in* → **Trusted Root Certification Authorities**.
+- **macOS:** open it in Keychain Access → **System** → double-click the certificate → *Trust* →
+  **Always Trust**.
 - **Linux (system trust):**
   ```bash
   # Debian/Ubuntu:
-  sudo cp root.crt /usr/local/share/ca-certificates/homeserver-ca.crt && sudo update-ca-certificates
+  sudo cp homeserver-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
   # Fedora/RHEL:
-  sudo cp root.crt /etc/pki/ca-trust/source/anchors/homeserver-ca.crt && sudo update-ca-trust
+  sudo cp homeserver-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust
   # Arch:
-  sudo trust anchor root.crt
+  sudo trust anchor homeserver-ca.crt
   ```
-  **Firefox** (and Chrome on Linux) keep their own trust store, so also: *Settings →
-  Privacy & Security → Certificates → View Certificates → Authorities → Import* →
-  pick `root.crt` → tick *"Trust this CA to identify websites"*.
+  **Firefox** (and Chrome on Linux) keep their own trust store, so also: *Settings → Privacy &
+  Security → Certificates → View Certificates → Authorities → Import* → pick `homeserver-ca.crt`
+  → tick *"Trust this CA to identify websites"*.
+
+Done? [https://SERVER_IP](https://SERVER_IP) should open without a warning.
 
 ---
 
 ## 2. Passwords — Vaultwarden (Bitwarden app)
 
-1. Open **https://SERVER_IP:8443**.
-2. **Create account** → email + a strong master password. **The master password is the
-   one thing nobody can reset for you — write it down somewhere safe.**
-3. Phone: install **Bitwarden** (App Store / Play Store). On the login screen tap the
-   gear/settings → **Self-hosted** → Server URL `https://SERVER_IP:8443` → log in.
-   (The cert from step 1 must be installed for the app to connect.)
+1. Open [https://SERVER_IP:8443](https://SERVER_IP:8443).
+2. **Create account** → email + a strong master password. **The master password is the one thing
+   nobody can reset for you — write it down somewhere safe.** (If signing up is turned off, ask
+   whoever runs the server for an invitation.)
+3. Phone: install **Bitwarden** (App Store / Play Store). On the login screen tap the region /
+   gear → **Self-hosted** → Server URL `https://SERVER_IP:8443` → log in. (The certificate from
+   step 1 must be installed for the app to connect.)
 
 ---
 
 ## 3. Files — Nextcloud
 
-1. Open **https://SERVER_IP:8444**. Ask the admin to create your user, or log in with the
-   one you were given.
-2. Phone: install **Nextcloud** → server `https://SERVER_IP:8444` → log in. Enable
-   *Auto upload* for photos if you want phone backups.
-
-> These work on the **home network**.
+1. Open [https://SERVER_IP:8444](https://SERVER_IP:8444) and log in with the account whoever runs
+   the server made for you.
+2. Phone: install **Nextcloud** → server `https://SERVER_IP:8444` → log in. Turn on *Auto upload*
+   if you want your photos backed up.
 
 ---
 
-## Admin notes (server owner)
+## 4. Ad blocking (optional)
 
-- Cert: `hsctl get-ca` writes `caddy-root-ca.crt`; the server also serves it at
-  `http://SERVER_IP/root.crt`.
-- Pi-hole is just a network ad-blocker now — point the router's DHCP DNS at the server to
-  ad-block every device (see `docs/setup.md` → "Pi-hole / network-wide ad-blocking").
-- Add an app to the dashboard: add a service folder + a Caddy block (new HTTPS port) + an
-  entry in `services.json`. The dashboard updates on next load.
-- Nextcloud users: create them in *Admin → Users*. Vaultwarden allows self-signup; switch
-  to invitation-only later via `VW_SIGNUPS_ALLOWED=false` + `hsctl up`.
+If the server runs Pi-hole, a device can use it to block ads: set that device's **DNS server** to
+`SERVER_IP` (Wi-Fi settings → your network → DNS → manual). Only that device is affected. If the
+server is ever off, set DNS back to automatic.
 
 ---
 
-## Backups & restore (server owner)
-
-Encrypted snapshots (restic) of your passwords (Vaultwarden), Nextcloud files + database,
-and the server config. Vaultwarden is paused for about a second during each backup so its
-database is captured cleanly — nothing else goes offline.
-
-- **Mount the backup disk first.** Backups go to an external HDD you mount by hand
-  (e.g. `sudo mount /dev/sdb1 /mnt/restic`, or one click on *Admin → 💽 Drives*). Backups
-  *refuse to run* if it isn't mounted, so they can never silently land on the system disk.
-  Setup details: `docs/backup-restore.md`.
-- **Back up:** *Admin → 💾 Backup & restore → Back up now* (or `sudo hsctl backup run`).
-- **Restore (disaster recovery):** *Admin → 💾 Backup & restore → ♻️ Restore from a backup*.
-  It stops the stack, puts every volume back from a snapshot, and starts it all again; you
-  type `RESTORE` to confirm. The restore restarts the proxy, so the dashboard page **will drop
-  part-way through — that's expected.** The restore keeps running on the server and finishes on
-  its own, so just wait a minute or two and reload `https://SERVER_IP/admin`. The most reliable
-  way is to run it on the server itself: `sudo hsctl backup restore latest --into-volumes`.
-- **Check it works:** `sudo hsctl backup verify` — a safe self-test that never touches live data.
-- **Keep `.restic-password` somewhere safe.** It lives in the repo folder on the server —
-  keep a second copy somewhere else (written down, or in Vaultwarden). Without it, the backups
-  are unrecoverable.
-- **Off-site copy (optional):** set a replica once with `hsctl backup config --replica …`,
-  then *Admin → 🧰 Commands → Copy backups off-site* keeps a second copy somewhere the house
-  isn't. Details: `docs/backup-restore.md`.
-- **Recover without this server (plain restic).** The backups are a standard restic repo, so
-  if the box is gone you can decrypt them on *any* machine with just the backup disk + the
-  password — no hsctl, no Docker:
-  ```bash
-  sudo apt install -y restic                      # use restic >= 0.14 (match backup.conf's version if you can)
-  export RESTIC_REPOSITORY=/mnt/restic            # the mountpoint you used above (or your sftp:/s3: URL)
-  export RESTIC_PASSWORD_FILE=/path/to/.restic-password   # the password FILE — keeps the secret out of history
-  restic snapshots                                # list backups
-  restic restore latest --target ~/restore        # extract everything (~/ , not /tmp, in case /tmp is small)
-  ```
-  Your passwords are in the restored `…/backups/staging/vaultwarden/` fileset (`db.sqlite3` **plus**
-  its `-wal`/`-shm` — keep them together). How to read or boot it by hand, plus the full path
-  layout and the put-back steps: `docs/configuration.md` → *Manual disaster recovery*, and
-  `docs/backup-restore.md` → *Restore*.
+*Everything here works on the home network only. For whoever runs the server: setup, backups and
+restore are in `docs/` in the homeserver repo (`docs/setup.md`, `docs/backup-restore.md`).*

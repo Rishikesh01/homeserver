@@ -156,15 +156,59 @@ func TestSetupWizardFlow(t *testing.T) {
 	}
 }
 
-func TestReconcileCaddyEnvCreatesWhenMissing(t *testing.T) {
-	repo := setupTestRepo(t)
-	c := Config{ServerIP: "10.0.0.5", ACMEEmail: "a@b", UIPort: 9000}
-	if err := reconcileCaddyEnv(repo, c); err != nil {
-		t.Fatal(err)
+// TestGenerateAppliesSettings: re-running setup with new settings must reach the existing .env
+// files (non-secret keys only), and leave every secret as it was.
+func TestGenerateAppliesSettings(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*Config)
+		want   map[string]string // "file:KEY" -> value
+	}{
+		{"signups off", func(c *Config) { c.VWSignupsAllowed = false },
+			map[string]string{"vaultwarden/.env:VW_SIGNUPS_ALLOWED": "false"}},
+		{"timezone", func(c *Config) { c.TZ = "Europe/Berlin" },
+			map[string]string{"pihole/.env:TZ": "Europe/Berlin"}},
+		{"dashboard port", func(c *Config) { c.UIPort = 9000 },
+			map[string]string{"caddy/.env:HOME_UPSTREAM": "host.docker.internal:9000"}},
+		{"new server IP", func(c *Config) { c.ServerIP = "10.0.0.9" },
+			map[string]string{
+				"caddy/.env:SERVER_IP":              "10.0.0.9",
+				"vaultwarden/.env:VW_DOMAIN":        "https://10.0.0.9:8443",
+				"nextcloud/.env:NC_TRUSTED_DOMAINS": "10.0.0.9",
+			}},
 	}
-	kv, _ := readKV(filepath.Join(repo, "caddy/.env"))
-	if kv["SERVER_IP"] != "10.0.0.5" || kv["HOME_UPSTREAM"] != "host.docker.internal:9000" || kv["HOME_HTTPS"] != "443" {
-		t.Errorf("fresh caddy/.env wrong: %v", kv)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			c := Config{ServerIP: "10.0.0.5", TZ: "Etc/UTC", ACMEEmail: "a@b", UIPort: 8088,
+				PiholeDNSBind: "0.0.0.0", VWSignupsAllowed: true}
+			if _, err := c.Generate(repo, false); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
+			tc.change(&c)
+			res, err := c.Generate(repo, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Secrets) != 0 {
+				t.Errorf("re-run generated new logins: %v", res.Secrets)
+			}
+			if len(res.Changed) == 0 {
+				t.Error("no changes reported")
+			}
+			for k, want := range tc.want {
+				file, key, _ := strings.Cut(k, ":")
+				kv, _ := readKV(filepath.Join(repo, file))
+				if kv[key] != want {
+					t.Errorf("%s %s = %q, want %q", file, key, kv[key], want)
+				}
+			}
+			after, _ := readKV(filepath.Join(repo, "nextcloud/.env"))
+			if after["POSTGRES_PASSWORD"] != before["POSTGRES_PASSWORD"] {
+				t.Error("a secret changed")
+			}
+		})
 	}
 }
 
@@ -213,5 +257,59 @@ func TestHandleAppsToggleValidation(t *testing.T) {
 	s.handleAppsToggle(w, httptest.NewRequest("GET", "/admin/apps/toggle", nil))
 	if w.Code != 303 {
 		t.Errorf("GET must redirect, got %d", w.Code)
+	}
+}
+
+// TestSetupFormBindFollowsIP: the Pi-hole bind is pre-filled from the detected IP; correcting the
+// IP but leaving the bind alone must not keep Pi-hole on an address the server no longer has.
+func TestSetupFormBindFollowsIP(t *testing.T) {
+	base := Config{ServerIP: "10.0.0.5", PiholeDNSBind: "10.0.0.5", TZ: "Etc/UTC", UIPort: 8088}
+	cases := []struct {
+		name, ip, bind, want string
+	}{
+		{"ip corrected, bind untouched", "10.0.0.9", "10.0.0.5", ""},
+		{"ip corrected, bind chosen", "10.0.0.9", "0.0.0.0", "0.0.0.0"},
+		{"ip kept", "10.0.0.5", "10.0.0.5", "10.0.0.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vals := url.Values{"server_ip": {tc.ip}, "tz": {"Etc/UTC"}, "pihole_dns_bind": {tc.bind}, "apps": {"vaultwarden"}}
+			r := httptest.NewRequest("POST", "/setup", strings.NewReader(vals.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			c, err := parseSetupForm(base, r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.PiholeDNSBind != tc.want {
+				t.Errorf("bind = %q, want %q", c.PiholeDNSBind, tc.want)
+			}
+		})
+	}
+}
+
+// TestDeployed: what the stack runs with comes from caddy/.env, not from a setup.conf that may
+// already hold the next values.
+func TestDeployed(t *testing.T) {
+	cases := []struct {
+		name, caddyEnv string
+		wantIP         string
+		wantPort       int
+	}{
+		{"not set up", "", "10.0.0.9", 9000},
+		{"running stack", "SERVER_IP=10.0.0.5\nHOME_UPSTREAM=host.docker.internal:8088\n", "10.0.0.5", 8088},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			if tc.caddyEnv != "" {
+				if err := os.WriteFile(filepath.Join(repo, "caddy/.env"), []byte(tc.caddyEnv), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ip, port := deployed(repo, Config{ServerIP: "10.0.0.9", UIPort: 9000})
+			if ip != tc.wantIP || port != tc.wantPort {
+				t.Errorf("deployed = %s %d, want %s %d", ip, port, tc.wantIP, tc.wantPort)
+			}
+		})
 	}
 }

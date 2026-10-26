@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -30,16 +31,19 @@ func rootCmd() *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// A root run (sudo, the dashboard service, the backup timer) first hands back any of
+		// hsctl's files an older version left root-owned, so the admin can read them again.
+		PersistentPreRun: func(*cobra.Command, []string) { repairRepoOwnership() },
 	}
 
 	setup := &cobra.Command{
 		Use:   "setup",
-		Short: "Configure and generate each service's .env (interactive)",
-		Args:  cobra.NoArgs,
-		RunE:  runSetup,
+		Short: "Configure and generate each service's .env, or apply changed settings (interactive)",
+		Args:  setupArgs,
+		RunE:  inRepo(locked("setup", 0, runSetup)),
 	}
 	setup.Flags().Bool("yes", false, "non-interactive: accept defaults/setup.conf/flags")
-	setup.Flags().Bool("force", false, "regenerate ALL secrets (DESTRUCTIVE for live data)")
+	setup.Flags().Bool("force", false, "regenerate secrets (asks you to type REGENERATE; keeps the ones existing data needs)")
 	setup.Flags().String("server-ip", "", "server LAN IP")
 	setup.Flags().String("tz", "", "timezone")
 	setup.Flags().String("pihole-dns-bind", "", "Pi-hole :53 bind IP")
@@ -47,30 +51,41 @@ func rootCmd() *cobra.Command {
 	setup.Flags().String("disable-apps", "", "comma-separated apps to switch off (e.g. stirling,it-tools)")
 
 	up := &cobra.Command{Use: "up", Short: "Start the stack (apps + tools, then caddy)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdUp() }}
+		RunE: inRepo(locked("up", 0, func(*cobra.Command, []string) error { return cmdUp() }))}
 
 	down := &cobra.Command{Use: "down", Short: "Stop the stack", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error { v, _ := c.Flags().GetBool("volumes"); return cmdDown(v) }}
+		RunE: inRepo(locked("down", 0, func(c *cobra.Command, _ []string) error {
+			v, _ := c.Flags().GetBool("volumes")
+			k, _ := c.Flags().GetBool("keep-proxy")
+			return cmdDown(v, k)
+		}))}
 	down.Flags().Bool("volumes", false, "also delete data volumes (DESTRUCTIVE)")
+	down.Flags().Bool("keep-proxy", false, "leave Caddy running, so the dashboard stays reachable (and with --volumes its certificate is kept)")
+
+	restart := &cobra.Command{Use: "restart", Short: "Stop the apps and start the stack again (Caddy keeps running)", Args: cobra.NoArgs,
+		RunE: inRepo(locked("restart", 0, func(*cobra.Command, []string) error { return cmdRestart() }))}
 
 	status := &cobra.Command{Use: "status", Short: "Show container status", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdStatus() }}
+		RunE: inRepo(func(*cobra.Command, []string) error { return cmdStatus() })}
 
 	getca := &cobra.Command{Use: "get-ca", Short: "Write caddy-root-ca.crt to install on devices", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdGetCA() }}
+		RunE: inRepo(func(*cobra.Command, []string) error { return cmdGetCA() })}
 
 	install := &cobra.Command{Use: "install", Short: "Run the dashboard as a systemd service (auto-start on boot)", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return cmdInstall() }}
+		RunE: locked("install", 0, func(*cobra.Command, []string) error { return cmdInstall() })}
 
-	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: runUI}
-	ui.Flags().String("addr", "", "listen address (default :<UI port from setup.conf>)")
+	ui := &cobra.Command{Use: "ui", Short: "Serve the web dashboard", Args: cobra.NoArgs, RunE: inRepo(runUI)}
+	ui.Flags().String("addr", "", "listen address, e.g. 127.0.0.1:8088 (default: loopback + the docker bridge gateway, on the dashboard port from setup)")
 
 	updates := &cobra.Command{Use: "updates", Short: "Check whether newer app images are available (read-only unless --apply)", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
+		RunE: inRepo(func(c *cobra.Command, args []string) error {
 			apply, _ := c.Flags().GetStringSlice("apply")
 			yes, _ := c.Flags().GetBool("yes")
-			return cmdUpdates(apply, yes)
-		}}
+			if len(apply) == 0 { // a read-only check never needs the lock
+				return cmdUpdates(nil, yes)
+			}
+			return locked("updates --apply", 0, func(*cobra.Command, []string) error { return cmdUpdates(apply, yes) })(c, args)
+		})}
 	updates.Flags().StringSlice("apply", nil,
 		"apply updates: a container name (repeatable), or \"all\" for every routine (non-major) update")
 	updates.Flags().Bool("yes", false, "skip the confirmation prompt")
@@ -83,16 +98,43 @@ func rootCmd() *cobra.Command {
 	images.Flags().StringSlice("platforms", supportedPlatforms, "platforms every pinned image must publish")
 
 	uninstall := &cobra.Command{Use: "uninstall", Short: "Remove the stack + hsctl; keeps app data and backups unless told otherwise", Args: cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
+		RunE: locked("uninstall", 0, func(c *cobra.Command, _ []string) error {
 			data, _ := c.Flags().GetBool("data")
 			all, _ := c.Flags().GetBool("all")
 			yes, _ := c.Flags().GetBool("yes")
 			return cmdUninstall(data, all, yes)
-		}}
+		})}
 	uninstall.Flags().Bool("data", false, "also delete the app data volumes (asks to type DESTROY)")
 	uninstall.Flags().Bool("all", false, "delete the app data volumes AND the backups (asks to type DESTROY)")
 	uninstall.Flags().Bool("yes", false, "skip the confirmation — only for the default, data-keeping tier")
 
-	root.AddCommand(setup, up, down, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
+	root.AddCommand(setup, up, down, restart, status, getca, install, ui, updates, images, uninstall, appsCmd(), backupCmd(), secretsCmd())
 	return root
+}
+
+// repairRepoOwnership runs repairOwnership on the repo when we're root, and says what it fixed.
+func repairRepoOwnership() {
+	if os.Geteuid() != 0 {
+		return
+	}
+	repo := repoDir()
+	if !isRepo(repo) {
+		return
+	}
+	if fixed := repairOwnership(repo); len(fixed) > 0 {
+		fmt.Fprintf(os.Stderr, "gave %s back to the repo's owner (a root run had left them root-owned)\n",
+			strings.Join(fixed, ", "))
+	}
+}
+
+// inRepo makes a command fail — instead of silently working on the current folder — when it isn't
+// run inside the homeserver repo (and HOMESERVER_DIR doesn't point at one): run from ~, `setup`
+// used to write a stray setup.conf there, and `install` would have put ~ into the root service.
+func inRepo(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if _, err := requireRepoDir(); err != nil {
+			return err
+		}
+		return run(cmd, args)
+	}
 }

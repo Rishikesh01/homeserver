@@ -31,11 +31,12 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			Services: []serviceLink{{Name: "Vaultwarden", Icon: "🔐", Desc: "Passwords", URL: "https://x"}}}},
 		{"admin", adminTmpl, adminData{Cfg: Config{ServerIP: "192.168.1.10", TZ: "Etc/UTC"},
 			Containers: []containerStatus{{Name: "caddy", State: "running", Status: "Up 2h", Running: true}},
-			Msg:        "hi", DockerErr: ""}},
+			Flash:      flash{Msg: "hi"}, DockerErr: ""}},
 		{"login", loginTmpl, loginData{Err: "", Next: "/admin"}},
 		{"help", helpTmpl, helpData{Body: "<p>hi</p>"}},
+		{"cert-missing", certMissingTmpl, nil},
 		{"commands", commandsTmpl, commandsData{Groups: groups}},
-		{"devices", devicesTmpl, devicesData{MountAt: "/mnt", Msg: "ok", GuardPath: "/mnt", GuardOK: false, Rows: []deviceRow{
+		{"devices", devicesTmpl, devicesData{MountAt: "/mnt", Flash: flash{Msg: "ok", Err: true}, GuardPath: "/mnt", GuardOK: false, Rows: []deviceRow{
 			{Path: "/dev/sdb1", Name: "sdb1", Parent: "Seagate", Size: "1.8T", FSType: "ext4",
 				Label: "backup", Mountpoint: "", Removable: true, Mountable: true},
 			{Path: "/dev/sda1", Name: "sda1", Size: "200M", FSType: "vfat", Mountpoint: "/boot",
@@ -56,9 +57,9 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		}}},
 		{"backup", backupTmpl, backupData{Repo: "/mnt/backup/restic", Retention: defaultRetention,
 			ResticOK: true, ResticVersion: "0.16.4", GuardPath: "/mnt/backup", GuardOK: false,
-			Stats: "Total Size: 1.2 GiB", Snapshots: "ID  Time\nabc 2026", Msg: "done"}},
-		{"restore", restoreTmpl, restoreData{Snapshots: "ID  Time", Msg: "", ResticOK: true}},
-		{"restore-progress", restoreProgressTmpl, nil},
+			Stats: "Total Size: 1.2 GiB", Snapshots: "ID  Time\nabc 2026", Flash: flash{Msg: "done"}}},
+		{"restore", restoreTmpl, restoreData{Snapshots: "ID  Time", ResticOK: true}},
+		{"restore-progress", restoreProgressTmpl, struct{ JobID string }{"abc"}},
 	}
 
 	for _, tc := range cases {

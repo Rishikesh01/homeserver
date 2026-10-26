@@ -347,10 +347,18 @@ func pinVarFor(composeText string, env map[string]string, ref string) (string, e
 	return "", fmt.Errorf("no image pin resolving to %s — the compose file has drifted from the running container; edit it by hand", ref)
 }
 
+// errNoContainers: the check compares what's running with the registries, so with no stack
+// containers at all there is nothing to compare — which must not read as "everything is up to date".
+var errNoContainers = fmt.Errorf("no stack containers exist yet, so there's nothing to compare — " +
+	"set the stack up and start it first (dashboard setup wizard, or hsctl setup && hsctl up)")
+
 // checkAllUpdates runs both probes for every stack container and returns the
 // statuses. progress, when non-nil, gets each status as it lands — the check
 // talks to registries and takes seconds per image, so callers show rows live.
 func checkAllUpdates(repo string, progress func(imageStatus)) ([]imageStatus, error) {
+	if err := requireDocker(); err != nil {
+		return nil, err
+	}
 	if _, err := dockerOut(repo, "buildx", "version"); err != nil {
 		return nil, fmt.Errorf("docker buildx is needed to read registry digests — install it:\n" +
 			"  sudo apt-get install -y docker-buildx-plugin")
@@ -358,6 +366,9 @@ func checkAllUpdates(repo string, progress func(imageStatus)) ([]imageStatus, er
 	targets, err := updateTargets(repo)
 	if err != nil {
 		return nil, err
+	}
+	if len(targets) == 0 {
+		return nil, errNoContainers
 	}
 	var statuses []imageStatus
 	for _, name := range targets {
@@ -504,10 +515,14 @@ func applyUpdates(repo string, statuses []imageStatus, targets []string, yes boo
 		done[svc] = true
 		fmt.Printf("\n== updating %s ==\n", svc)
 		dir := filepath.Join(repo, svc)
-		if err := dockerRun(dir, "compose", "pull"); err != nil {
+		pull := []string{"compose", "pull"}
+		if !isTerminal(os.Stdout) {
+			pull = append(pull, "--quiet") // no per-layer progress in a job log
+		}
+		if err := dockerRun(dir, pull...); err != nil {
 			return fmt.Errorf("%s: pull: %w", svc, err)
 		}
-		if err := dockerRun(dir, "compose", "up", "-d"); err != nil {
+		if err := dockerRun(dir, composeUpArgs()...); err != nil {
 			return fmt.Errorf("%s: up: %w", svc, err)
 		}
 	}

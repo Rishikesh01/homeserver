@@ -178,7 +178,7 @@ you through installing the certificate.
 > Prefer a shell? `hsctl setup` → `hsctl up` does the same — see [docs/setup.md](docs/setup.md).
 
 > [!IMPORTANT]
-> Then, **once per device**: open `http://HOST/`, download `root.crt`, and trust it as a
+> Then, **once per device**: open `http://HOST/`, download `homeserver-ca.crt`, and trust it as a
 > certificate authority — otherwise browsers warn and the mobile apps refuse to connect. The
 > per-OS steps live in [ONBOARDING.md](ONBOARDING.md), which the dashboard also serves at
 > `https://HOST/help` so you can just send someone the link.
@@ -284,7 +284,9 @@ sudo hsctl backup verify                   # prove it restores — five checks, 
 sudo hsctl backup restore latest --into-volumes    # one-command disaster recovery
 ```
 
-`make -C hsctl install-services` adds a nightly timer. The repo is a **vanilla restic
+`sudo hsctl install` also installs a nightly timer, switched on once backups are set up; the
+dashboard shows the last run, flags a backup overdue after 36 hours, and can send a failure
+alert. The repo is a **vanilla restic
 repository**, so you can recover from any machine with the `restic` binary and the password —
 no hsctl, no Docker, no this repo.
 

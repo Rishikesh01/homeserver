@@ -4,6 +4,8 @@
 
 # atomic-write temp files (removed on success; only linger after a crash mid-write)
 **/.hsctl-tmp-*
+# hsctl's operation lock (one state-changing operation at a time)
+.hsctl.lock
 
 # Generated, environment-specific artifacts (comments MUST be on their own lines —
 # gitignore treats a trailing "# ..." as part of the pattern).
@@ -24,6 +26,8 @@ backup.conf
 # cloud credentials for the off-site backup replica (B2/S3 keys)
 .backup-env
 backups/
+# where older hsctl versions extracted restores (plaintext copies of every secret and database)
+/restore/
 
 # sandbox: host-built hsctl binary (rebuilt by `make sandbox`)
 sandbox/_build/

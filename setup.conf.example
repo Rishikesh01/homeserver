@@ -1,17 +1,35 @@
 # Example configuration for hsctl.
 #
-# You normally DON'T create this by hand — `hsctl setup` prompts for each value and writes
-# setup.conf for you. Copy this to setup.conf only to pre-seed an unattended
-# `hsctl setup --yes` run. These are settings, not secrets (secrets go into each .env).
-# setup.conf is gitignored.
+# You normally DON'T create this by hand — `hsctl setup` (or the dashboard's setup wizard)
+# asks for each value and writes setup.conf for you. Copy this to setup.conf only to pre-seed
+# an unattended `hsctl setup --yes` run. These are settings, not secrets (secrets go into each
+# .env). setup.conf is gitignored.
+#
+# Anything left commented out is autodetected on the machine you run setup on — usually what
+# you want for the IP, timezone and port. Keep comments on their own lines.
 
-SERVER_IP=192.168.1.10          # this host's LAN IP (hsctl autodetects it)
-TZ_VAL=Etc/UTC                  # e.g. Europe/Brussels, Asia/Kolkata
-ACME_EMAIL=you@example.com      # only used if you ever switch to a real domain + Let's Encrypt
+# This host's LAN IP (the certificates are issued for it). Autodetected if unset.
+#SERVER_IP=192.168.1.10
+
+# Timezone, e.g. Europe/Brussels or Asia/Kolkata. Autodetected if unset.
+#TZ_VAL=Etc/UTC
+
+# Contact email, only used if you ever switch to a real domain + Let's Encrypt.
+#ACME_EMAIL=you@example.com
+
 # The apps aren't published on the LAN — Caddy reaches them by container name over the shared
 # "edge" docker network — so there are no per-app host ports here. Only the dashboard, which
-# runs on the host, still has one:
-UI_PORT=8088                    # hsctl dashboard port (Caddy proxies it at https://SERVER_IP)
-PIHOLE_DNS_BIND=0.0.0.0         # set to SERVER_IP if another resolver already holds :53
-VW_SIGNUPS_ALLOWED=true         # false = invitation-only
-DISABLED_APPS=                  # apps switched off, e.g. stirling,it-tools (data is kept)
+# runs on the host, still has one (Caddy proxies it at https://SERVER_IP). First free port
+# from 8088 if unset.
+#UI_PORT=8088
+
+# Where Pi-hole's DNS (:53) listens: 0.0.0.0 = every interface, or this host's LAN IP when
+# another resolver already holds :53. Autodetected if unset.
+#PIHOLE_DNS_BIND=0.0.0.0
+
+# Open Vaultwarden signups (true), or invitation-only (false).
+VW_SIGNUPS_ALLOWED=true
+
+# Apps switched off, comma-separated, e.g. pihole,stirling (their data is kept). Pi-hole is
+# opt-in per device either way: nothing on your network uses it until you point a device at it.
+DISABLED_APPS=

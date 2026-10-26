@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
@@ -11,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,15 +35,11 @@ type uiServer struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 
-	// opMu serialises the in-process destructive operations (backup run, restore-into-volumes)
-	// so two clicks can't run at once — a concurrent restore + backup would wipe volumes while
-	// they're being read. Held with TryLock: a second request is turned away, not queued.
-	opMu sync.Mutex
-
-	// restoreSt tracks the async web restore so its progress page can poll for completion even
-	// while Caddy (and thus normal dashboard access) is down mid-restore.
-	restoreMu sync.Mutex
-	restoreSt restoreStatus
+	// Login throttling (see loginBlocked): failures per client and per connection peer, plus a
+	// lock so password checks run one at a time.
+	loginMu      sync.Mutex
+	loginFails   map[string]*loginFailures
+	loginCheckMu sync.Mutex
 
 	// updSt caches the last update-check results for the Updates page (nil = not
 	// checked since the dashboard started; cleared again after an apply).
@@ -51,17 +47,13 @@ type uiServer struct {
 	updSt []imageStatus
 	updAt time.Time
 
-	// setupRun lets the setup page resume its progress after a browser or proxy reconnect.
-	setupMu sync.Mutex
-	setupSt setupRunStatus
-}
+	// Background jobs started from the dashboard (jobs.go), created on first use.
+	jobsOnce sync.Once
+	jobRun   *jobRunner
 
-// restoreStatus is the live state of the background web restore, polled by its progress page.
-type restoreStatus struct {
-	Active  bool   `json:"active"`  // a restore is running now
-	Done    bool   `json:"done"`    // the most recent restore has finished
-	OK      bool   `json:"ok"`      // ...successfully
-	Message string `json:"message"` // human-facing result
+	// setupJob is the wizard's "Start everything" job, so its page can resume after a reconnect.
+	setupMu  sync.Mutex
+	setupJob string
 }
 
 // config returns the live, normalized config — the pair every handler needs together
@@ -72,21 +64,13 @@ func (s *uiServer) config() Config {
 	return c
 }
 
-func (s *uiServer) setRestore(st restoreStatus) {
-	s.restoreMu.Lock()
-	s.restoreSt = st
-	s.restoreMu.Unlock()
-}
-
-func (s *uiServer) getRestore() restoreStatus {
-	s.restoreMu.Lock()
-	defer s.restoreMu.Unlock()
-	return s.restoreSt
-}
-
 func runUI(cmd *cobra.Command, _ []string) error {
 	addr, _ := cmd.Flags().GetString("addr")
-	s := &uiServer{repo: repoDir(), pass: uiPassword(repoDir()), sessions: map[string]time.Time{}}
+	pass, err := uiPassword(repoDir())
+	if err != nil {
+		return err
+	}
+	s := &uiServer{repo: repoDir(), pass: pass, sessions: map[string]time.Time{}}
 	c := s.config()
 
 	// Reap expired sessions periodically so the token map can't grow without bound.
@@ -110,6 +94,7 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/admin/commands", s.requireAuth(s.handleCommands))
 	mux.HandleFunc("/admin/run", s.requireAuth(s.handleRun))
+	mux.HandleFunc("/admin/job", s.requireAuth(s.handleJob))
 	mux.HandleFunc("/admin/apps", s.requireAuth(s.handleApps))
 	mux.HandleFunc("/admin/apps/toggle", s.requireAuth(s.handleAppsToggle))
 	mux.HandleFunc("/admin/updates", s.requireAuth(s.handleUpdatesPage))
@@ -123,10 +108,10 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	mux.HandleFunc("/admin/terminal/ws", s.requireAuth(s.handleTerminalWS))
 	mux.HandleFunc("/admin/assets/", s.requireAuth(s.handleAsset))
 	mux.HandleFunc("/admin/backup", s.requireAuth(s.handleBackup))
-	mux.HandleFunc("/admin/backup/run", s.requireAuth(s.handleBackupRun))
 	mux.HandleFunc("/admin/backup/config", s.requireAuth(s.handleBackupConfig))
+	mux.HandleFunc("/admin/backup/password", s.requireAuth(s.handleBackupPassword))
 	mux.HandleFunc("/admin/backup/restore", s.requireAuth(s.handleBackupRestore))
-	mux.HandleFunc("/admin/backup/restore/status", s.requireAuth(s.handleBackupRestoreStatus))
+	mux.HandleFunc("/admin/backup/restore/progress", s.requireAuth(s.handleBackupRestoreProgress))
 	fmt.Printf("hsctl ui:\n")
 	fmt.Printf("  dashboard : https://%s/   (via Caddy — the LAN entrypoint)\n", c.ServerIP)
 	fmt.Printf("  admin     : https://%s/admin\n", c.ServerIP)
@@ -141,11 +126,25 @@ func runUI(cmd *cobra.Command, _ []string) error {
 	// Default: the dashboard is plain HTTP and grants a root shell, so keep it OFF the LAN.
 	// Bind loopback (local use) + the docker bridge gateway (so Caddy, which fronts us with
 	// HTTPS via host.docker.internal, can still reach us) — never the LAN interface.
-	addrs, warn := uiListenAddrs(c.UIPort)
+	addrs, warn := uiListenAddrs(dashboardPort(s.repo, c))
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
 	return serveUI(handler, addrs)
+}
+
+// dashboardPort is the port the dashboard must listen on: the one Caddy forwards to (caddy/.env's
+// HOME_UPSTREAM), so a UI_PORT edited in setup.conf but not yet applied with `hsctl setup` can't
+// leave Caddy proxying to a port nothing listens on. Falls back to the configured port.
+func dashboardPort(repo string, c Config) int {
+	if kv, err := readKV(filepath.Join(repo, "caddy/.env")); err == nil {
+		if up := kv["HOME_UPSTREAM"]; strings.HasPrefix(up, "host.docker.internal:") {
+			if p := portFromUpstream(up); p > 0 {
+				return p
+			}
+		}
+	}
+	return c.UIPort
 }
 
 // uiListenAddrs returns the addresses the dashboard binds to by default: always loopback, plus
@@ -208,19 +207,26 @@ func serveUI(mux http.Handler, addrs []string) error {
 
 // uiPassword returns the admin password from $HSCTL_UI_PASSWORD or .ui-password,
 // generating and saving one on first run.
-func uiPassword(repo string) string {
+func uiPassword(repo string) (string, error) {
 	if p := os.Getenv("HSCTL_UI_PASSWORD"); p != "" {
-		return p
+		return p, nil
 	}
 	path := filepath.Join(repo, ".ui-password")
 	if b, err := os.ReadFile(path); err == nil {
 		if p := strings.TrimSpace(string(b)); p != "" {
-			return p
+			return p, nil
 		}
 	}
+	// Never mint a new password over one we merely can't read: the running service would keep
+	// the old one and the file would no longer say what it is.
+	if unreadable(path) {
+		return "", errUnreadable(repo, []string{".ui-password"})
+	}
 	p := genPassword(16)
-	_ = writeFile0600(path, p+"\n")
-	return p
+	if err := writeFile0600(path, p+"\n"); err != nil {
+		return "", fmt.Errorf("saving the dashboard password: %w", err)
+	}
+	return p, nil
 }
 
 // requireAuth gates admin handlers behind a login-form session cookie. We use a cookie
@@ -228,12 +234,51 @@ func uiPassword(repo string) string {
 // autofill the native Basic-Auth dialog — but they happily fill a normal login form.
 func (s *uiServer) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && !s.sameOrigin(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
 		if !s.validSession(r) {
+			// The pages' scripts poll these; a login redirect would look like a broken JSON reply,
+			// so say plainly that the session is gone (e.g. the dashboard restarted).
+			if r.URL.Path == "/admin/job" || r.URL.Path == "/admin/run" || r.URL.Path == "/setup/up/status" {
+				http.Error(w, "signed out — sign in again", http.StatusUnauthorized)
+				return
+			}
 			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
 		h(w, r)
 	}
+}
+
+// sameOrigin reports whether a state-changing request came from the dashboard's own pages. The
+// session cookie is SameSite=Lax, but every app on this box shares the server's address on another
+// port — and cookies ignore ports, so a page on any of them counts as "same site" and the browser
+// would send our cookie along. Browsers always send Origin (or at least Referer) with a POST, so
+// one from another origin is refused; a client sending neither (curl, scripts) isn't a browser
+// carrying someone's cookie, and is let through.
+func (s *uiServer) sameOrigin(r *http.Request) bool {
+	src := r.Header.Get("Origin")
+	if src == "" || src == "null" {
+		if ref := r.Header.Get("Referer"); ref != "" {
+			src = ref
+		} else if src == "null" {
+			return false
+		} else {
+			return true
+		}
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	got := u.Scheme + "://" + u.Host
+	scheme := "http"
+	if isHTTPS(r) {
+		scheme = "https"
+	}
+	return got == scheme+"://"+r.Host || got == "https://"+s.config().ServerIP
 }
 
 // sweepSessions deletes every expired token. validSession only drops the one token it's handed,
@@ -248,6 +293,13 @@ func (s *uiServer) sweepSessions() {
 			delete(s.sessions, tok)
 		}
 	}
+	s.loginMu.Lock()
+	for key, f := range s.loginFails {
+		if now.Sub(f.last) > loginForgetAfter && now.After(f.until) {
+			delete(s.loginFails, key)
+		}
+	}
+	s.loginMu.Unlock()
 }
 
 // validSession reports whether the request carries a live (unexpired) session cookie.
@@ -275,17 +327,48 @@ type loginData struct{ Err, Next string }
 // mints a session token, stores it server-side, and sets it as an HttpOnly cookie.
 func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		if !s.sameOrigin(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		ip := remoteIP(r)
+		keys := loginKeys(r)
+		if wait := s.loginBlocked(keys, time.Now()); wait > 0 {
+			uiLog.Warn("login throttled", "from", ip)
+			w.WriteHeader(http.StatusTooManyRequests)
+			render(w, loginTmpl, loginData{Err: fmt.Sprintf("Too many wrong passwords — wait %s and try again.",
+				shortDuration(wait)), Next: safeNext(r.FormValue("next"))})
+			return
+		}
 		u := r.FormValue("username")
 		p := r.FormValue("password")
+		// One password check at a time, with a pause after a wrong one, so parallel requests can't
+		// slip a burst of guesses past the lockout. The lockout is checked again once it's our
+		// turn: requests queued behind a failure must not get their guess compared anyway.
+		s.loginCheckMu.Lock()
+		if wait := s.loginBlocked(keys, time.Now()); wait > 0 {
+			s.loginCheckMu.Unlock()
+			uiLog.Warn("login throttled", "from", ip)
+			w.WriteHeader(http.StatusTooManyRequests)
+			render(w, loginTmpl, loginData{Err: fmt.Sprintf("Too many wrong passwords — wait %s and try again.",
+				shortDuration(wait)), Next: safeNext(r.FormValue("next"))})
+			return
+		}
 		ok := subtle.ConstantTimeCompare([]byte(u), []byte("admin")) == 1 &&
 			subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
 		if !ok {
-			uiLog.Warn("login failed", "user", u, "from", remoteIP(r))
+			s.loginFailed(keys, time.Now())
+			time.Sleep(400 * time.Millisecond)
+		}
+		s.loginCheckMu.Unlock()
+		if !ok {
+			uiLog.Warn("login failed", "user", u, "from", ip)
 			w.WriteHeader(http.StatusUnauthorized)
 			render(w, loginTmpl, loginData{Err: "Wrong username or password.", Next: safeNext(r.FormValue("next"))})
 			return
 		}
-		uiLog.Info("login ok", "from", remoteIP(r))
+		s.loginSucceeded(keys)
+		uiLog.Info("login ok", "from", ip)
 		tok := genPassword(32)
 		s.mu.Lock()
 		s.sessions[tok] = time.Now().Add(sessionTTL)
@@ -301,6 +384,95 @@ func (s *uiServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	render(w, loginTmpl, loginData{Next: safeNext(r.URL.Query().Get("next"))})
 }
 
+// Login throttling. The dashboard grants a root shell, so a password guesser gets a few free tries
+// and then waits: after a few wrong passwords, each further failure locks them out for twice as
+// long as the last (30s, 1m, 2m … up to 15m). A success resets it. Failures are counted per
+// client (the address Caddy reports) AND per connection peer: the forwarded address can't be
+// trusted from a direct connection (anything on the box can reach us without Caddy and claim any
+// X-Forwarded-For), so the peer gets its own, larger allowance that rotating addresses can't
+// escape. Every LAN client reaches us through Caddy — the same peer — so the peer's lockout is
+// capped at a minute: enough to throttle guessing, too short for one noisy device to keep the
+// admin out.
+const (
+	loginFreeTries     = 5  // per client
+	loginPeerFreeTries = 30 // per connection peer (Caddy carries every LAN client)
+	loginFirstLock     = 30 * time.Second
+	loginMaxLock       = 15 * time.Minute
+	loginPeerMaxLock   = time.Minute
+	loginForgetAfter   = time.Hour // failures this old are forgotten
+)
+
+type loginFailures struct {
+	count int
+	last  time.Time
+	until time.Time // locked out until then
+}
+
+// loginKeys are the throttle buckets a login request counts against: its client and its peer.
+func loginKeys(r *http.Request) []string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		peer = host
+	}
+	return []string{"client " + remoteIP(r), "peer " + peer}
+}
+
+func freeTries(key string) int {
+	if strings.HasPrefix(key, "peer ") {
+		return loginPeerFreeTries
+	}
+	return loginFreeTries
+}
+
+// loginBlocked returns how long the request must still wait, or 0.
+func (s *uiServer) loginBlocked(keys []string, now time.Time) time.Duration {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	var wait time.Duration
+	for _, k := range keys {
+		if f := s.loginFails[k]; f != nil && now.Before(f.until) && f.until.Sub(now) > wait {
+			wait = f.until.Sub(now)
+		}
+	}
+	return wait
+}
+
+func (s *uiServer) loginFailed(keys []string, now time.Time) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if s.loginFails == nil {
+		s.loginFails = map[string]*loginFailures{}
+	}
+	for _, k := range keys {
+		f := s.loginFails[k]
+		if f == nil || now.Sub(f.last) > loginForgetAfter {
+			f = &loginFailures{}
+			s.loginFails[k] = f
+		}
+		f.count++
+		f.last = now
+		if over := f.count - freeTries(k); over > 0 {
+			lock := loginFirstLock << min(over-1, 10)
+			maxLock := loginMaxLock
+			if strings.HasPrefix(k, "peer ") {
+				maxLock = loginPeerMaxLock
+			}
+			if lock > maxLock {
+				lock = maxLock
+			}
+			f.until = now.Add(lock)
+		}
+	}
+}
+
+func (s *uiServer) loginSucceeded(keys []string) {
+	s.loginMu.Lock()
+	for _, k := range keys {
+		delete(s.loginFails, k)
+	}
+	s.loginMu.Unlock()
+}
+
 func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.mu.Lock()
@@ -312,14 +484,20 @@ func (s *uiServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // safeNext keeps post-login redirects on this site (a local path), defaulting to /admin. It
-// must reject anything that resolves off-site: a protocol-relative "//host", and — because
-// browsers fold "\" into "/" per the URL spec — any backslash (so "/\host" can't sneak through
-// as "//host"). A legitimate in-app path never contains a backslash.
+// must reject anything that resolves off-site: a protocol-relative "//host"; any backslash,
+// because browsers fold "\" into "/" per the URL spec (so "/\host" can't sneak through as
+// "//host"); and any control character or space, because browsers strip tabs and newlines from a
+// URL (so "/\t/host" would become "//host"). A legitimate in-app path has none of them.
 func safeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") && !strings.ContainsRune(next, '\\') {
-		return next
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsRune(next, '\\') {
+		return "/admin"
 	}
-	return "/admin"
+	for _, r := range next {
+		if r <= ' ' || r == 0x7f {
+			return "/admin"
+		}
+	}
+	return next
 }
 
 // isHTTPS reports whether the browser reached us over TLS, so we only flag the cookie
@@ -411,83 +589,53 @@ type adminData struct {
 	Cfg        Config
 	Containers []containerStatus
 	DockerErr  string
-	Msg        string
+	Flash      flash
 	Sys        sysStats
 	Backup     backupFreshness
 	SetupDone  bool
+	Busy       string // what's running right now, "" if nothing
+	JobID      string // the dashboard job to follow, if one is running
 }
 
 func (s *uiServer) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	d := adminData{Cfg: s.config(), Msg: r.URL.Query().Get("msg"), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d := adminData{Cfg: s.config(), Flash: takeFlash(w, r), Backup: backupFreshnessFor(s.repo), SetupDone: s.setupDone()}
+	d.Busy, d.JobID = s.busyNote()
 	// gatherSysStats blocks ~300ms for its CPU sample, so overlap it with docker ps.
 	sysCh := make(chan sysStats, 1)
 	go func() { sysCh <- gatherSysStats(s.repo) }()
 	st, err := s.status()
 	if err != nil {
 		uiLog.Warn("docker unreachable", "err", err)
-		d.DockerErr = "Docker is not reachable. Is the daemon running, and is this user in the 'docker' group? (sudo usermod -aG docker $USER, then re-login)"
+		if d.DockerErr = dockerProblem(); d.DockerErr == "" {
+			d.DockerErr = "Couldn't list the containers: " + err.Error()
+		}
 	}
 	d.Containers = st
 	d.Sys = <-sysCh
 	render(w, adminTmpl, d)
 }
 
+// handleAction powers the machine off. Start/Stop/Restart on the admin page are Command Center
+// jobs (up / down --keep-proxy / restart), so they run to the end even if the page is closed.
 func (s *uiServer) handleAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 		return
 	}
-	do := r.FormValue("do")
-	// up/down/restart/shutdown all move the stack, so they must not overlap a running backup or
-	// (now-async) restore — that's the same wipe-while-in-use collision opMu guards elsewhere.
-	if do == "up" || do == "down" || do == "restart" || do == "shutdown" {
-		if !s.opMu.TryLock() {
-			http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(
-				"A backup or restore is running — try this again once it finishes."), http.StatusSeeOther)
-			return
-		}
-		defer s.opMu.Unlock()
+	if r.FormValue("do") != "shutdown" {
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
 	}
-	var msg string
-	switch do {
-	case "up":
-		msg = s.runLifecycle("up")
-	case "down":
-		msg = s.runLifecycle("down")
-	case "restart":
-		msg = s.runLifecycle("down") + " " + s.runLifecycle("up")
-	case "shutdown":
-		msg = s.runShutdown()
-	default:
-		msg = "unknown action"
+	// Powering off must not cut a backup or restore short.
+	l, err := acquireOpLock(s.repo, "dashboard: shutdown", 0)
+	if err != nil {
+		redirectFlash(w, r, "/admin", err.Error(), true)
+		return
 	}
-	uiLog.Info("admin action", "do", do, "result", msg, "from", remoteIP(r))
-	http.Redirect(w, r, "/admin?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
-}
-
-// runLifecycle performs up/down across all services and returns a short summary.
-func (s *uiServer) runLifecycle(action string) string {
-	order := enabledServices(s.config())
-	cargs := []string{"compose", "up", "-d"}
-	if action == "down" {
-		cargs = []string{"compose", "down"}
-		order = reversed(services)
-	} else {
-		migrateSharedNetworkEnv(s.repo)
-		if err := ensureEdgeNetwork(); err != nil {
-			return "up: FAILED — " + err.Error()
-		}
-	}
-	var failed []string
-	for _, svc := range order {
-		if _, err := dockerCombined(filepath.Join(s.repo, svc), cargs...); err != nil {
-			failed = append(failed, svc)
-		}
-	}
-	if len(failed) > 0 {
-		return fmt.Sprintf("%s: FAILED for %s", action, strings.Join(failed, ", "))
-	}
-	return action + ": ok"
+	defer l.Release()
+	msg := s.runShutdown()
+	uiLog.Info("admin action", "do", "shutdown", "from", remoteIP(r))
+	redirectFlash(w, r, "/admin", msg, false)
 }
 
 // runShutdown powers the whole machine off. The poweroff is deferred to a goroutine so
@@ -517,11 +665,12 @@ type cmdGroup struct {
 }
 
 type commandsData struct {
-	Groups []cmdGroup
+	Groups      []cmdGroup
+	Busy, JobID string
 }
 
 // handleCommands renders every CLI command as an explained, runnable card, grouped by
-// category. Running happens client-side via /admin/run (streamed), so this is read-only.
+// category. Running starts a background job via /admin/run, so this page is read-only.
 func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 	var groups []cmdGroup
 	for _, cat := range webCmdCategories {
@@ -535,7 +684,9 @@ func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 			groups = append(groups, g)
 		}
 	}
-	render(w, commandsTmpl, commandsData{Groups: groups})
+	d := commandsData{Groups: groups}
+	d.Busy, d.JobID = s.busyNote()
+	render(w, commandsTmpl, d)
 }
 
 // ---- Devices (list + guided mount) ------------------------------------------
@@ -543,7 +694,7 @@ func (s *uiServer) handleCommands(w http.ResponseWriter, r *http.Request) {
 type devicesData struct {
 	Rows      []deviceRow
 	Err       string
-	Msg       string
+	Flash     flash
 	MountAt   string // where mounts land (/mnt), shown to the user
 	GuardPath string // configured backup REQUIRE_MOUNT path, "" if none
 	GuardOK   bool   // is that path a real mount right now
@@ -551,9 +702,9 @@ type devicesData struct {
 
 func (s *uiServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
-	d := devicesData{Msg: r.URL.Query().Get("msg"), MountAt: mountRoot, GuardPath: cfg.RequireMount}
+	d := devicesData{Flash: takeFlash(w, r), MountAt: mountRoot, GuardPath: cfg.RequireMount}
 	if cfg.RequireMount != "" {
-		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk already mounted there?
+		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk already mounted there?
 	}
 	devs, err := listBlockDevices()
 	if err != nil {
@@ -572,17 +723,19 @@ func (s *uiServer) handleDeviceMount(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
 		return
 	}
+	if holder := opLockBusy(s.repo); holder != "" {
+		redirectFlash(w, r, "/admin/devices", "Not now — "+holder+" is running and may be using the disks. Try again when it's finished.", true)
+		return
+	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	dev := strings.TrimSpace(r.FormValue("dev"))
-	var msg string
 	if mp, err := mountDeviceAt(dev, target); err != nil {
 		uiLog.Warn("mount failed", "dev", dev, "target", target, "err", err)
-		msg = "Mount failed: " + err.Error()
+		redirectFlash(w, r, "/admin/devices", "Mount failed: "+err.Error(), true)
 	} else {
 		uiLog.Info("mounted device", "dev", dev, "at", mp, "from", remoteIP(r))
-		msg = "Mounted at " + mp
+		redirectFlash(w, r, "/admin/devices", "Mounted at "+mp, false)
 	}
-	http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 }
 
 // deviceActionHandler builds the POST handler for a device action (currently Eject): run it
@@ -593,16 +746,20 @@ func (s *uiServer) deviceActionHandler(action func(string) (string, error), errP
 			http.Redirect(w, r, "/admin/devices", http.StatusSeeOther)
 			return
 		}
-		var msg string
+		// Ejecting the backup disk between restic's writes would send the rest of a backup onto
+		// the system disk (or fail a restore half-way).
+		if holder := opLockBusy(s.repo); holder != "" {
+			redirectFlash(w, r, "/admin/devices", "Not now — "+holder+" is running and may be using the disks. Try again when it's finished.", true)
+			return
+		}
 		dev := strings.TrimSpace(r.FormValue("dev"))
 		if res, err := action(dev); err != nil {
 			uiLog.Warn("device action failed", "dev", dev, "err", err)
-			msg = errPrefix + err.Error()
+			redirectFlash(w, r, "/admin/devices", errPrefix+err.Error(), true)
 		} else {
 			uiLog.Info("device action ok", "dev", dev, "result", res, "from", remoteIP(r))
-			msg = ok(res)
+			redirectFlash(w, r, "/admin/devices", ok(res), false)
 		}
-		http.Redirect(w, r, "/admin/devices?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
 	}
 }
 
@@ -613,28 +770,73 @@ func (s *uiServer) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type backupData struct {
-	Repo, Retention, Snapshots, Msg string
-	Replica                         string // off-site replica repo, "" if unset
-	ResticOK                        bool
-	ResticVersion                   string
-	GuardPath                       string // REQUIRE_MOUNT path, "" if unset
-	GuardOK                         bool   // is that path a real mount right now
-	Stats                           string // restic repo stats, "" if unavailable
+	Repo, Retention, Snapshots string
+	Flash                      flash
+	Replica                    string // off-site replica repo, "" if unset
+	ResticOK                   bool
+	ResticVersion              string
+	GuardPath                  string // REQUIRE_MOUNT path, "" if unset
+	GuardOK                    bool   // is that path a real mount right now
+	Stats                      string // restic repo stats, "" if unavailable
+	Busy, JobID                string
+	KeepDaily, KeepWeekly      string // the retention form's fields ("" = not set)
+	KeepMonthly, KeepRest      string
+	RetentionErr               string // the saved policy is invalid (nothing gets pruned)
+	Notify                     string // failure-notification URL, "" if unset
+	Last                       backupFreshness
+	Timer                      backupTimer
+	SystemDisk                 string // the repo is on the same disk as this (no real protection)
+	ReplicaAge                 string // when the off-site replica last got a copy, "" if never
+	HasPassword                bool   // .restic-password exists
+	GuardWarn                  string // the repo isn't on the guarded disk
 }
 
 func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
-		ResticOK: resticInstalled(), Msg: r.URL.Query().Get("msg"), GuardPath: cfg.RequireMount}
+		ResticOK: resticInstalled(), Flash: takeFlash(w, r), GuardPath: cfg.RequireMount,
+		Notify: cfg.NotifyURL, Last: backupFreshnessFor(s.repo), Timer: backupTimerState(),
+		ReplicaAge: stampAge(s.repo, lastReplicaFile), HasPassword: fileExists(filepath.Join(s.repo, resticPassFile))}
 	if cfg.RequireMount != "" {
-		d.GuardOK = requireBackupMount(cfg) == nil // is the backup disk actually mounted now?
+		d.GuardOK = requireBackupMount(s.repo, cfg) == nil // is the backup disk actually mounted now?
 	}
 	if v, err := resticVersion(); err == nil {
 		d.ResticVersion = v
 	}
-	if d.ResticOK {
+	d.Busy, d.JobID = s.busyNote()
+	if _, err := parseRetention(cfg.Retention); err != nil {
+		d.RetentionErr = err.Error()
+	}
+	daily, weekly, monthly, rest := retentionKeeps(cfg.Retention)
+	field := func(n int) string {
+		if n == -2 { // not in the policy
+			return ""
+		}
+		return strconv.Itoa(n) // -1 is restic's "keep all of them"
+	}
+	d.KeepDaily, d.KeepWeekly, d.KeepMonthly, d.KeepRest = field(daily), field(weekly), field(monthly), rest
+	if p := localRepoPath(cfg.Repo); p != "" && cfg.RequireMount == "" {
+		if same, on := onSystemDisk(s.repo, p); same {
+			d.SystemDisk = on
+		}
+	}
+	d.GuardWarn = guardMismatch(cfg)
+	switch {
+	case !d.ResticOK:
+	case backupDiskMissing(s.repo, cfg) != "":
+		// Don't ask restic: it would only say "repository does not exist", which reads like
+		// "initialize a new one" — the wrong move while the disk is merely unplugged.
+		d.Snapshots = "The backup disk isn't mounted at " + cfg.RequireMount +
+			", so the snapshots can't be read. Mount it on the Drives page."
+	case requireResticPassword(s.repo) != nil:
+		d.Snapshots = requireResticPassword(s.repo).Error()
+	default:
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err != nil {
-			d.Snapshots = "No snapshots yet — set a destination, then 'Initialize', then 'Back up now'.\n\n" + out
+			if repoMissing(out) {
+				d.Snapshots = "There's no backup repository at " + cfg.Repo + " yet — click Initialize below."
+			} else {
+				d.Snapshots = "Couldn't read the snapshots:\n\n" + out
+			}
 		} else {
 			d.Snapshots = out
 		}
@@ -645,107 +847,135 @@ func (s *uiServer) handleBackup(w http.ResponseWriter, r *http.Request) {
 	render(w, backupTmpl, d)
 }
 
-func (s *uiServer) handleBackupRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
-		return
-	}
-	if !s.opMu.TryLock() {
-		http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
-			"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
-		return
-	}
-	defer s.opMu.Unlock()
-	uiLog.Info("backup started", "from", remoteIP(r))
-	msg := "Backup complete."
-	if err := backupRun(s.repo, loadBackupCfg(s.repo)); err != nil {
-		uiLog.Error("backup failed", "err", err)
-		msg = "Backup failed: " + err.Error()
-	} else {
-		uiLog.Info("backup complete")
-	}
-	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
-}
-
 func (s *uiServer) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
 		return
 	}
-	msg := "Destination saved"
+	msg, isErr := "Saved.", false
 	cfg := loadBackupCfg(s.repo)
-	if v := strings.TrimSpace(r.FormValue("repo")); v != "" {
+	_ = r.ParseForm()
+	// The guard box shows the current value, so an emptied box turns the guard off — unless the
+	// destination just moved to an external-disk mountpoint, which gets the guard automatically.
+	guardEdited := false
+	if r.Form.Has("require_mount") {
+		v := strings.TrimSpace(r.FormValue("require_mount"))
+		guardEdited = v != cfg.RequireMount
+		cfg.RequireMount = v
+	}
+	if v := strings.TrimSpace(r.FormValue("repo")); v != "" && v != cfg.Repo {
+		old := cfg.Repo
 		cfg.Repo = v
+		if !guardEdited {
+			if g, changed := followGuard(cfg.RequireMount, old, v); changed {
+				cfg.RequireMount = g
+				if g != "" {
+					msg = "Saved. Backups now refuse to run unless a disk is mounted at " + g + " (the disk guard)."
+				}
+			}
+		}
 	}
-	if v := strings.TrimSpace(r.FormValue("retention")); v != "" {
-		cfg.Retention = v
+	if r.Form.Has("keep_daily") {
+		policy, err := buildRetention(r.FormValue("keep_daily"), r.FormValue("keep_weekly"),
+			r.FormValue("keep_monthly"), r.FormValue("keep_rest"))
+		if err != nil {
+			redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
+			return
+		}
+		cfg.Retention = policy
 	}
-	if v := strings.TrimSpace(r.FormValue("replica")); v != "" {
-		cfg.ReplicaRepo = v // clear it via: hsctl backup config --replica ""
+	if r.Form.Has("replica") {
+		cfg.ReplicaRepo = strings.TrimSpace(r.FormValue("replica")) // an empty box clears it
+	}
+	if r.Form.Has("notify") {
+		v := strings.TrimSpace(r.FormValue("notify"))
+		if v != "" && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://") {
+			redirectFlash(w, r, "/admin/backup", "Not saved — the notification address must be an http(s):// URL", true)
+			return
+		}
+		cfg.NotifyURL = v
+	}
+	if w := guardMismatch(cfg); w != "" {
+		msg += " Warning: " + w + "."
 	}
 	if err := cfg.save(s.repo); err != nil {
-		msg = "Save failed: " + err.Error()
+		msg, isErr = "Save failed: "+err.Error(), true
 	}
-	http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(msg), http.StatusSeeOther)
+	redirectFlash(w, r, "/admin/backup", msg, isErr)
+}
+
+// handleBackupPassword sets or changes the backup password (see setResticPassword): it puts back a
+// saved password, sets one before Initialize, or changes the repository's own password — never
+// just overwrites the file under existing backups. It takes the operation lock, so it can't run
+// under a backup.
+func (s *uiServer) handleBackupPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin/backup", http.StatusSeeOther)
+		return
+	}
+	pw := r.FormValue("password")
+	if pw != r.FormValue("confirm") {
+		redirectFlash(w, r, "/admin/backup", "Not saved — the two passwords don't match.", true)
+		return
+	}
+	lock, err := acquireOpLock(s.repo, "dashboard: backup password", 0)
+	if err != nil {
+		redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
+		return
+	}
+	defer lock.Release()
+	var out strings.Builder
+	if err := setResticPassword(s.repo, loadBackupCfg(s.repo), pw, &out); err != nil {
+		uiLog.Warn("backup password not set", "err", err, "from", remoteIP(r))
+		redirectFlash(w, r, "/admin/backup", "Not saved — "+err.Error(), true)
+		return
+	}
+	uiLog.Info("backup password set", "from", remoteIP(r))
+	redirectFlash(w, r, "/admin/backup", strings.TrimSpace(strings.ReplaceAll(out.String(), "\n", " ")), false)
 }
 
 type restoreData struct {
-	Snapshots, Msg string
-	ResticOK       bool
+	Snapshots string
+	Flash     flash
+	ResticOK  bool
 }
 
-// handleBackupRestore shows a confirmation page (GET) and runs the destructive DR put-back
-// (POST) — but only when the operator types RESTORE. It stops the stack, repopulates every
-// volume from the snapshot (Vaultwarden from its staged copy), and brings the stack back up.
-// The put-back runs in the BACKGROUND (it restarts Caddy, which would otherwise cut off the
-// response); the POST returns a progress page that polls handleBackupRestoreStatus and updates
-// itself once the stack — and Caddy — are back.
+// handleBackupRestore shows a confirmation page (GET) and starts the destructive DR put-back
+// (POST) — but only when the operator types RESTORE. The put-back is `hsctl backup restore
+// --into-volumes` run as a dashboard job: it extracts the snapshot, checks it, stops the stack,
+// repopulates every volume (Vaultwarden from its staged copy) and brings the stack back up. The
+// POST redirects to a progress page that follows the job, so a reload can't start a second
+// restore, and the job runs to the end even while Caddy — this page's only route — restarts.
 func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	cfg := loadBackupCfg(s.repo)
 	if r.Method == http.MethodPost {
 		if strings.TrimSpace(r.FormValue("confirm")) != "RESTORE" {
-			http.Redirect(w, r, "/admin/backup/restore?msg="+
-				template.URLQueryEscaper("Type RESTORE to confirm — nothing was changed."), http.StatusSeeOther)
+			redirectFlash(w, r, "/admin/backup/restore", "Type RESTORE to confirm — nothing was changed.", true)
 			return
 		}
-		// A restore stops the stack — Caddy included — so a synchronous response would be cut off
-		// mid-way (the dashboard is only reachable through Caddy, and no longer on the LAN). Run
-		// it in the background and hand back a page that polls for completion, tolerating the
-		// proxy being down while the stack is restarting.
-		if !s.opMu.TryLock() {
-			http.Redirect(w, r, "/admin/backup?msg="+template.URLQueryEscaper(
-				"A backup or restore is already running — wait for it to finish."), http.StatusSeeOther)
-			return
-		}
+		args := []string{"backup", "restore", "--into-volumes", "--yes"}
 		snap := strings.TrimSpace(r.FormValue("snapshot"))
-		uiLog.Warn("restore started", "snapshot", snap, "from", remoteIP(r))
-		s.setRestore(restoreStatus{Active: true})
-		go func() {
-			defer s.opMu.Unlock()
-			defer func() {
-				if p := recover(); p != nil {
-					uiLog.Error("restore crashed", "panic", fmt.Sprint(p))
-					s.setRestore(restoreStatus{Done: true, Message: fmt.Sprintf("Restore crashed: %v", p)})
-				}
-			}()
-			st := restoreStatus{Done: true, OK: true, Message: "Restore complete — all services were brought back up."}
-			if err := restoreSnapshotIntoVolumes(s.repo, cfg, snap); err != nil {
-				uiLog.Error("restore failed", "err", err)
-				st.OK, st.Message = false, "Restore FAILED: "+err.Error()
-				// Best-effort: make sure Caddy is back even if an earlier service failed to start,
-				// so this failure is actually visible again — the progress page can only reach the
-				// status endpoint through Caddy.
-				_ = ensureEdgeNetwork()
-				_, _ = dockerCombined(filepath.Join(s.repo, "caddy"), "compose", "up", "-d")
-			} else {
-				uiLog.Info("restore complete", "snapshot", snap)
+		if snap != "" {
+			if strings.HasPrefix(snap, "-") || strings.ContainsAny(snap, " \t/") {
+				redirectFlash(w, r, "/admin/backup/restore", "That doesn't look like a snapshot ID — nothing was changed.", true)
+				return
 			}
-			s.setRestore(st)
-		}()
-		render(w, restoreProgressTmpl, nil)
+			args = append(args, snap)
+		}
+		uiLog.Warn("restore requested", "snapshot", snap, "from", remoteIP(r))
+		if holder := opLockBusy(s.repo); holder != "" {
+			redirectFlash(w, r, "/admin/backup/restore", "Another operation is running ("+holder+") — try again once it finishes.", true)
+			return
+		}
+		j, err := s.jobs().start(s.repo, "restore", "Restore from backup", args)
+		if err != nil {
+			redirectFlash(w, r, "/admin/backup/restore", err.Error(), true)
+			return
+		}
+		http.Redirect(w, r, "/admin/backup/restore/progress?id="+url.QueryEscape(j.ID), http.StatusSeeOther)
 		return
 	}
-	d := restoreData{Msg: r.URL.Query().Get("msg"), ResticOK: resticInstalled()}
+	d := restoreData{Flash: takeFlash(w, r), ResticOK: resticInstalled()}
 	if d.ResticOK {
 		if out, err := resticOutput(s.repo, cfg, "snapshots"); err == nil {
 			d.Snapshots = out
@@ -754,13 +984,10 @@ func (s *uiServer) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	render(w, restoreTmpl, d)
 }
 
-// handleBackupRestoreStatus reports the background restore's state as JSON. The progress page
-// polls it, tolerating failures while Caddy is down mid-restore, and shows the result once the
-// stack (and the proxy) come back up.
-func (s *uiServer) handleBackupRestoreStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(s.getRestore())
+// handleBackupRestoreProgress is the page a restore redirects to: it follows the restore job's
+// output, riding out the minutes the proxy is down mid-restore.
+func (s *uiServer) handleBackupRestoreProgress(w http.ResponseWriter, r *http.Request) {
+	render(w, restoreProgressTmpl, struct{ JobID string }{r.URL.Query().Get("id")})
 }
 
 // handleCert serves the public root CA (from the saved file, else extracted live).
@@ -775,7 +1002,8 @@ func (s *uiServer) handleCert(w http.ResponseWriter, r *http.Request) {
 		serveCert(w, []byte(out+"\n"))
 		return
 	}
-	http.Error(w, "certificate not available yet (is Caddy running?)", http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusServiceUnavailable)
+	render(w, certMissingTmpl, nil)
 }
 
 func serveCert(w http.ResponseWriter, b []byte) {

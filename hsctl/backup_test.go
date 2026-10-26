@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,5 +42,94 @@ func TestPrepareRestoreTarget(t *testing.T) {
 		if err := prepareRestoreTarget(bad); err == nil {
 			t.Errorf("prepareRestoreTarget(%q) should be refused as unsafe", bad)
 		}
+	}
+}
+
+// TestPlanRestore: the snapshot is checked before the stack is touched, and Vaultwarden's staged
+// database is found wherever the repo lived when the backup was taken.
+func TestPlanRestore(t *testing.T) {
+	type file struct{ path, body string }
+	vol := func(name, f string) file { return file{"var/lib/docker/volumes/" + name + "/_data/" + f, "x"} }
+	cases := []struct {
+		name        string
+		files       []file
+		wantErr     string
+		wantVols    []string
+		wantStaging string // suffix, "" = none
+	}{
+		{"empty snapshot", nil, "no volume data", nil, ""},
+		{"vault on a different machine's path",
+			[]file{vol("vaultwarden_vw-data", "rsa_key.pem"), vol("nextcloud_nc-data", "a.txt"),
+				{"home/olduser/homeserver/backups/staging/vaultwarden/db.sqlite3", "db"}},
+			"", []string{"nextcloud_nc-data", "vaultwarden_vw-data"}, "home/olduser/homeserver/backups/staging/vaultwarden"},
+		{"vault files without their database",
+			[]file{vol("vaultwarden_vw-data", "rsa_key.pem")}, "not its database", nil, ""},
+		{"vault stopped at backup time (db in the volume)",
+			[]file{vol("vaultwarden_vw-data", "db.sqlite3")}, "", []string{"vaultwarden_vw-data"}, ""},
+		{"dump found without Vaultwarden's staging",
+			[]file{vol("nextcloud_db-data-v18", "PG_VERSION"), {"srv/hs/backups/staging/nextcloud-db.sql", "x\n" + pgDumpFooter + "\n"}},
+			"", []string{"nextcloud_db-data-v18"}, ""},
+		{"database only in the pre-18 volume",
+			[]file{vol("nextcloud_db-data", "PG_VERSION")}, "old nextcloud_db-data volume", nil, ""},
+		{"legacy layout: whole vault in staging",
+			[]file{vol("caddy_caddy-data", "x"), {"opt/homeserver/backups/staging/vaultwarden/db.sqlite3", "db"}},
+			"", []string{"caddy_caddy-data"}, "opt/homeserver/backups/staging/vaultwarden"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := t.TempDir()
+			for _, f := range tc.files {
+				p := filepath.Join(target, f.path)
+				if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(f.body), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, err := planRestore(target)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(p.volumes, ",") != strings.Join(tc.wantVols, ",") {
+				t.Errorf("volumes = %v, want %v", p.volumes, tc.wantVols)
+			}
+			if tc.wantStaging == "" && p.vwStaging != "" || tc.wantStaging != "" && !strings.HasSuffix(p.vwStaging, tc.wantStaging) {
+				t.Errorf("staging = %q, want suffix %q", p.vwStaging, tc.wantStaging)
+			}
+			if strings.Contains(tc.name, "dump found") && p.ncDump == "" {
+				t.Error("the Nextcloud dump wasn't found")
+			}
+		})
+	}
+}
+
+// TestDumpComplete: only a pg_dump that ran to its completion footer is trusted on restore.
+func TestDumpComplete(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       bool
+	}{
+		{"complete", "CREATE TABLE x();\n--\n" + pgDumpFooter + "\n--\n\n", true},
+		{"cut short", "CREATE TABLE x();\nCOPY x FROM stdin;\n1\n", false},
+		{"empty", "", false},
+		{"footer far from the end", pgDumpFooter + "\n" + strings.Repeat("x", 4096), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), nextcloudDumpFile)
+			if err := os.WriteFile(p, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := dumpComplete(p); got != tc.want {
+				t.Errorf("dumpComplete = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

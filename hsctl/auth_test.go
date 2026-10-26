@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -92,6 +95,9 @@ func TestSafeNext(t *testing.T) {
 		`\/evil.com`:        "/admin",
 		"https://evil.com":  "/admin",
 		`/ok/\notauthority`: "/admin", // any backslash is rejected (no in-app path has one)
+		"/\t/evil.com":      "/admin", // browsers strip the tab: //evil.com
+		"/\n/evil.com":      "/admin",
+		"/admin backup":     "/admin",
 	}
 	for in, want := range cases {
 		if got := safeNext(in); got != want {
@@ -135,5 +141,163 @@ func TestWSOriginOK(t *testing.T) {
 				t.Errorf("wsOriginOK(host=%q origin=%q)=%v, want %v", c.host, c.origin, got, c.want)
 			}
 		})
+	}
+}
+
+// TestFlashRoundTrip: an action's result is carried to the next page in a cookie and shown once;
+// a crafted ?msg= link puts nothing on the page.
+func TestFlashRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		err  bool
+	}{
+		{"info", "Mounted at /mnt/backup", false},
+		{"error", "Mount failed: no such device", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			redirectFlash(w, httptest.NewRequest("POST", "/admin/devices/mount", nil), "/admin/devices", tc.msg, tc.err)
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/devices" {
+				t.Fatalf("redirect = %d %q", w.Code, w.Header().Get("Location"))
+			}
+			r := httptest.NewRequest("GET", "/admin/devices?msg=Run+curl+evil+|+sudo+bash", nil)
+			for _, c := range w.Result().Cookies() {
+				r.AddCookie(c)
+			}
+			w2 := httptest.NewRecorder()
+			if f := takeFlash(w2, r); f.Msg != tc.msg || f.Err != tc.err {
+				t.Errorf("takeFlash = %+v, want %q err=%v", f, tc.msg, tc.err)
+			}
+			cleared := false
+			for _, c := range w2.Result().Cookies() {
+				cleared = cleared || (c.Name == flashCookie && c.MaxAge < 0)
+			}
+			if !cleared {
+				t.Error("flash cookie not cleared after showing")
+			}
+			if f := takeFlash(httptest.NewRecorder(), httptest.NewRequest("GET", "/admin?msg=forged", nil)); f.Msg != "" {
+				t.Errorf("a ?msg= link produced a flash: %q", f.Msg)
+			}
+		})
+	}
+}
+
+// TestLoginThrottle: a few wrong passwords are free, then each failure locks the client out for
+// longer; a forged X-Forwarded-For can't escape the per-peer budget; success resets the count.
+func TestLoginThrottle(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		failures  int
+		keys      []string
+		wantWait  time.Duration
+		afterWait time.Duration // checked at now+afterWait
+	}{
+		{"free tries", loginFreeTries, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 0, 0},
+		{"first lockout", loginFreeTries + 1, []string{"client 1.2.3.4", "peer 172.18.0.9"}, loginFirstLock, 0},
+		{"doubles", loginFreeTries + 2, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 2 * loginFirstLock, 0},
+		{"capped and expires", loginFreeTries + 20, []string{"client 1.2.3.4", "peer 172.18.0.9"}, 0, loginMaxLock},
+		{"shared peer lockout stays short", loginPeerFreeTries + 20, []string{"peer 172.18.0.9"}, 0, loginPeerMaxLock},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &uiServer{}
+			for i := 0; i < tc.failures; i++ {
+				s.loginFailed(tc.keys, now)
+			}
+			if got := s.loginBlocked(tc.keys, now.Add(tc.afterWait)); got != tc.wantWait {
+				t.Errorf("wait = %v, want %v", got, tc.wantWait)
+			}
+		})
+	}
+	t.Run("rotating forwarded addresses hit the peer budget", func(t *testing.T) {
+		s := &uiServer{}
+		for i := 0; i < loginPeerFreeTries+1; i++ {
+			s.loginFailed([]string{fmt.Sprintf("client 10.0.0.%d", i), "peer 172.18.0.9"}, now)
+		}
+		if s.loginBlocked([]string{"client 10.9.9.9", "peer 172.18.0.9"}, now) == 0 {
+			t.Error("a fresh forwarded address escaped the peer lockout")
+		}
+	})
+	t.Run("success resets", func(t *testing.T) {
+		s := &uiServer{}
+		keys := []string{"client 1.2.3.4", "peer 172.18.0.9"}
+		for i := 0; i < loginFreeTries+3; i++ {
+			s.loginFailed(keys, now)
+		}
+		s.loginSucceeded(keys)
+		if s.loginBlocked(keys, now) != 0 {
+			t.Error("still blocked after a successful login")
+		}
+	})
+}
+
+// TestSameOrigin: admin POSTs from another origin — another app on the same box — are refused.
+func TestSameOrigin(t *testing.T) {
+	cases := []struct {
+		name, origin, referer string
+		want                  bool
+	}{
+		{"own page over Caddy", "https://10.0.0.5", "", true},
+		{"own page direct", "http://127.0.0.1:8088", "", true},
+		{"sibling app port", "https://10.0.0.5:8444", "", false},
+		{"other site", "https://evil.example", "", false},
+		{"referer only, sibling", "", "https://10.0.0.5:8447/x", false},
+		{"no browser headers (curl)", "", "", true},
+		{"opaque origin", "null", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			if err := (Config{ServerIP: "10.0.0.5", UIPort: 8088}).Save(repo); err != nil {
+				t.Fatal(err)
+			}
+			s := &uiServer{repo: repo}
+			r := httptest.NewRequest("POST", "http://127.0.0.1:8088/admin/run", nil)
+			r.Header.Set("X-Forwarded-Proto", map[bool]string{true: "https", false: ""}[strings.HasPrefix(tc.origin, "https://10.0.0.5")])
+			if strings.HasPrefix(tc.origin, "https://10.0.0.5") {
+				r.Host = "10.0.0.5"
+			}
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if tc.referer != "" {
+				r.Header.Set("Referer", tc.referer)
+			}
+			if got := s.sameOrigin(r); got != tc.want {
+				t.Errorf("sameOrigin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoginBurstIsThrottled: a burst of parallel wrong passwords must hit the lockout — requests
+// queued behind a failure don't get their guess compared anyway.
+func TestLoginBurstIsThrottled(t *testing.T) {
+	s := &uiServer{pass: "right-password", sessions: map[string]time.Time{}, repo: t.TempDir()}
+	codes := make(chan int, 20)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=wrong"))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.RemoteAddr = "10.0.0.7:5555"
+			w := httptest.NewRecorder()
+			s.handleLogin(w, r)
+			codes <- w.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	counts := map[int]int{}
+	for c := range codes {
+		counts[c]++
+	}
+	if counts[http.StatusUnauthorized] > loginFreeTries+1 || counts[http.StatusTooManyRequests] == 0 {
+		t.Errorf("responses %v: want at most %d password checks, the rest throttled", counts, loginFreeTries+1)
 	}
 }

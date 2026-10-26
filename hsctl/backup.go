@@ -3,11 +3,15 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -17,9 +21,10 @@ import (
 )
 
 // Backups use restic: encrypted, deduplicated, snapshotted, many backends (local
-// path, USB, SFTP to another host, S3/Backblaze B2). What we protect:
+// path, USB, SFTP to another host, S3). What we protect:
 //   - a fresh Postgres dump (consistent DB) + every data volume's files
-//   - the per-service .env + setup.conf (so a restore can rebuild the stack)
+//   - the per-service .env, setup.conf and the rest of hsctl's config (so a restore can
+//     rebuild the stack)
 // Volume files live under /var/lib/docker/volumes, so `backup run` needs root
 // (run via sudo, or from the root-owned systemd timer).
 
@@ -69,48 +74,30 @@ const (
 )
 
 type backupCfg struct {
-	Repo          string // restic repository (e.g. /mnt/usb/restic, sftp:user@host:/path, b2:bucket:path)
+	Repo          string // restic repository (e.g. /mnt/usb/restic, sftp:user@host:/path, s3:host/bucket)
 	Retention     string
 	ResticVersion string // pinned restic version; `backup verify` fails if the installed one differs
 	RequireMount  string // if set, a path that MUST be a real mount before any repo op (see requireBackupMount)
 	ReplicaRepo   string // optional second restic repo (off-site) that `backup replicate` copies to
+	NotifyURL     string // optional URL that gets a POST when a backup run fails (ntfy-style)
 }
 
+// backedUpConfigFiles are the repo files (besides each app's .env) every snapshot carries alongside
+// the data: what a rebuild on new hardware needs to come back as it was. (.restic-password isn't
+// one — a snapshot is useless without it, so it must live elsewhere.)
+var backedUpConfigFiles = []string{
+	confFile, "pihole/custom.list", ".ui-password", "services.json", backupConfFile, backupEnvFile,
+}
+
+// backupConfigFiles are the backup settings a run depends on. If one exists but can't be read,
+// loading would fall back to defaults — and back up to the wrong place, or with a new password.
+var backupConfigFiles = []string{backupConfFile, resticPassFile, backupEnvFile}
+
 // backupEnvFile holds cloud-backend credentials restic needs for remote repos —
-// B2_ACCOUNT_ID / B2_ACCOUNT_KEY for Backblaze, AWS_ACCESS_KEY_ID / ... for S3 —
+// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for S3-compatible storage —
 // one KEY=VALUE per line. Optional: local and SFTP destinations don't need it.
 // Lives next to .restic-password, 0600, and is gitignored like it.
 const backupEnvFile = ".backup-env"
-
-// requireBackupMount guards against the classic external-disk failure: when the backup
-// HDD isn't mounted, its mountpoint is just an empty directory on the root filesystem, so
-// restic would create/write a repo THERE — a "successful" backup that silently lives on the
-// system disk instead of the HDD (and splits your history). When REQUIRE_MOUNT is set in
-// backup.conf, we refuse any repo operation unless that path is a real mount, detected by
-// comparing its device id to /'s: a mounted HDD has a different st_dev, an unmounted
-// mountpoint shares root's. Unset = no check (e.g. the default repo that lives on root).
-func requireBackupMount(cfg backupCfg) error {
-	p := cfg.RequireMount
-	if p == "" {
-		return nil
-	}
-	var st syscall.Stat_t
-	if err := syscall.Stat(p, &st); err != nil {
-		return fmt.Errorf("backup disk path %s is missing (is the HDD connected?): %w\n"+
-			"It should auto-mount at boot via /etc/fstab — check `findmnt %s`.", p, err, p)
-	}
-	var root syscall.Stat_t
-	if err := syscall.Stat("/", &root); err != nil {
-		return err
-	}
-	if st.Dev == root.Dev {
-		return fmt.Errorf("backup disk is NOT mounted at %s — that path is currently on the root\n"+
-			"filesystem, so a backup would write to your system disk instead of the HDD.\n"+
-			"Mount it first:  sudo mount %s\n"+
-			"(it should auto-mount at boot via /etc/fstab; verify with `findmnt %s`)", p, p, p)
-	}
-	return nil
-}
 
 func loadBackupCfg(repo string) backupCfg {
 	c := backupCfg{
@@ -127,13 +114,14 @@ func loadBackupCfg(repo string) backupCfg {
 		c.ResticVersion = kv["RESTIC_VERSION"] // empty = no version pinned yet
 		c.RequireMount = kv["REQUIRE_MOUNT"]   // empty = no mount guard (e.g. default repo on root disk)
 		c.ReplicaRepo = kv["REPLICA_REPO"]     // empty = no off-site replica configured
+		c.NotifyURL = kv["NOTIFY_URL"]         // empty = no failure notifications
 	}
 	return c
 }
 
 func (c backupCfg) save(repo string) error {
 	s := fmt.Sprintf(
-		"# hsctl backup config. RESTIC_REPO: local path, sftp:user@host:/path, b2:bucket:path, s3:...\n"+
+		"# hsctl backup config. RESTIC_REPO: local path, sftp:user@host:/path, s3:...\n"+
 			"RESTIC_REPO=%s\nRETENTION=%s\n", c.Repo, c.Retention)
 	if c.ResticVersion != "" {
 		s += "# Pinned restic version. `backup verify` FAILS if the installed restic differs, so a\n" +
@@ -150,6 +138,10 @@ func (c backupCfg) save(repo string) error {
 			"# password). Cloud credentials go in " + backupEnvFile + " (KEY=VALUE per line).\n" +
 			"REPLICA_REPO=" + c.ReplicaRepo + "\n"
 	}
+	if c.NotifyURL != "" {
+		s += "# POSTed a plain-text message when a backup run fails (e.g. an ntfy topic URL).\n" +
+			"NOTIFY_URL=" + c.NotifyURL + "\n"
+	}
 	return writeFile0600(filepath.Join(repo, backupConfFile), s)
 }
 
@@ -159,12 +151,13 @@ func backupCmd() *cobra.Command {
 
 	cfgCmd := &cobra.Command{Use: "config", Short: "Set the backup destination / retention / password",
 		Args: cobra.NoArgs, RunE: runBackupConfig}
-	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp: / b2: / s3:)")
-	cfgCmd.Flags().String("retention", "", "restic forget policy")
-	cfgCmd.Flags().String("password", "", "set the restic repo password (stored in .restic-password)")
+	cfgCmd.Flags().String("repo", "", "restic repository (local path / sftp:user@host:/path / s3:…)")
+	cfgCmd.Flags().String("retention", "", "restic --keep-* options, e.g. '"+retentionExample+"'")
+	cfgCmd.Flags().String("password", "", "set or change the backup password (\"-\" reads it from stdin); changing it re-keys the repository")
 	cfgCmd.Flags().Bool("pin-restic", false, "record the installed restic version as the pinned baseline")
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
-	cfgCmd.Flags().String("replica", "", "off-site replica repository for `backup replicate` (empty string disables)")
+	cfgCmd.Flags().String("replica", "", "off-site replica repository for 'backup replicate' (empty string disables)")
+	cfgCmd.Flags().String("notify-url", "", "URL to POST a message to when a backup fails, e.g. https://ntfy.sh/<topic> (empty string disables)")
 
 	// withRestic wraps a run that needs restic + a loaded config.
 	withRestic := func(run func(repo string, cfg backupCfg) error) func(*cobra.Command, []string) error {
@@ -176,8 +169,11 @@ func backupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := requireReadable(repo, backupConfigFiles...); err != nil {
+				return err
+			}
 			cfg := loadBackupCfg(repo)
-			if err := requireBackupMount(cfg); err != nil {
+			if err := requireBackupMount(repo, cfg); err != nil {
 				return err
 			}
 			return run(repo, cfg)
@@ -185,8 +181,15 @@ func backupCmd() *cobra.Command {
 	}
 
 	initCmd := &cobra.Command{Use: "init", Short: "Create the encrypted restic repo (first time)", Args: cobra.NoArgs,
-		RunE: withRestic(func(repo string, cfg backupCfg) error {
-			ensureResticPassword(repo)
+		RunE: locked("backup init", 0, withRestic(func(repo string, cfg backupCfg) error {
+			if err := refuseInitOnSystemDisk(repo, cfg); err != nil {
+				return err
+			}
+			passFile := filepath.Join(repo, resticPassFile)
+			generated := !fileExists(passFile)
+			if err := ensureResticPassword(repo, cfg); err != nil {
+				return err
+			}
 			// Record the restic version we're initialising with, so `backup verify` can
 			// later catch a restic that drifted (e.g. after a system upgrade).
 			if cfg.ResticVersion == "" {
@@ -196,33 +199,107 @@ func backupCmd() *cobra.Command {
 					fmt.Printf("pinned restic version baseline: %s\n", v)
 				}
 			}
-			return resticRun(repo, cfg, "init")
-		})}
-	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config)", Args: cobra.NoArgs,
-		RunE: withRestic(backupRun)}
+			defer handBackLocalRepo(repo, cfg)
+			if err := resticRun(repo, cfg, "init"); err != nil {
+				// A password generated just now must never outlive a failed init: for a repository
+				// that already exists (only detectable for a remote one by trying), it would stand in
+				// for the lost real password and make every later run fail with "wrong password".
+				if generated {
+					_ = os.Remove(passFile)
+					fmt.Fprintln(os.Stderr, "removed the password generated for this init — nothing was created")
+				}
+				return err
+			}
+			// There's somewhere to back up to now, so the nightly timer can do its job.
+			if !fileExists(filepath.Join(repo, backupConfFile)) {
+				if err := cfg.save(repo); err != nil {
+					return err
+				}
+			}
+			enableBackupTimer()
+			return nil
+		}))}
+	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config) [root]", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// The nightly timer passes --wait, so it waits out a dashboard job or a terminal
+			// command instead of skipping the night's backup.
+			wait, _ := cmd.Flags().GetDuration("wait")
+			// Record every outcome — including a run refused before it started (another operation
+			// holding the lock, disk not mounted, no password) — so a failing nightly backup shows
+			// on the dashboard and, if configured, sends a notification.
+			err := requireRoot("backup run", "it reads Docker's volume files")
+			if err == nil {
+				err = locked("backup run", wait, withRestic(backupRun))(cmd, args)
+			}
+			if repo := repoDir(); isRepo(repo) {
+				recordLastRun(repo, err)
+			}
+			return err
+		}}
+	runCmd.Flags().Duration("wait", 0, "if another hsctl operation is running, wait up to this long for it (e.g. 30m)")
 	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
-		RunE: withRestic(func(repo string, cfg backupCfg) error { return resticRun(repo, cfg, "snapshots") })}
-	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
 		RunE: withRestic(func(repo string, cfg backupCfg) error {
-			return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+			if err := requireResticPassword(repo); err != nil {
+				return err
+			}
+			out, err := resticOutput(repo, cfg, "snapshots")
+			fmt.Print(out)
+			if err != nil {
+				if repoMissing(out) {
+					return fmt.Errorf("there's no backup repository at %s yet — create it with: sudo hsctl backup init", cfg.Repo)
+				}
+				return err
+			}
+			if !strings.Contains(out, "snapshot") || strings.TrimSpace(out) == "" {
+				fmt.Println("no snapshots yet — take one with: sudo hsctl backup run")
+			}
+			return nil
 		})}
+	forgetCmd := &cobra.Command{Use: "forget", Short: "Apply the retention policy and prune", Args: cobra.NoArgs,
+		RunE: locked("backup forget", 0, withRestic(func(repo string, cfg backupCfg) error {
+			defer handBackLocalRepo(repo, cfg)
+			if err := requireResticPassword(repo); err != nil {
+				return err
+			}
+			args, err := forgetArgs(cfg.Retention)
+			if err != nil {
+				return fmt.Errorf("%w\nfix it with: hsctl backup config --retention '%s'", err, retentionExample)
+			}
+			return resticRun(repo, cfg, args...)
+		}))}
 
-	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest) to --target",
-		Args: cobra.MaximumNArgs(1), RunE: runBackupRestore}
-	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/restore)")
+	restoreCmd := &cobra.Command{Use: "restore [snapshot]", Short: "Extract a snapshot (default: latest); --into-volumes puts it back [root]",
+		Args: cobra.MaximumNArgs(1), RunE: locked("backup restore", 0, runBackupRestore)}
+	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/"+defaultRestoreDir+")")
 	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
 
 	verifyCmd := &cobra.Command{Use: "verify", Aliases: []string{"selftest", "test"},
-		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data)",
+		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data) [root]",
 		Args:  cobra.NoArgs, RunE: runBackupVerify}
 	verifyCmd.Flags().String("image", "", "container image for the test fixture (default: a local image)")
 	verifyCmd.Flags().Bool("keep", false, "keep the test volume + temp repo afterwards (for debugging)")
 
 	replicateCmd := &cobra.Command{Use: "replicate", Short: "Copy all snapshots to the off-site replica repo",
-		Args: cobra.NoArgs, RunE: withRestic(runBackupReplicate)}
+		Args: cobra.NoArgs, RunE: locked("backup replicate", 0, withRestic(runBackupReplicate))}
 
-	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, forgetCmd, replicateCmd)
+	checkCmd := &cobra.Command{Use: "check", Short: "Check your REAL backup repository is intact (restic check + re-read a sample of the data)",
+		Args: cobra.NoArgs}
+	checkCmd.RunE = locked("backup check", 0, withRestic(func(repo string, cfg backupCfg) error {
+		if err := requireResticPassword(repo); err != nil {
+			return err
+		}
+		subset, _ := checkCmd.Flags().GetString("read-data-subset")
+		fmt.Printf("checking %s (structure, plus re-reading %s of the stored data)...\n", cfg.Repo, subset)
+		if err := resticRun(repo, cfg, "check", "--read-data-subset="+subset); err != nil {
+			return fmt.Errorf("the backup repository has problems — see restic's output above: %w", err)
+		}
+		fmt.Println("\nthe backup repository is intact.")
+		return nil
+	}))
+	checkCmd.Flags().String("read-data-subset", "5%", "how much stored data to re-read and verify (e.g. 5%, 1/10, or 100% for all)")
+
+	b.AddCommand(cfgCmd, initCmd, runCmd, listCmd, restoreCmd, verifyCmd, checkCmd, forgetCmd, replicateCmd)
 	return b
 }
 
@@ -231,13 +308,32 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Saving over a backup.conf we couldn't read would replace the real destination with defaults.
+	if err := requireReadable(repo, backupConfigFiles...); err != nil {
+		return err
+	}
 	cfg := loadBackupCfg(repo)
 	f := cmd.Flags()
 	if f.Changed("repo") {
+		old := cfg.Repo
 		cfg.Repo, _ = f.GetString("repo")
+		// A destination on an external-disk mountpoint gets the disk guard automatically, so a
+		// backup can't land on the system disk while the disk is unplugged.
+		if !f.Changed("require-mount") {
+			if g, changed := followGuard(cfg.RequireMount, old, cfg.Repo); changed {
+				cfg.RequireMount = g
+				if g != "" {
+					fmt.Printf("set the backup-disk guard to %s: backups refuse to run unless a disk is mounted there\n"+
+						"(turn it off with --require-mount \"\")\n", g)
+				}
+			}
+		}
 	}
 	if f.Changed("retention") {
 		cfg.Retention, _ = f.GetString("retention")
+		if _, err := parseRetention(cfg.Retention); err != nil {
+			return err
+		}
 	}
 	if f.Changed("require-mount") {
 		cfg.RequireMount, _ = f.GetString("require-mount") // empty string clears the guard
@@ -245,8 +341,15 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 	if f.Changed("replica") {
 		cfg.ReplicaRepo, _ = f.GetString("replica") // empty string clears the replica
 	}
-	if pw, _ := f.GetString("password"); pw != "" {
-		if err := writeFile0600(filepath.Join(repo, resticPassFile), pw+"\n"); err != nil {
+	if f.Changed("notify-url") {
+		cfg.NotifyURL, _ = f.GetString("notify-url") // empty string turns notifications off
+	}
+	if v, _ := f.GetString("password"); v != "" {
+		pw, err := readPasswordArg(v)
+		if err != nil {
+			return err
+		}
+		if err := setResticPassword(repo, cfg, pw, os.Stdout); err != nil {
 			return err
 		}
 	}
@@ -262,22 +365,35 @@ func runBackupConfig(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Printf("saved %s (repo=%s)\n", backupConfFile, cfg.Repo)
-	fmt.Println("next: hsctl backup init   then   hsctl backup run   (run needs root for volume files)")
+	if w := guardMismatch(cfg); w != "" {
+		fmt.Fprintln(os.Stderr, "warning: "+w)
+	}
+	fmt.Println("next: sudo hsctl backup init   then   sudo hsctl backup run   (they read Docker's volume files)")
 	return nil
 }
 
 func backupRun(repo string, cfg backupCfg) error {
-	ensureResticPassword(repo)
+	defer handBackLocalRepo(repo, cfg)
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
+	if err := requireDocker(); err != nil {
+		return err
+	}
 	if cur, err := resticVersion(); err == nil && cfg.ResticVersion != "" && cur != cfg.ResticVersion {
 		fmt.Fprintf(os.Stderr, "warning: restic %s differs from pinned %s — the `apt-mark hold restic` "+
 			"pin may have been overridden by a system upgrade. Run `hsctl backup verify` to re-test.\n",
 			cur, cfg.ResticVersion)
 	}
 	staging := filepath.Join(repo, "backups", "staging")
-	if err := os.MkdirAll(staging, 0700); err != nil {
+	if err := mkdirAllOwned(staging, 0700); err != nil {
 		return err
 	}
-	dumpNextcloudDB(repo, staging) // best-effort; warns inside
+	var problems []string // things that went wrong but still left a usable snapshot
+	if err := dumpNextcloudDB(repo, staging); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		problems = append(problems, err.Error())
+	}
 	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments,
 	// keys and config are static files backed up live with the volume below — so the stop stays
 	// ~1s no matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
@@ -306,13 +422,15 @@ func backupRun(repo string, cfg backupCfg) error {
 		paths = append(paths, mp)
 	}
 	paths = append(paths, staging)
-	for _, s := range services {
+	for _, s := range services { // every app's .env: secrets, settings and any applied image update
 		if p := filepath.Join(repo, s, ".env"); fileExists(p) {
 			paths = append(paths, p)
 		}
 	}
-	if p := filepath.Join(repo, confFile); fileExists(p) {
-		paths = append(paths, p)
+	for _, rel := range backedUpConfigFiles {
+		if p := filepath.Join(repo, rel); fileExists(p) {
+			paths = append(paths, p)
+		}
 	}
 
 	args := []string{"backup", "--tag", "homeserver"}
@@ -321,13 +439,37 @@ func backupRun(repo string, cfg backupCfg) error {
 		args = append(args, "--exclude", vwExclude)
 	}
 	if err := resticRun(repo, cfg, append(args, paths...)...); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 3 {
+			// restic saved a snapshot, but some files couldn't be read. Don't prune behind an
+			// incomplete snapshot, and say so plainly instead of "exit status 3".
+			return fmt.Errorf("the snapshot is INCOMPLETE — restic couldn't read some files (see above); " +
+				"old snapshots were not pruned")
+		}
 		return err
 	}
 	// The snapshot is safely written — record that now, so a later prune failure doesn't
 	// make the dashboard claim the backup itself is overdue.
 	stampLastBackup(repo)
 	if cfg.Retention != "" {
-		return resticRun(repo, cfg, append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+		args, err := forgetArgs(cfg.Retention)
+		if err != nil {
+			return fmt.Errorf("the snapshot was saved, but old ones were NOT pruned: %w\n"+
+				"fix it with: hsctl backup config --retention '%s'", err, retentionExample)
+		}
+		if err := resticRun(repo, cfg, args...); err != nil {
+			return err
+		}
+	}
+	// The off-site copy goes with every backup — nightly included — so it never quietly falls behind.
+	if cfg.ReplicaRepo != "" {
+		fmt.Println("\n== off-site replica ==")
+		if err := runBackupReplicate(repo, cfg); err != nil {
+			problems = append(problems, "copying it off-site failed: "+firstLine(err.Error()))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("the snapshot was saved, but with problems:\n  %s", strings.Join(problems, "\n  "))
 	}
 	return nil
 }
@@ -339,13 +481,21 @@ func backupRun(repo string, cfg backupCfg) error {
 func runBackupReplicate(repo string, cfg backupCfg) error {
 	if cfg.ReplicaRepo == "" {
 		return fmt.Errorf("no off-site replica configured. Set one first:\n"+
-			"  hsctl backup config --replica b2:bucket:homeserver   (or sftp:user@host:/path, s3:...)\n"+
-			"Cloud credentials (e.g. B2_ACCOUNT_ID / B2_ACCOUNT_KEY) go in %s, one KEY=VALUE per line.",
+			"  hsctl backup config --replica sftp:user@nas:/backups   (or s3:host/bucket, or a local path)\n"+
+			"Cloud credentials (e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) go in %s, one KEY=VALUE per line.",
 			backupEnvFile)
 	}
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
 	pass := filepath.Join(repo, resticPassFile)
-	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe.
-	if err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
+	// First run: create the replica repo. `cat config` is the cheap does-it-exist probe — but only
+	// "no repository there" means create one; anything else (wrong password, host unreachable)
+	// is the real problem to report, not a reason to try `init` over an existing repo.
+	if out, err := resticQuiet(repo, cfg.ReplicaRepo, "cat", "config"); err != nil {
+		if !repoMissing(out) {
+			return fmt.Errorf("can't open the replica %s: %s", cfg.ReplicaRepo, firstLine(out))
+		}
 		fmt.Println("replica repo not initialized yet — creating it...")
 		if err := resticAt(repo, cfg.ReplicaRepo, "init"); err != nil {
 			return fmt.Errorf("initialize replica %s: %w", cfg.ReplicaRepo, err)
@@ -356,19 +506,42 @@ func runBackupReplicate(repo string, cfg backupCfg) error {
 		"--from-repo", cfg.Repo, "--from-password-file", pass); err != nil {
 		return fmt.Errorf("copy to replica: %w", err)
 	}
+	stampFile(repo, lastReplicaFile)
 	if cfg.Retention != "" {
-		return resticAt(repo, cfg.ReplicaRepo,
-			append([]string{"forget", "--prune"}, strings.Fields(cfg.Retention)...)...)
+		args, err := forgetArgs(cfg.Retention)
+		if err != nil {
+			return fmt.Errorf("copied, but the replica was NOT pruned: %w", err)
+		}
+		return resticAt(repo, cfg.ReplicaRepo, args...)
 	}
 	return nil
 }
 
-// resticQuiet runs restic against the given repository, discarding output — for probes
-// whose failure is expected (does the replica exist yet?).
-func resticQuiet(repo, repository string, args ...string) error {
+// handBackLocalRepo gives a restic repository that lives inside the homeserver repo (the default
+// backups/restic) back to the admin after root wrote to it, so `hsctl backup list` and plain
+// `restic` work without sudo. A repo elsewhere (an external disk under /mnt, sftp:, …) is left
+// exactly as restic made it.
+func handBackLocalRepo(repo string, cfg backupCfg) {
+	if !filepath.IsAbs(cfg.Repo) || !within(cfg.Repo, repo) {
+		return
+	}
+	// Walk from the repo's top-level folder that holds it (backups/, which restic may have created
+	// itself), so the folders in between are handed back too.
+	rel, err := filepath.Rel(repo, cfg.Repo)
+	if err != nil || rel == "." {
+		return
+	}
+	top, _, _ := strings.Cut(rel, string(filepath.Separator))
+	handBackTree(filepath.Join(repo, top), repo)
+}
+
+// resticQuiet runs restic against the given repository and returns its combined output instead
+// of showing it — for probes whose failure is expected (does the replica exist yet?).
+func resticQuiet(repo, repository string, args ...string) (string, error) {
 	c := exec.Command("restic", args...)
 	c.Env = backupEnv(repo, repository)
-	return c.Run()
+	out, err := c.CombinedOutput()
+	return string(out), err
 }
 
 // lastBackupFile records (relative to the repo) when the last successful backup snapshot
@@ -377,10 +550,29 @@ func resticQuiet(repo, repository string, args ...string) error {
 // backup goes through backupRun (CLI, web, timer), so the stamp tracks them all.
 const lastBackupFile = "backups/.last-backup"
 
-func stampLastBackup(repo string) {
-	path := filepath.Join(repo, lastBackupFile)
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
+func stampLastBackup(repo string) { stampFile(repo, lastBackupFile) }
+
+// lastReplicaFile records when the off-site replica last received a copy.
+const lastReplicaFile = "backups/.last-replica"
+
+// stampFile writes the current time into a repo-relative stamp file.
+func stampFile(repo, rel string) {
+	path := filepath.Join(repo, rel)
+	_ = mkdirAllOwned(filepath.Dir(path), 0755)
 	_ = writeFile0644(path, time.Now().Format(time.RFC3339)+"\n")
+}
+
+// stampAge reads a stamp file as "3 hours ago", or "" when there isn't one.
+func stampAge(repo, rel string) string {
+	b, err := os.ReadFile(filepath.Join(repo, rel))
+	if err != nil {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return ""
+	}
+	return humanAge(time.Since(t))
 }
 
 // backupFreshness is the dashboard's view of how recent the last backup is.
@@ -388,15 +580,30 @@ type backupFreshness struct {
 	Known bool   // a stamp exists
 	Age   string // "3 days ago"
 	Stale bool   // older than backupStaleAfter — time to warn
+	// The most recent run, when it FAILED after the last good one (a run that refused to start —
+	// disk not mounted, say — counts).
+	Failed    bool
+	FailedAge string
+	FailedErr string
 }
 
-// backupStaleAfter is when the dashboard starts flagging the backup as overdue. A week
-// matches the default retention's daily-keep window.
-const backupStaleAfter = 7 * 24 * time.Hour
+// backupStaleAfter is when the dashboard starts flagging the backup as overdue. Backups run
+// nightly, so a day and a half without one means at least one night was missed.
+const backupStaleAfter = 36 * time.Hour
 
 func backupFreshnessFor(repo string) backupFreshness {
 	t, ok := lastBackupTime(repo)
-	return freshness(t, ok, time.Now())
+	f := freshness(t, ok, time.Now())
+	if r, ok := readLastRun(repo); ok && !r.OK && r.Time.After(t) {
+		f.Failed, f.FailedAge, f.FailedErr = true, humanAge(time.Since(r.Time)), firstLine(r.Error)
+	}
+	return f
+}
+
+// firstLine returns s up to its first newline (a long error's headline).
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
 }
 
 // freshness is the pure core of backupFreshnessFor, split out for tests.
@@ -434,36 +641,60 @@ func lastBackupTime(repo string) (time.Time, bool) {
 	return t, true
 }
 
-// runBackupRestore extracts a snapshot to a directory (default <repo>/restore). It does
+// defaultRestoreDir is where a snapshot is extracted unless --target says otherwise: inside
+// backups/, which is git-ignored (the extraction holds plaintext secrets and databases).
+const defaultRestoreDir = "backups/restore"
+
+// runBackupRestore extracts a snapshot to a directory (default <repo>/backups/restore). It does
 // NOT overwrite live data — putting volumes/DB back into the stack is the manual final
 // step (printed below, and in README -> Backup & restore), because it's destructive.
 func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if err := requireRestic(); err != nil {
 		return err
 	}
+	if into, _ := cmd.Flags().GetBool("into-volumes"); into {
+		if err := requireRoot("backup restore --into-volumes", "it writes Docker's volume files"); err != nil {
+			return err
+		}
+	}
 	repo, err := requireRepoDir()
 	if err != nil {
 		return err
 	}
+	if err := requireReadable(repo, backupConfigFiles...); err != nil {
+		return err
+	}
 	cfg := loadBackupCfg(repo)
-	if err := requireBackupMount(cfg); err != nil {
+	if err := requireBackupMount(repo, cfg); err != nil {
 		return err
 	}
 	target, _ := cmd.Flags().GetString("target")
 	userTarget := cmd.Flags().Changed("target") && strings.TrimSpace(target) != ""
 	if target == "" {
-		target = filepath.Join(repo, "restore")
+		target = filepath.Join(repo, defaultRestoreDir)
+	}
+	into, _ := cmd.Flags().GetBool("into-volumes")
+	// Putting back from a folder that already holds files would copy those leftovers into the
+	// live volumes too (restic restore only adds files). Only the default scratch folder is ours
+	// to empty; a --target you chose must start out empty.
+	if userTarget && into {
+		if entries, err := os.ReadDir(target); err == nil && len(entries) > 0 {
+			return fmt.Errorf("--target %s isn't empty — with --into-volumes, anything already in it would be "+
+				"copied into the live volumes too. Use an empty folder (or leave --target off)", target)
+		}
 	}
 	snap := "latest"
 	if len(args) > 0 {
 		snap = args[0]
 	}
-	ensureResticPassword(repo)
+	if err := requireResticPassword(repo); err != nil {
+		return err
+	}
 	// A user-supplied --target is the operator's own directory: extract INTO it without wiping
 	// (restic overlays). Only the default reusable scratch dir gets emptied first, so a prior
 	// extraction there can't contaminate an --into-volumes put-back.
 	if userTarget {
-		if err := os.MkdirAll(target, 0700); err != nil {
+		if err := mkdirAllOwned(target, 0700); err != nil {
 			return err
 		}
 	} else if err := prepareRestoreTarget(target); err != nil {
@@ -474,7 +705,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nExtracted snapshot %q to %s (DB dump + volume data + config files).\n", snap, target)
 
-	if into, _ := cmd.Flags().GetBool("into-volumes"); into {
+	if into {
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
 			fmt.Println("\n--into-volumes will STOP the stack, WIPE each data volume, and overwrite it")
@@ -484,13 +715,25 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 		}
-		return restoreIntoVolumes(repo, target)
+		err := restoreIntoVolumes(repo, target)
+		// The extraction holds plaintext copies of every secret and database; whether the put-back
+		// worked or not, the snapshot still has it all, so the copy goes. (A --target you chose is
+		// yours to keep.)
+		if !userTarget {
+			if rerr := os.RemoveAll(target); rerr == nil {
+				fmt.Println("\nremoved the extracted copy at", target)
+			}
+		}
+		return err
 	}
 
-	fmt.Println("To put it back into the stack (disaster recovery), or just run `hsctl backup restore --into-volumes`:")
+	fmt.Println("It holds plaintext copies of your data and secrets — delete it when you're done.")
+	fmt.Println("To put it back into the stack (disaster recovery), or just run `sudo hsctl backup restore --into-volumes`:")
 	fmt.Println("  1. hsctl down")
-	fmt.Printf("  2. copy each volume's files back, e.g.  cp -a %s/var/lib/docker/volumes/<name>/_data/. \\\n", target)
-	fmt.Println("       /var/lib/docker/volumes/<name>/_data/   (this restores the Postgres DB volume too)")
+	fmt.Println("  2. for each volume, EMPTY it first (so deleted files don't come back), then copy the snapshot's files in:")
+	fmt.Println("       sudo find /var/lib/docker/volumes/<name>/_data -mindepth 1 -delete")
+	fmt.Printf("       sudo cp -a %s/var/lib/docker/volumes/<name>/_data/. /var/lib/docker/volumes/<name>/_data/\n", target)
+	fmt.Println("     (this restores the Postgres DB volume too)")
 	fmt.Println("  3. hsctl up")
 	fmt.Println("  Vaultwarden: step 2 restores its volume (attachments/keys) but NOT its DB — the")
 	fmt.Println("  consistent SQLite fileset (copied during a brief stop) is in backups/staging/vaultwarden/.")
@@ -498,14 +741,14 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	fmt.Println("       cp -a <target>/.../backups/staging/vaultwarden/db.sqlite3* \\")
 	fmt.Println("            /var/lib/docker/volumes/vaultwarden_vw-data/_data/")
 	fmt.Println("  (If staging was skipped at backup time, the volume already includes its DB — nothing to overlay.)")
-	fmt.Println("  Nextcloud: a consistent SQL dump is also in backups/staging/nextcloud-db.sql — only")
-	fmt.Println("  needed as a fallback (import into a fresh nextcloud-db) if the restored DB volume won't start.")
+	fmt.Println("  Nextcloud: the database volume was copied while Postgres ran; the consistent copy is the")
+	fmt.Println("  SQL dump in backups/staging/nextcloud-db.sql (`--into-volumes` rebuilds the database from it).")
 	return nil
 }
 
 // prepareRestoreTarget makes target an empty directory before `restic restore` writes into it.
 // restic restore is ADDITIVE — it won't remove files already in the target that aren't in the
-// snapshot — and we reuse a fixed target (<repo>/restore) across restores. Without wiping first,
+// snapshot — and we reuse a fixed target (<repo>/backups/restore) across restores. Without wiping first,
 // leftovers from an earlier extraction (individual files, or a whole volume dir) get copied into
 // the live volumes by restoreIntoVolumes, resurrecting deleted data or even a volume not in the
 // requested snapshot. Guarded so a blank/mistyped target can't wipe a system path.
@@ -515,107 +758,204 @@ func prepareRestoreTarget(target string) error {
 		return fmt.Errorf("refusing to use unsafe restore target %q", target)
 	}
 	if err := os.RemoveAll(clean); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("an earlier extraction run as root is still in %s and this user can't remove it — "+
+				"it holds plaintext copies of your data: sudo rm -rf %s", clean, clean)
+		}
 		return fmt.Errorf("clearing restore target %s: %w", clean, err)
 	}
-	return os.MkdirAll(clean, 0700)
+	return mkdirAllOwned(clean, 0700)
 }
 
-// restoreSnapshotIntoVolumes extracts a snapshot to <repo>/restore and writes every volume
-// back in place (the full DR put-back). Shared by the CLI `restore --into-volumes` and the
-// web UI's Restore button. Destructive — see restoreIntoVolumes.
-func restoreSnapshotIntoVolumes(repo string, cfg backupCfg, snap string) error {
-	if err := requireRestic(); err != nil {
-		return err
+// restorePlan is what a snapshot extracted under a target holds, worked out before anything is
+// stopped or wiped.
+type restorePlan struct {
+	volsRoot  string   // <target>/var/lib/docker/volumes
+	volumes   []string // volume names with a _data dir to put back
+	vwInLoop  bool     // vaultwarden_vw-data is among them
+	vwStaging string   // the staged Vaultwarden DB fileset, "" when the snapshot has none
+	ncDump    string   // a complete Nextcloud database dump, "" if the snapshot has none
+	ncVolume  string   // which Nextcloud database volume the snapshot holds, "" if none
+}
+
+// planRestore checks an extracted snapshot BEFORE the stack is touched: a snapshot we can't use
+// must leave the running stack alone. It finds Vaultwarden's staged database wherever the backup
+// was taken — the snapshot stores the repo's absolute path at backup time, which differs on a new
+// machine or a moved repo — and refuses a snapshot whose Vaultwarden volume came without its
+// database, instead of restoring an empty password vault and calling it a success.
+func planRestore(target string) (restorePlan, error) {
+	p := restorePlan{volsRoot: filepath.Join(target, "var", "lib", "docker", "volumes")}
+	entries, err := os.ReadDir(p.volsRoot)
+	if err != nil {
+		return p, fmt.Errorf("no volume data found in the snapshot (looked for %s): %w — nothing was changed", p.volsRoot, err)
 	}
-	if err := requireBackupMount(cfg); err != nil {
-		return err
+	for _, e := range entries {
+		if e.IsDir() && fileExists(filepath.Join(p.volsRoot, e.Name(), "_data")) {
+			p.volumes = append(p.volumes, e.Name())
+		}
 	}
-	if snap == "" {
-		snap = "latest"
+	p.vwInLoop = slices.Contains(p.volumes, "vaultwarden_vw-data")
+	if staging := findStaging(target); staging != "" {
+		if d := filepath.Join(staging, "vaultwarden"); fileExists(d) {
+			p.vwStaging = d
+		}
+		// An older hsctl could leave a truncated dump behind; only a complete one is trusted.
+		if d := filepath.Join(staging, nextcloudDumpFile); dumpComplete(d) {
+			p.ncDump = d
+		}
 	}
-	ensureResticPassword(repo)
-	target := filepath.Join(repo, "restore")
-	if err := prepareRestoreTarget(target); err != nil {
-		return err
+	for _, v := range nextcloudDBVolumes {
+		if slices.Contains(p.volumes, v) {
+			p.ncVolume = v
+			break
+		}
 	}
-	if err := resticRun(repo, cfg, "restore", snap, "--target", target); err != nil {
-		return err
+	if p.ncVolume != "" && p.ncVolume != nextcloudDBVolumes[0] {
+		// A snapshot from before the move to Postgres 18: its database is in a volume this stack no
+		// longer runs, in a format Postgres 18 can't open. Putting it back would report success
+		// and leave Nextcloud on an empty database.
+		return p, fmt.Errorf("the snapshot's Nextcloud database is in the old %s volume (Postgres before 18), "+
+			"which this stack no longer uses — restore it by hand: see docs/backup-restore.md "+
+			"(Manual restore); nothing was changed", p.ncVolume)
 	}
-	return restoreIntoVolumes(repo, target)
+	if len(p.volumes) == 0 && p.vwStaging == "" {
+		return p, fmt.Errorf("the snapshot holds no volume data under %s — nothing was changed", p.volsRoot)
+	}
+	if p.vwInLoop && !fileExists(filepath.Join(p.volsRoot, "vaultwarden_vw-data", "_data", "db.sqlite3")) &&
+		(p.vwStaging == "" || !fileExists(filepath.Join(p.vwStaging, "db.sqlite3"))) {
+		return p, fmt.Errorf("the snapshot has Vaultwarden's files but not its database (no db.sqlite3 in the " +
+			"volume and no staged copy under backups/staging/vaultwarden) — refusing to restore an empty " +
+			"password vault; nothing was changed")
+	}
+	return p, nil
+}
+
+// findStaging returns the directory under target that holds the backup's staged databases
+// (…/backups/staging: Vaultwarden's SQLite fileset and Nextcloud's dump), wherever the repo lived
+// when the backup was taken. The volume tree is skipped: it's big, and staging is never inside it.
+func findStaging(target string) string {
+	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
+	suffix := string(filepath.Separator) + filepath.Join("backups", "staging")
+	found := ""
+	_ = filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if path == volsRoot {
+			return filepath.SkipDir
+		}
+		if strings.HasSuffix(path, suffix) {
+			found = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // restoreIntoVolumes is the automated disaster-recovery put-back: given an already-extracted
 // snapshot under `target`, it writes every backed-up volume's data back into the live Docker
 // volumes and brings the stack up. DESTRUCTIVE — it stops the stack and wipes each target
 // volume before copying. This is the one-command form of the manual steps `restore` prints,
-// including the Vaultwarden special case (its data is in staging/, not a volume dir).
-func restoreIntoVolumes(repo, target string) error {
+// including the Vaultwarden special case (its database is in staging, not in its volume).
+func restoreIntoVolumes(repo, target string) (err error) {
+	plan, err := planRestore(target)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nthe snapshot holds %d volume(s): %s\n", len(plan.volumes), strings.Join(plan.volumes, " "))
+
 	fmt.Println("\n== stopping the stack ==")
-	if err := cmdDown(false); err != nil {
+	if err := cmdDown(false, false); err != nil {
 		return fmt.Errorf("stack down: %w", err)
 	}
+	// From here on the stack is down. If anything fails, say exactly what was and wasn't put back,
+	// and bring Caddy up so the dashboard — the only way in from the LAN — shows the failure.
+	var done []string
+	restoredAll := false
+	defer func() {
+		if err == nil {
+			return
+		}
+		if restoredAll {
+			fmt.Fprintln(os.Stderr, "\nEvery volume was restored, but the stack didn't fully start — see above.")
+			return // cmdUp always starts Caddy, even past a failed app
+		}
+		var left []string
+		for _, v := range plan.volumes {
+			if !slices.Contains(done, v) {
+				left = append(left, v)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\nrestore failed part-way. Restored: %s. NOT restored: %s.\n", listOrNone(done), listOrNone(left))
+		fmt.Fprintln(os.Stderr, "The apps are stopped. Bringing Caddy back up so the dashboard is reachable...")
+		_ = ensureEdgeNetwork()
+		_ = dockerRun(filepath.Join(repo, "caddy"), composeUpArgs()...)
+	}()
 
-	// Every volume captured in the snapshot is under <target>/var/lib/docker/volumes/<name>/_data.
-	// This now INCLUDES vaultwarden_vw-data (its attachments/keys/config) — but NOT its db.sqlite3,
-	// which was excluded from the volume backup and lives in staging (overlaid below).
-	volsRoot := filepath.Join(target, "var", "lib", "docker", "volumes")
-	entries, err := os.ReadDir(volsRoot)
-	if err != nil {
-		return fmt.Errorf("no volume data found in snapshot at %s: %w", volsRoot, err)
-	}
-	restored := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, name := range plan.volumes {
+		if err := restoreOneVolume(repo, name, filepath.Join(plan.volsRoot, name, "_data")); err != nil {
+			return fmt.Errorf("restore volume %s: %w", name, err)
 		}
-		src := filepath.Join(volsRoot, e.Name(), "_data")
-		if !fileExists(src) {
-			fmt.Fprintf(os.Stderr, "skip %s (no _data in snapshot)\n", e.Name())
-			continue
-		}
-		if err := restoreOneVolume(repo, e.Name(), src); err != nil {
-			return fmt.Errorf("restore volume %s: %w", e.Name(), err)
-		}
-		restored++
+		done = append(done, name)
 	}
 
-	// Vaultwarden — handle both snapshot layouts (the snapshot stores the repo's absolute path,
-	// so staging lands under <target>/<repo>/backups/staging/vaultwarden):
+	// Vaultwarden — handle both snapshot layouts:
 	//   - NEW: the volume (attachments/keys, no DB) was restored by the loop above; overlay the
-	//     consistent db.sqlite3 from staging onto it.
+	//     consistent db.sqlite3 fileset from staging onto it.
 	//   - OLD: the whole volume lives in staging (and isn't in the volume loop) — restore it whole.
-	// If staging is absent entirely, Vaultwarden was down at backup time and its DB was in the
-	// volume backup above, so there's nothing to do.
-	vwStaging := filepath.Join(target, repo, "backups", "staging", "vaultwarden")
-	switch vwInLoop := fileExists(filepath.Join(volsRoot, "vaultwarden_vw-data", "_data")); {
-	case vwInLoop:
-		if fileExists(filepath.Join(vwStaging, "db.sqlite3")) {
-			mp, err := volumeMountpoint(repo, "vaultwarden_vw-data")
-			if err != nil {
-				return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
-			}
-			// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL.
-			for _, suf := range dbFilesetSuffixes {
-				f := filepath.Join(vwStaging, "db.sqlite3"+suf)
-				if !fileExists(f) {
-					continue
-				}
-				if err := copyFile(f, filepath.Join(mp, "db.sqlite3"+suf)); err != nil {
-					return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
-				}
-			}
-			fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
+	// With no staged copy, Vaultwarden was down at backup time and its DB is in the volume itself.
+	switch {
+	case plan.vwInLoop && plan.vwStaging != "" && fileExists(filepath.Join(plan.vwStaging, "db.sqlite3")):
+		mp, err := volumeMountpoint(repo, "vaultwarden_vw-data")
+		if err != nil {
+			return fmt.Errorf("cannot overlay the Vaultwarden DB: %w", err)
 		}
-	case fileExists(vwStaging):
+		// Overlay the whole staged fileset (main + -wal + -shm) so SQLite replays any WAL, owned
+		// like the volume it lands in (the staged copy belongs to the admin, not the container).
+		vuid, vgid, ok := ownerOf(mp)
+		for _, suf := range dbFilesetSuffixes {
+			f := filepath.Join(plan.vwStaging, "db.sqlite3"+suf)
+			if !fileExists(f) {
+				continue
+			}
+			dst := filepath.Join(mp, "db.sqlite3"+suf)
+			if err := copyFile(f, dst); err != nil {
+				return fmt.Errorf("overlay vaultwarden db.sqlite3%s: %w", suf, err)
+			}
+			if ok {
+				_ = os.Lchown(dst, vuid, vgid)
+			}
+		}
+		fmt.Println("  restored vaultwarden SQLite fileset (db.sqlite3 + WAL)")
+	case !plan.vwInLoop && plan.vwStaging != "":
 		// Older snapshot: staging holds the entire volume.
-		if err := restoreOneVolume(repo, "vaultwarden_vw-data", vwStaging); err != nil {
+		if err := restoreOneVolume(repo, "vaultwarden_vw-data", plan.vwStaging); err != nil {
 			return fmt.Errorf("restore vaultwarden (legacy staging layout): %w", err)
 		}
-		restored++
+		done = append(done, "vaultwarden_vw-data")
 	}
 
-	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", restored)
+	// Rebuild Nextcloud's database from the consistent dump (the raw volume was copied live) — only
+	// into the volume the compose file actually runs on.
+	if plan.ncDump != "" && plan.ncVolume == nextcloudDBVolumes[0] {
+		fmt.Println("\n== nextcloud database ==")
+		if err := restoreNextcloudDBFromDump(repo, plan.ncDump, plan.ncVolume, filepath.Join(plan.volsRoot, plan.ncVolume, "_data")); err != nil {
+			return err
+		}
+	}
+
+	restoredAll = true
+	fmt.Printf("\nrestored %d volume(s). starting the stack...\n\n== starting the stack ==\n", len(done))
 	return cmdUp()
+}
+
+// listOrNone joins names for a message, or says "none".
+func listOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // verifyRestoreIntoVolume proves the destructive put-back primitive that `restore --into-volumes`
@@ -703,6 +1043,9 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 	if err := requireRestic(); err != nil {
 		return err
 	}
+	if err := requireRoot("backup verify", "it reads Docker's volume files"); err != nil {
+		return err
+	}
 	repo, err := requireRepoDir()
 	if err != nil {
 		return err
@@ -753,24 +1096,43 @@ func runBackupVerify(cmd *cobra.Command, _ []string) error {
 		{"Vaultwarden — WAL not dropped (db+wal+shm fileset)", func() error { return verifyVaultwardenWAL(keep) }},
 		{"Nextcloud — database (pg_dump -> restic -> import)", func() error { return verifyNextcloudDB(repo, keep) }},
 	}
-	failed := 0
+	failed, skips := 0, 0
 	for _, t := range tests {
 		fmt.Printf("\n========== %s ==========\n", t.name)
-		if err := t.run(); err != nil {
+		err := t.run()
+		var sk skipErr
+		switch {
+		case errors.As(err, &sk):
+			fmt.Printf("SKIPPED: %s\n  %s\n", t.name, sk.why)
+			skips++
+		case err != nil:
 			fmt.Printf("FAIL: %s\n  %v\n", t.name, err)
 			failed++
-		} else {
+		default:
 			fmt.Printf("PASS: %s\n", t.name)
 		}
 	}
-	fmt.Printf("\n========== verify: %d/%d passed ==========\n", len(tests)-failed, len(tests))
+	passed := len(tests) - failed - skips
+	fmt.Printf("\n========== verify: %d passed, %d failed, %d skipped ==========\n", passed, failed, skips)
 	if failed > 0 {
 		return fmt.Errorf("%d backup self-test(s) FAILED — see above", failed)
 	}
+	if skips > 0 {
+		fmt.Println("Not everything was tested — see the SKIPPED checks above for what they need.")
+		return nil
+	}
 	fmt.Println("Backups verified end-to-end: restic round-trips data, Vaultwarden boots from a")
 	fmt.Println("restored volume with its DB intact, and the Nextcloud DB dump restores cleanly.")
+	fmt.Println("(This tests the backup MECHANISM on throwaway data. To check your real backups, run: sudo hsctl backup check)")
 	return nil
 }
+
+// skipErr marks a self-test that couldn't run — reported as SKIPPED, never counted as a pass.
+type skipErr struct{ why string }
+
+func (e skipErr) Error() string { return "skipped: " + e.why }
+
+func skipped(why string) error { return skipErr{why} }
 
 // newIsolatedRepo sets up a fresh restic repo under work with its own password and returns
 // a runner bound to it — so each sub-test stays isolated from the real backup repo.
@@ -862,8 +1224,7 @@ func verifyVolumeRoundTrip(repo, image string, keep bool) error {
 func verifyVaultwarden(repo string, keep bool) error {
 	image := containerImage(repo, "vaultwarden")
 	if image == "" {
-		fmt.Println("  SKIP: vaultwarden container not found (can't determine its image)")
-		return nil
+		return skipped("the vaultwarden container isn't there, so its image is unknown — start the stack (hsctl up) to include this check")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-vw-")
 	if err != nil {
@@ -997,8 +1358,7 @@ func verifyVaultwarden(repo string, keep bool) error {
 // loses the row, but the full fileset (db + -wal + -shm) preserves it. Needs sqlite3; skips if absent.
 func verifyVaultwardenWAL(keep bool) error {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
-		fmt.Println("  SKIP: sqlite3 not installed (can't build a WAL fixture)")
-		return nil
+		return skipped("sqlite3 isn't installed (needed to build the WAL test database): sudo apt-get install -y sqlite3")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-wal-")
 	if err != nil {
@@ -1046,8 +1406,7 @@ func verifyVaultwardenWAL(keep bool) error {
 func verifyNextcloudDB(repo string, keep bool) error {
 	image := containerImage(repo, "nextcloud-db")
 	if image == "" {
-		fmt.Println("  SKIP: nextcloud-db container not found (can't determine its Postgres image)")
-		return nil
+		return skipped("the nextcloud-db container isn't there, so its Postgres image is unknown — start the stack (hsctl up) to include this check")
 	}
 	work, err := os.MkdirTemp("", "hsctl-verify-db-")
 	if err != nil {
@@ -1236,6 +1595,15 @@ var dbFilesetSuffixes = []string{"", "-wal", "-shm"}
 // and in restoreIntoVolumes (which overlays the staged fileset onto the restored volume).
 func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	const svc = "vaultwarden"
+	// Clear the last run's copy FIRST, whatever happens next: a snapshot taken while Vaultwarden is
+	// stopped carries its database in the volume, and a stale staged copy beside it would be laid
+	// over that newer database on restore. Every path below that doesn't finish staging also
+	// leaves the folder gone, never half-filled.
+	dest := filepath.Join(staging, "vaultwarden")
+	if err := os.RemoveAll(dest); err != nil {
+		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
+		return ""
+	}
 	if containerState(repo, svc) != "running" {
 		return "" // stack down: the volume (incl. DB) isn't being written, so the live backup is consistent
 	}
@@ -1245,16 +1613,29 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		fmt.Fprintf(os.Stderr, "vaultwarden: data volume not found, backing up live volume as-is: %v\n", err)
 		return ""
 	}
-	dest := filepath.Join(staging, "vaultwarden")
-	if err := os.RemoveAll(dest); err != nil { // clear a prior run's copy so a deleted DB doesn't linger
-		fmt.Fprintln(os.Stderr, "vaultwarden: clearing staging dir:", err)
-		return ""
-	}
-	if err := os.MkdirAll(dest, 0700); err != nil {
+	if err := mkdirAllOwned(dest, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, "vaultwarden: staging mkdir:", err)
 		return ""
 	}
+	// An interrupt (Ctrl-C, systemd stopping the timer's run, a reboot) during the stop window
+	// would skip the deferred restart below and leave the password manager down — and stopped on
+	// purpose, so `restart: unless-stopped` wouldn't even bring it back after a reboot. Catch it,
+	// restart Vaultwarden, then exit.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	windowDone := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigs:
+			fmt.Fprintf(os.Stderr, "\nvaultwarden: interrupted (%v) during the backup's brief stop — restarting it before exiting\n", sig)
+			_, _ = dockerOut(repo, "start", svc)
+			os.Exit(130)
+		case <-windowDone:
+		}
+	}()
 	if _, err := dockerOut(repo, "stop", svc); err != nil {
+		signal.Stop(sigs)
+		close(windowDone)
 		fmt.Fprintf(os.Stderr, "vaultwarden: stop failed, backing up live volume as-is: %v\n", err)
 		return ""
 	}
@@ -1263,8 +1644,11 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		if _, err := dockerOut(repo, "start", svc); err != nil {
 			fmt.Fprintln(os.Stderr, "vaultwarden: WARNING — failed to restart after backup, start it manually:", err)
 		}
+		signal.Stop(sigs)
+		close(windowDone)
 	}()
 	if !fileExists(filepath.Join(mp, "db.sqlite3")) {
+		_ = os.RemoveAll(dest)
 		fmt.Fprintln(os.Stderr, "vaultwarden: db.sqlite3 not found, backing up live volume as-is")
 		return ""
 	}
@@ -1275,10 +1659,13 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 		if !fileExists(f) {
 			continue
 		}
-		if err := copyFile(f, filepath.Join(dest, "db.sqlite3"+suf)); err != nil {
+		staged := filepath.Join(dest, "db.sqlite3"+suf)
+		if err := copyFile(f, staged); err != nil {
+			_ = os.RemoveAll(dest)
 			fmt.Fprintln(os.Stderr, "vaultwarden: DB fileset copy to staging failed, backing up live volume as-is:", err)
 			return ""
 		}
+		inheritOwner(staged) // the admin's, like the rest of backups/ (restore re-owns it to match the volume)
 	}
 	fmt.Println("vaultwarden: staged the SQLite fileset (db.sqlite3 + WAL; container stopped ~1s); attachments backed up live")
 	// Exclude the live DB fileset from the volume backup — the consistent copy is in staging.
@@ -1286,21 +1673,155 @@ func stageVaultwardenDB(repo, staging string) (excludePath string) {
 	return filepath.Join(mp, "db.sqlite3*")
 }
 
-// dumpNextcloudDB writes a consistent SQL dump (preferred over the raw volume on restore).
-func dumpNextcloudDB(repo, staging string) {
-	f, err := os.Create(filepath.Join(staging, "nextcloud-db.sql"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "db dump: cannot create file:", err)
-		return
+// nextcloudDumpFile is the consistent Postgres dump inside the staging dir.
+const nextcloudDumpFile = "nextcloud-db.sql"
+
+// pgDumpFooter ends every complete plain-format pg_dump. A dump without it was cut short.
+const pgDumpFooter = "-- PostgreSQL database dump complete"
+
+// nextcloudDBVolumes are the names Nextcloud's Postgres data volume has had, newest first: the
+// compose file moved to a fresh volume for the Postgres 18 data layout.
+var nextcloudDBVolumes = []string{"nextcloud_db-data-v18", "nextcloud_db-data"}
+
+// dumpNextcloudDB writes a consistent SQL dump of Nextcloud's database into staging — the copy a
+// restore rebuilds the database from (the raw volume is read while Postgres runs, so it isn't
+// guaranteed consistent). It writes to a temp file and only renames it into place once pg_dump
+// succeeded, and on any failure removes the old dump: a snapshot carrying the PREVIOUS backup's
+// dump would quietly restore stale data. With Nextcloud's database stopped there's nothing to
+// dump (its volume is at rest, so the volume copy is consistent) and it returns nil.
+func dumpNextcloudDB(repo, staging string) error {
+	dumpPath := filepath.Join(staging, nextcloudDumpFile)
+	if containerState(repo, "nextcloud-db") != "running" {
+		_ = os.Remove(dumpPath)
+		return nil
 	}
-	defer f.Close()
+	tmp := dumpPath + ".tmp"
+	f, err := createOwned(tmp, 0600)
+	if err != nil {
+		_ = os.Remove(dumpPath)
+		return fmt.Errorf("nextcloud db dump: cannot create %s: %w", tmp, err)
+	}
+	user, db := nextcloudDBNames(repo)
 	// No -T: that's docker-compose syntax; plain `docker exec` rejects it. We don't
 	// need a TTY here — pg_dump's stdout is redirected to the dump file below.
-	c := dockerCmd(repo, "exec", "nextcloud-db", "pg_dump", "-U", "nextcloud", "nextcloud")
+	c := dockerCmd(repo, "exec", "nextcloud-db", "pg_dump", "-U", user, db)
 	c.Stdout, c.Stderr = f, os.Stderr
-	if err := c.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "db dump: skipped (is nextcloud-db up?):", err)
+	runErr := c.Run()
+	closeErr := f.Close()
+	if runErr == nil && closeErr == nil && dumpComplete(tmp) {
+		if err := os.Rename(tmp, dumpPath); err == nil {
+			return nil
+		}
 	}
+	_ = os.Remove(tmp)
+	_ = os.Remove(dumpPath)
+	if runErr == nil {
+		runErr = fmt.Errorf("the dump came out incomplete")
+	}
+	return fmt.Errorf("nextcloud db dump failed (%v) — this snapshot has only the raw database volume", runErr)
+}
+
+// nextcloudDBNames returns the Postgres user and database from nextcloud/.env (with the defaults
+// the compose file uses).
+func nextcloudDBNames(repo string) (user, db string) {
+	user, db = "nextcloud", "nextcloud"
+	if kv, err := readKV(filepath.Join(repo, "nextcloud/.env")); err == nil {
+		if v := kv["POSTGRES_USER"]; v != "" {
+			user = v
+		}
+		if v := kv["POSTGRES_DB"]; v != "" {
+			db = v
+		}
+	}
+	return user, db
+}
+
+// dumpComplete reports whether a plain-format pg_dump file ends with pg_dump's completion footer.
+func dumpComplete(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	tail := make([]byte, 512)
+	off := fi.Size() - int64(len(tail))
+	if off < 0 {
+		off, tail = 0, tail[:fi.Size()]
+	}
+	n, _ := f.ReadAt(tail, off)
+	return strings.Contains(string(tail[:n]), pgDumpFooter)
+}
+
+// restoreNextcloudDBFromDump rebuilds Nextcloud's database from the snapshot's consistent dump, on
+// top of the just-restored raw volume (which supplies the roles and the password Nextcloud's
+// config.php expects). The raw volume was copied while Postgres ran, so its tables aren't
+// guaranteed consistent; the dump is. Postgres is started on its own, the database is dropped and
+// re-created from the dump, and the rest of the stack starts afterwards. If anything goes wrong,
+// the raw volume is put back as it was in the snapshot and the restore carries on with that; only
+// if that fails too — the database volume left wiped or half-imported — is it an error.
+func restoreNextcloudDBFromDump(repo, dump, volume, rawVolume string) error {
+	why, cause := rebuildNextcloudDB(repo, dump)
+	if cause == nil {
+		fmt.Println("  rebuilt the nextcloud database from its consistent dump")
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "  nextcloud db: couldn't rebuild from the dump (%s: %v) — using the raw volume copy instead\n", why, cause)
+	_, _ = dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "stop", "db")
+	if err := restoreOneVolume(repo, volume, rawVolume); err != nil {
+		return fmt.Errorf("nextcloud database: rebuilding it from the dump failed (%s: %v), and putting the "+
+			"snapshot's raw database volume back failed too: %w", why, cause, err)
+	}
+	fmt.Fprintln(os.Stderr, "  nextcloud db: restored from the raw volume copy (taken while Postgres ran — check Nextcloud once it's up)")
+	return nil
+}
+
+// rebuildNextcloudDB starts Postgres alone, drops Nextcloud's database and imports the dump. On
+// failure it says which step failed and why.
+func rebuildNextcloudDB(repo, dump string) (step string, err error) {
+	user, db := nextcloudDBNames(repo)
+	if err := ensureEdgeNetwork(); err != nil {
+		return "network", err
+	}
+	if out, err := dockerCombined(filepath.Join(repo, "nextcloud"), "compose", "up", "-d", "db"); err != nil {
+		return "start postgres", fmt.Errorf("%v: %s", err, strings.TrimSpace(out))
+	}
+	// NOT pg_isready alone: during first start Postgres may run a temporary server. Gate on a query.
+	ready := func() bool {
+		return dockerCmd(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres", "-tAc", "select 1").Run() == nil
+	}
+	if !dockerWait(120*time.Second, ready) {
+		return "postgres didn't become ready", fmt.Errorf("timed out after 2 minutes")
+	}
+	psql := func(sql string) error {
+		out, err := dockerCombined(repo, "exec", "nextcloud-db", "psql", "-U", user, "-d", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql)
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(out))
+		}
+		return nil
+	}
+	if err := psql(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, db)); err != nil {
+		return "drop the copied database", err
+	}
+	if err := psql(fmt.Sprintf(`CREATE DATABASE "%s" OWNER "%s"`, db, user)); err != nil {
+		return "create the database", err
+	}
+	f, err := os.Open(dump)
+	if err != nil {
+		return "open the dump", err
+	}
+	defer f.Close()
+	imp := dockerCmd(repo, "exec", "-i", "nextcloud-db", "psql", "-q", "-U", user, "-d", db, "-v", "ON_ERROR_STOP=1")
+	var errOut strings.Builder
+	imp.Stdin, imp.Stdout, imp.Stderr = f, io.Discard, &errOut
+	if err := imp.Run(); err != nil {
+		return "import the dump", fmt.Errorf("%v: %s", err, strings.TrimSpace(errOut.String()))
+	}
+	return "", nil
 }
 
 // resticEnv builds the environment to point restic at a given repository + password file.
@@ -1345,6 +1866,16 @@ func resticOutput(repo string, cfg backupCfg, args ...string) (string, error) {
 	return string(out), err
 }
 
+// requireRoot refuses an operation that only works as root. Without this, a non-root
+// `backup run` didn't fail cleanly: restic saved a snapshot missing every file it couldn't read,
+// and that partial snapshot became "latest" — the default for a restore.
+func requireRoot(what, why string) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s needs root (%s) — run it with sudo:\n  sudo hsctl %s", what, why, what)
+}
+
 func requireRestic() error {
 	if !resticInstalled() {
 		return fmt.Errorf("restic not installed — install it first:\n" +
@@ -1366,12 +1897,36 @@ func resticVersion() (string, error) {
 	return "", fmt.Errorf("could not parse restic version from %q", strings.TrimSpace(string(out)))
 }
 
-func ensureResticPassword(repo string) {
+// ensureResticPassword creates the repo password for `backup init`, when there isn't one yet.
+// Only init does this: generating one anywhere else (as `run` and `restore` used to) replaced a
+// LOST password with a new random one, so restoring onto a fresh machine failed with "wrong
+// password" and the nightly backup failed every night after a `git clean`. A local repository that
+// already exists is never given a new password either.
+func ensureResticPassword(repo string, cfg backupCfg) error {
 	path := filepath.Join(repo, resticPassFile)
 	if fileExists(path) {
-		return
+		return nil
 	}
-	pw := genPassword(32)
-	_ = writeFile0600(path, pw+"\n")
-	fmt.Printf("generated restic repo password -> %s  (BACK THIS UP; without it backups are unrecoverable)\n", path)
+	if fileExists(filepath.Join(cfg.Repo, "config")) { // a local restic repository is already there
+		return fmt.Errorf("a backup repository already exists at %s, but %s is missing — "+
+			"put your saved password back first:\n  hsctl backup config --password '…'", cfg.Repo, resticPassFile)
+	}
+	if err := writeFile0600(path, genPassword(32)+"\n"); err != nil {
+		return fmt.Errorf("save the new backup password: %w", err)
+	}
+	fmt.Printf("generated the backup password -> %s\n", path)
+	fmt.Println("  SAVE A COPY SOMEWHERE ELSE (Vaultwarden, or written down): without it the backups can't be")
+	fmt.Println("  decrypted. See it any time with: hsctl secrets show")
+	return nil
+}
+
+// requireResticPassword fails, with what to do, when there's no repo password — for every backup
+// command but init.
+func requireResticPassword(repo string) error {
+	if fileExists(filepath.Join(repo, resticPassFile)) {
+		return nil
+	}
+	return fmt.Errorf("no backup password (%s).\n"+
+		"  Have backups already? Put your saved password back: hsctl backup config --password '…'\n"+
+		"  Starting fresh? hsctl backup init creates the repository and a password.", resticPassFile)
 }

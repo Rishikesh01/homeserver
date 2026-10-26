@@ -83,10 +83,15 @@ make -C hsctl install
 `hsctl install` is the last thing you type. It:
 
 - saves `setup.conf` with autodetected values (LAN IP, timezone, a free dashboard port),
-- creates the dashboard admin password (`.ui-password`, handed back to your user even
-  though the command runs under sudo — so you can read it later without root),
+- creates the dashboard admin password (`.ui-password`, owned by you even though the
+  command runs under sudo — so you can read it later without root),
 - starts **Caddy** on its own, so `https://HOST/` already answers,
-- installs and starts the `hsctl-ui` systemd service.
+- installs and starts the `hsctl-ui` systemd service, and installs the nightly backup timer
+  (switched on once you set up backups).
+
+Run it with the system-wide binary (`/usr/local/bin/hsctl`, which the installer and
+`make -C hsctl install` put there): it refuses a binary your user could overwrite, since the
+dashboard runs it as root.
 
 Then open **`https://HOST/`** from any phone or laptop on the network. Your browser warns
 about the certificate the first time (the server made its own CA) — click through once.
@@ -100,7 +105,7 @@ Log in as `admin` with the printed password and the dashboard opens the **setup 
    hashed and can't be shown again; the rest are in *Command Center → Show logins*).
 3. **Start** — one button runs `hsctl up` and streams the progress live. The first start
    downloads the app images, so give it a few minutes.
-4. **Certificate** — download `root.crt` and follow the per-device guide.
+4. **Certificate** — download `homeserver-ca.crt` and follow the per-device guide.
 
 The wizard only appears while the apps are unconfigured; afterwards `https://HOST/` is the
 normal dashboard. (If you'd rather not use a browser, the equivalent is `hsctl setup` then
@@ -120,10 +125,13 @@ pre-filled with sensible autodetected values, so you can usually just press Ente
 (The apps themselves aren't published on the LAN — Caddy reaches them over an internal
 network — so there are no per-app ports to set.) It writes the configuration to `setup.conf`
 and generates each service's secrets. Run it non-interactively with `--yes` plus flags like
-`--server-ip` / `--tz`.
+`--server-ip` / `--tz` (`--vw-signups=false` — true/false flags take their value after `=`).
+Run it again any time to change a setting: it applies the change to the existing `.env` files
+and lists what it changed (secrets are never touched) — then `hsctl up`.
 
-**Your generated logins** are printed once at the end of `setup` (and saved to `WELCOME.txt`).
-You can see them again anytime — `hsctl secrets show` reads them straight from the `.env` files:
+**Your generated logins** are printed once at the end of `setup` — save them then.
+(`WELCOME.txt` is a handout of the addresses only, no passwords.) You can see them again
+anytime — `hsctl secrets show` reads them straight from the `.env` files:
 
 ```bash
 hsctl secrets show     # Nextcloud / Pi-hole / dashboard passwords
@@ -149,7 +157,7 @@ The server makes its own HTTPS certificate (there's no public domain). Each phon
 must **trust that certificate once**, or browsers show a warning and the Bitwarden/Nextcloud
 apps refuse to connect.
 
-1. On the device, open **http://HOST/** in a browser and download **`root.crt`**.
+1. On the device, open **http://HOST/** in a browser and download **`homeserver-ca.crt`**.
 2. Install it as a *trusted certificate authority*. Step-by-step per OS (Android, iPhone,
    Windows, macOS, Linux), plus the whole "add a family member" flow, is in
    **[ONBOARDING.md](../ONBOARDING.md)** — which the dashboard also serves as a rendered page
@@ -176,7 +184,9 @@ or `hsctl setup --disable-apps stirling,it-tools`).
 ## Day-to-day
 
 ```bash
-hsctl up | down | status        # start / stop / show the stack
+hsctl up | down | status        # start / stop / show the stack (status includes stopped containers)
+hsctl restart                   # stop the apps and start everything again (Caddy keeps running)
+hsctl down --keep-proxy         # stop the apps but keep Caddy (and so the dashboard) up
 hsctl updates                   # check whether newer app images are available (read-only)
 hsctl ui                        # run the dashboard in the foreground (hsctl install runs it as a service)
 hsctl get-ca                    # save caddy-root-ca.crt to hand to a new device
@@ -186,7 +196,17 @@ hsctl backup run | list         # see docs/backup-restore.md
 ```
 
 Almost all of this is also available without a terminal, from the dashboard's
-**Command Center** at `/admin/commands`.
+**Command Center** at `/admin/commands`. Its buttons run each command as a background job on
+the server: the output appears on the page, and the command runs to the end even if you close
+the page or your phone sleeps (reopen the page to see where it got to). One state-changing
+operation runs at a time — from the dashboard, a terminal or the nightly backup — and the
+others say what's running instead of colliding with it. *Stop apps* and *Restart apps* never
+stop Caddy, so the dashboard stays reachable to start them again.
+
+`up` keeps going past an app that fails to start — Pi-hole unable to get port 53, say — so
+the rest of the stack, and Caddy, still come up; it lists what didn't start at the end. Pi-hole
+is optional: nothing on your network uses it until you point a device's DNS at it, and
+`hsctl apps disable pihole` switches it off entirely.
 
 The app containers restart automatically on reboot (`restart: unless-stopped`); `hsctl
 install` does the same for the dashboard.

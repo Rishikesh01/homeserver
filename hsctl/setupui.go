@@ -34,8 +34,7 @@ type setupData struct {
 
 func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if s.setupDone() {
-		http.Redirect(w, r, "/admin?msg="+
-			"Setup is already complete. Settings live in setup.conf; secrets can be regenerated from the Command Center.", http.StatusSeeOther)
+		redirectFlash(w, r, "/admin", "Setup is already complete. Change settings with “Apply settings” in the Command Center (after editing setup.conf), or hsctl setup.", false)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -51,25 +50,37 @@ func (s *uiServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Normalize()
+	if err := validateConfig(c); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Err: err.Error(), Step: 1})
+		return
+	}
+	// Same lock as `hsctl setup`: two setups at once could write different secrets from the ones
+	// this page then shows.
+	lock, err := acquireOpLock(s.repo, "dashboard: setup", 0)
+	if err != nil {
+		w.WriteHeader(http.StatusConflict)
+		render(w, setupTmpl, setupData{Cfg: c, Apps: listApps(s.repo, c, false), Err: err.Error(), Step: 1})
+		return
+	}
+	defer lock.Release()
 	if err := c.Save(s.repo); err != nil {
 		http.Error(w, "saving setup.conf: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	secrets, err := c.Generate(s.repo, false)
+	// Generate also applies the confirmed settings to the caddy/.env the bootstrap wrote from
+	// autodetected values, so Caddy follows a corrected IP or port.
+	res, err := c.Generate(s.repo, false)
 	if err != nil {
 		http.Error(w, "generating service configs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// The bootstrap wrote caddy/.env from autodetected values; follow what the admin confirmed.
-	if err := reconcileCaddyEnv(s.repo, c); err != nil {
-		http.Error(w, "updating caddy/.env: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	uiLog.Info("setup wizard: configs generated", "ip", c.ServerIP, "from", remoteIP(r))
-	render(w, setupTmpl, setupData{Cfg: c, Secrets: secrets, Step: 2})
+	render(w, setupTmpl, setupData{Cfg: c, Secrets: res.Secrets, Step: 2})
 }
 
-// setupRunStatus is kept in memory so setup progress survives a dropped browser stream.
+// setupRunStatus is what the wizard's progress view polls: the "Start everything" job's state and
+// its whole output so far.
 type setupRunStatus struct {
 	Active bool   `json:"active"`
 	Done   bool   `json:"done"`
@@ -77,44 +88,25 @@ type setupRunStatus struct {
 	Output string `json:"output"`
 }
 
-type setupRunWriter struct{ s *uiServer }
-
-func (w setupRunWriter) Write(p []byte) (int, error) {
-	w.s.setupMu.Lock()
-	w.s.setupSt.Output += string(p)
-	w.s.setupMu.Unlock()
-	return len(p), nil
-}
-
-// handleSetupUp starts `hsctl up` independently of the browser connection. The status endpoint
-// below makes it safe for the page to reconnect while images are downloading.
+// handleSetupUp starts `hsctl up` as a dashboard job, independent of the browser connection. The
+// status endpoint below makes it safe for the page to reconnect while images are downloading.
 func (s *uiServer) handleSetupUp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	uiLog.Info("setup wizard: starting stack", "from", remoteIP(r))
 	s.setupMu.Lock()
-	if s.setupSt.Active {
-		s.setupMu.Unlock()
-		w.WriteHeader(http.StatusConflict)
+	defer s.setupMu.Unlock()
+	if j, ok := s.jobs().get(s.setupJob); ok && !j.Done {
+		w.WriteHeader(http.StatusAccepted) // already starting: the page just keeps polling
 		return
 	}
-	s.setupSt = setupRunStatus{Active: true}
-	s.setupMu.Unlock()
-	go func() {
-		err := s.runHsctl(setupRunWriter{s: s}, "up")
-		s.setupMu.Lock()
-		s.setupSt.Active = false
-		s.setupSt.Done = true
-		s.setupSt.OK = err == nil
-		if err != nil {
-			s.setupSt.Output += fmt.Sprintf("\n[command exited with error: %v]\n", err)
-		} else {
-			s.setupSt.Output += "\n[done]\n"
-		}
-		s.setupMu.Unlock()
-	}()
+	uiLog.Info("setup wizard: starting stack", "from", remoteIP(r))
+	j, ok := s.startJob(w, r, "up", "Start everything", []string{"up"})
+	if !ok {
+		return
+	}
+	s.setupJob = j.ID
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -124,9 +116,20 @@ func (s *uiServer) handleSetupUpStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setupMu.Lock()
-	st := s.setupSt
+	id := s.setupJob
 	s.setupMu.Unlock()
+	var st setupRunStatus
+	if j, ok := s.jobs().get(id); ok {
+		// The page shows the whole log, so read every chunk of it.
+		var out strings.Builder
+		js := j.status(0)
+		for out.WriteString(js.Out); js.Out != "" && !js.Done; out.WriteString(js.Out) {
+			js = j.status(js.Next)
+		}
+		st = setupRunStatus{Active: !js.Done, Done: js.Done, OK: js.Done && js.OK, Output: out.String()}
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(st)
 }
 
@@ -137,6 +140,11 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	c.ServerIP = strings.TrimSpace(r.FormValue("server_ip"))
 	c.TZ = strings.TrimSpace(r.FormValue("tz"))
 	c.PiholeDNSBind = strings.TrimSpace(r.FormValue("pihole_dns_bind"))
+	// The bind is pre-filled from the detected IP; when the admin corrects the IP but leaves the
+	// bind as it was, let Normalize derive it from the new one.
+	if c.ServerIP != base.ServerIP && c.PiholeDNSBind == base.ServerIP {
+		c.PiholeDNSBind = ""
+	}
 	c.VWSignupsAllowed = r.FormValue("vw_signups") == "on"
 	// Apps: every checked box is on; anything unchecked is switched off (browsers omit
 	// unchecked boxes, so compute the complement against the registry).
@@ -167,7 +175,7 @@ func parseSetupForm(base Config, r *http.Request) (Config, error) {
 	return c, nil
 }
 
-const setupTmpl = `<!doctype html><html><head><meta charset="utf-8">
+const setupTmpl = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up your home server</title>
 <style>{{css}}
 .steps{display:flex;gap:8px;margin:0 0 22px;font-size:14px;color:var(--muted)}
@@ -208,7 +216,7 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
 
   <p style="margin-top:20px"><button class="btn" type="submit">Continue →</button></p>
 </form>
-<p class="foot">Dashboard port: {{.Cfg.UIPort}} (set by <code>hsctl install</code>). · <a href="/help">Setup guide</a></p>
+<p class="foot">Dashboard port: {{.Cfg.UIPort}} (set by <code>hsctl install</code>). · <a href="/help">Setup guide</a> · <a href="/logout">Log out</a></p>
 
 {{else}}
 <p class="sub">Settings saved and every app configured. These are the <b>admin logins it just created</b>.</p>
@@ -221,12 +229,12 @@ label{display:block;margin:14px 0 4px;font-weight:600}.hint{color:var(--muted);f
 <p class="hint">Downloads the apps the first time (a few minutes on a slow connection) and starts them. Watch the progress below.</p>
 <p><label style="display:inline;font-weight:400"><input type="checkbox" id="saved"> I've saved the logins above</label></p>
 <p><button class="btn green" id="start" disabled>Start everything</button></p>
-<div id="out" class="out">Waiting…</div>
+<div id="out" class="out" role="log" aria-live="polite">Waiting…</div>
 
 <div id="done">
 <h3 style="margin-top:26px">4 · Install the certificate on each device</h3>
 <p>Your server makes its own HTTPS certificate. Each phone or laptop trusts it <b>once</b> — then the warnings disappear and the Bitwarden / Nextcloud apps connect.</p>
-<p><a class="btn" href="/root.crt">Download root.crt</a> <a class="btn gray" href="/help">How to install it (per device)</a></p>
+<p><a class="btn" href="/root.crt">Download the certificate (homeserver-ca.crt)</a> <a class="btn gray" href="/help">How to install it (per device)</a></p>
 <p>Then you're done: <a href="/"><b>open the dashboard →</b></a> (Nextcloud takes a minute or two on its first start).</p>
 </div>
 
@@ -256,7 +264,8 @@ start.addEventListener('click',async function(){
   }
   try{
     const res=await fetch('/setup/up',{method:'POST'});
-    if(!res.ok && res.status!==409) throw new Error('start '+res.status);
+    if(res.status===409){ out.textContent=await res.text(); start.disabled=false; saved.disabled=false; return; }
+    if(!res.ok) throw new Error('start '+res.status);
   }catch(e){ out.textContent+='\nConnection interrupted; checking whether the server started the job…\n'; }
   poll();
 });

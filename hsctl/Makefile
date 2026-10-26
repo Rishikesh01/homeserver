@@ -58,20 +58,10 @@ install: build
 		echo "hsctl-ui.service not active — skipped restart"; \
 	fi
 
-# Install the web-UI service + nightly backup timer. The unit templates carry a __DIR__
-# placeholder for WorkingDirectory; substitute this repo's path into them on the way in
-# (ExecStart already points at the installed /usr/local/bin/hsctl), so the services actually
-# start instead of failing on a literal "__DIR__".
-REPO_DIR := $(abspath $(CURDIR)/..)
-install-services:
-	@tmp=$$(mktemp -d); \
-	for u in hsctl-ui.service hsctl-backup.service hsctl-backup.timer; do \
-		HSCTL_DIR='$(REPO_DIR)' python3 -c 'import os,sys; sys.stdout.write(open(sys.argv[1]).read().replace("__DIR__", os.environ["HSCTL_DIR"]))' systemd/$$u > $$tmp/$$u; \
-	done; \
-	sudo cp $$tmp/hsctl-ui.service $$tmp/hsctl-backup.service $$tmp/hsctl-backup.timer /etc/systemd/system/; \
-	rm -rf $$tmp
-	sudo systemctl daemon-reload
-	sudo systemctl enable --now hsctl-ui.service hsctl-backup.timer
-	@echo "enabled hsctl-ui.service and hsctl-backup.timer"
+# Install the dashboard service + nightly backup timer. `hsctl install` is the one installer (it
+# fills the repo and binary paths into the units in systemd/); this target just runs the
+# system-wide binary's copy of it from this repo.
+install-services: install
+	cd .. && sudo $(PREFIX)/bin/hsctl install
 
 .PHONY: build vet test install install-services

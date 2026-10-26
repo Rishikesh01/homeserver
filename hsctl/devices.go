@@ -97,6 +97,7 @@ type deviceRow struct {
 	ReadOnly   bool
 	IsDisk     bool   // a whole disk with no partitions (some USB sticks)
 	Mountable  bool   // we'd let the user mount it
+	Ejectable  bool   // mounted where a data disk lives (/mnt, /media) — safe to offer Eject
 	Why        string // when not Mountable, a short reason
 	Suggest    string // default mount directory, pre-filled in the UI (editable by the operator)
 }
@@ -125,6 +126,10 @@ func mountableRows(devs []blockDevice) []deviceRow {
 		case d.Mountpoint != "":
 			r.Mountable = false
 			r.Why = "already mounted"
+			r.Ejectable = ejectableMount(d.Mountpoint)
+			if !r.Ejectable {
+				r.Why = "system disk — can't be ejected here"
+			}
 		case d.FSType == "":
 			r.Mountable = false
 			r.Why = "no filesystem"
@@ -248,6 +253,22 @@ func mountDeviceAt(devPath, target string) (string, error) {
 	return target, nil
 }
 
+// ejectableMount reports whether a mountpoint is where attached data disks live: /mnt itself or
+// anything under /mnt, /media or /run/media. Only those get an Eject button: unmounting /,
+// /boot/efi or /home from a web page breaks the running system (or, for the EFI partition,
+// quietly breaks the next kernel/GRUB update).
+func ejectableMount(mp string) bool {
+	if mp == "/mnt" {
+		return true
+	}
+	for _, root := range []string{"/mnt/", "/media/", "/run/media/"} {
+		if strings.HasPrefix(mp, root) && len(mp) > len(root) {
+			return true
+		}
+	}
+	return false
+}
+
 // unmountDevice unmounts the given block device (validated against lsblk's current
 // mountpoint for it). Takes the device path so the UI's Eject button matches the Mount
 // button; we resolve it to the live mountpoint and umount that.
@@ -264,6 +285,9 @@ func unmountDevice(devPath string) (string, error) {
 	}
 	if mp == "" {
 		return "", fmt.Errorf("%s is not mounted", devPath)
+	}
+	if !ejectableMount(mp) {
+		return "", fmt.Errorf("%s is mounted at %s, a system location — only disks under /mnt or /media can be ejected here", devPath, mp)
 	}
 	if out, err := privCmd("umount", devPath).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("umount %s: %v\n%s", devPath, err, strings.TrimSpace(string(out)))

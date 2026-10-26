@@ -9,7 +9,7 @@ import (
 // The Updates page: the CLI's update checker as a dashboard page. A check runs
 // in-process (same code path as `hsctl updates`) and streams row-by-row into
 // the page, then the parsed results render as a table with per-app buttons.
-// Applying re-execs `hsctl updates --apply <name> --yes` exactly like the
+// Applying runs `hsctl updates --apply <name> --yes` as a job, exactly like the
 // Command Center runs commands — and <name> must match a container from the
 // last check (or "all"), so the browser still can't smuggle arbitrary args.
 
@@ -20,11 +20,12 @@ type updatesRow struct {
 }
 
 type updatesData struct {
-	Checked  bool // a check has run since the dashboard started
-	Age      string
-	Rows     []updatesRow
-	StaleN   int
-	RoutineN int // what "apply all routine" would cover
+	Busy, JobID string
+	Checked     bool // a check has run since the dashboard started
+	Age         string
+	Rows        []updatesRow
+	StaleN      int
+	RoutineN    int // what "apply all routine" would cover
 }
 
 // setUpdateStatuses caches check results for the page; nil clears the cache
@@ -44,6 +45,7 @@ func (s *uiServer) updateStatuses() ([]imageStatus, time.Time) {
 func (s *uiServer) handleUpdatesPage(w http.ResponseWriter, r *http.Request) {
 	sts, at := s.updateStatuses()
 	d := updatesData{Checked: sts != nil}
+	d.Busy, d.JobID = s.busyNote()
 	if d.Checked {
 		d.Age = fmt.Sprintf("%d min ago", int(time.Since(at).Minutes()))
 	}
@@ -87,8 +89,8 @@ func (s *uiServer) handleUpdatesCheck(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(fw, "\n[done]\n")
 }
 
-// handleUpdatesApply applies one app's update (or "all" routine ones) by
-// re-execing the CLI, streaming its output.
+// handleUpdatesApply applies one app's update (or "all" routine ones) as a dashboard job that
+// re-execs the CLI; the page follows its output.
 func (s *uiServer) handleUpdatesApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -106,16 +108,33 @@ func (s *uiServer) handleUpdatesApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown app or nothing to apply — run a check first", http.StatusNotFound)
 		return
 	}
-	// Applying pulls images and restarts services, so it must not overlap a
-	// running backup or restore — same collision the stack actions guard against.
-	if !s.opMu.TryLock() {
-		http.Error(w, "a backup or restore is running — try again once it finishes", http.StatusConflict)
+	// Applying pulls images and restarts services, so it runs as a job, which takes the shared
+	// operation lock: it can't overlap a backup, a restore or any other operation.
+	title := "Update " + name
+	if name == "all" {
+		title = "Apply all routine updates"
+	}
+	j, ok := s.startJob(w, r, "updates-apply", title, []string{"updates", "--apply", name, "--yes"})
+	if !ok {
 		return
 	}
-	defer s.opMu.Unlock()
 	s.updMu.Lock()
 	s.updSt, s.updAt = nil, time.Time{}
 	s.updMu.Unlock()
-	uiLog.Info("update apply", "name", name, "from", remoteIP(r))
-	s.streamHsctl(w, "updates", "--apply", name, "--yes")
+	writeJobID(w, j)
+}
+
+// flushWriter writes to the HTTP response and flushes after each chunk, so the browser
+// sees command output live instead of buffered until the end.
+type flushWriter struct {
+	w http.ResponseWriter
+	f http.Flusher
+}
+
+func (fw flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if fw.f != nil {
+		fw.f.Flush()
+	}
+	return n, err
 }

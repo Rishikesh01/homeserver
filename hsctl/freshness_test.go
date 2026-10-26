@@ -77,3 +77,48 @@ func TestStatDiskSpace(t *testing.T) {
 		t.Errorf("missing path should not be OK: %+v", ds)
 	}
 }
+
+// TestBackupFreshnessForFailedRun: a failed run after the last good backup — including one that
+// never got as far as restic — is what the dashboard shows; an older failure is not.
+func TestBackupFreshnessForFailedRun(t *testing.T) {
+	cases := []struct {
+		name      string
+		good      time.Duration // how long ago the last good backup was (0 = never)
+		failed    time.Duration // how long ago the last run failed (0 = no failed run)
+		wantFail  bool
+		wantKnown bool
+	}{
+		{"never backed up, never tried", 0, 0, false, false},
+		{"good last night", 3 * time.Hour, 0, false, true},
+		{"failed after a good one", 30 * time.Hour, 2 * time.Hour, true, true},
+		{"failure before the last good one", 2 * time.Hour, 30 * time.Hour, false, true},
+		{"failed, never succeeded", 0, time.Hour, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(repo, "backups"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.good > 0 {
+				stamp := time.Now().Add(-tc.good).Format(time.RFC3339)
+				if err := os.WriteFile(filepath.Join(repo, lastBackupFile), []byte(stamp+"\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.failed > 0 {
+				rec := `{"time":"` + time.Now().Add(-tc.failed).Format(time.RFC3339) + `","ok":false,"error":"disk not mounted\nmore"}`
+				if err := os.WriteFile(filepath.Join(repo, lastRunFile), []byte(rec), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f := backupFreshnessFor(repo)
+			if f.Failed != tc.wantFail || f.Known != tc.wantKnown {
+				t.Errorf("got %+v, want failed=%v known=%v", f, tc.wantFail, tc.wantKnown)
+			}
+			if f.Failed && f.FailedErr != "disk not mounted" {
+				t.Errorf("FailedErr = %q, want the error's first line", f.FailedErr)
+			}
+		})
+	}
+}

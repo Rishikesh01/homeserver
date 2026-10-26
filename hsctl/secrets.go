@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -126,7 +125,8 @@ func removeEnvKeys(path string, keys ...string) (bool, error) {
 // directory, fsyncs it, then renames it over path. A rename is all-or-nothing on POSIX, so a
 // crash or power loss mid-write can never leave a half-written secret file — a truncated .env or
 // password is worse than a missing one, since `setup` skips (won't regenerate) a file that
-// exists. On any failure the temp file is removed and path is left untouched.
+// exists. On any failure the temp file is removed and path is left untouched. Run as root, the
+// file takes the owner of its directory (see ownership.go), so the admin can still read it.
 func writeFileAtomic(path, content string, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".hsctl-tmp-*")
 	if err != nil {
@@ -147,14 +147,15 @@ func writeFileAtomic(path, content string, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	// Under sudo, generated files must end up owned by the real user, not root —
-	// `sudo hsctl install` is the documented flow, and a root-owned .ui-password or
-	// .env would be unreadable to the login user afterwards (`cat`, `hsctl secrets
-	// show`). The systemd service runs without SUDO_UID and is unaffected.
-	if uid, gid, ok := invokerIDs(); ok {
-		if err := tmp.Chown(uid, gid); err != nil {
-			tmp.Close()
-			return err
+	// The rename replaces the inode, so a root run (sudo, the dashboard service or the backup
+	// timer) would otherwise hand even an admin-owned file to root. Give the temp file the owner
+	// of its directory before it takes the real name — see ownership.go.
+	if os.Geteuid() == 0 {
+		if uid, gid, ok := ownerOf(filepath.Dir(path)); ok {
+			if err := tmp.Chown(uid, gid); err != nil {
+				tmp.Close()
+				return err
+			}
 		}
 	}
 	if err := tmp.Sync(); err != nil {
@@ -173,19 +174,5 @@ func writeFileAtomic(path, content string, perm os.FileMode) error {
 
 func writeFile0600(path, content string) error { return writeFileAtomic(path, content, 0600) }
 func writeFile0644(path, content string) error { return writeFileAtomic(path, content, 0644) }
-
-// invokerIDs returns the sudo-invoking user's uid/gid when running as root under
-// sudo; ok=false otherwise (plain user, or a root session with no sudo behind it).
-func invokerIDs() (uid, gid int, ok bool) {
-	if os.Geteuid() != 0 {
-		return 0, 0, false
-	}
-	uid, err1 := strconv.Atoi(os.Getenv("SUDO_UID"))
-	gid, err2 := strconv.Atoi(os.Getenv("SUDO_GID"))
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
-	}
-	return uid, gid, true
-}
 
 func fileExists(path string) bool { _, err := os.Stat(path); return err == nil }

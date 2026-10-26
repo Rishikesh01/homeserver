@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
-	"io"
+	"encoding/json"
 	"net/http"
-	"os"
-	"os/exec"
-	"strings"
 )
 
 // The Command Center: every hsctl CLI subcommand, surfaced in the admin dashboard with a
@@ -15,9 +11,9 @@ import (
 // only ever sends a slug, never raw arguments, so there's no command injection surface:
 // the worst a forged POST can do is run one of these vetted commands.
 //
-// Running a command re-execs THIS binary (os.Executable()) with the entry's args and
-// streams the combined output back to the page. Re-execing reuses all the CLI logic
-// (sudo/docker handling, restic, etc.) exactly as a terminal run would, and inherits the
+// Running a command re-execs THIS binary (os.Executable()) with the entry's args as a background
+// job (jobs.go) whose output the page follows. Re-execing reuses all the CLI logic (docker
+// handling, restic, the operation lock, etc.) exactly as a terminal run would, and inherits the
 // UI process's privileges (root, under systemd) — the same access the commands need.
 
 type danger string
@@ -61,22 +57,26 @@ var webCmds = []webCmd{
 	{Slug: "status", Title: "Show status", Category: "Stack",
 		Desc: "List each container and whether it's running. Read-only.",
 		Args: []string{"status"}, Danger: dangerNone},
-	{Slug: "down", Title: "Stop all services", Category: "Stack",
-		Desc: "Stop every service. The apps go offline until you Start them again; your data is kept. They also come back on their own after a reboot.",
-		Args: []string{"down"}, Danger: dangerCaution, Confirm: "Stop all services? The apps will go offline until you start them again."},
+	{Slug: "restart", Title: "Restart all apps", Category: "Stack",
+		Desc: "Stop every app and start the stack again — the fix for an app that's misbehaving. Caddy and this dashboard stay up throughout.",
+		Args: []string{"restart"}, Danger: dangerCaution, Confirm: "Restart all apps? They go offline for a minute or so."},
+	{Slug: "down", Title: "Stop all apps", Category: "Stack",
+		Desc: "Stop every app. Your data is kept, and this dashboard (and the HTTPS proxy in front of it) stays up so you can start them again from here. Stopped apps stay stopped — even after a reboot — until you Start them again.",
+		Args: []string{"down", "--keep-proxy"}, Danger: dangerCaution,
+		Confirm: "Stop all apps? They stay offline (even after a reboot) until you start them again here."},
 	{Slug: "down-volumes", Title: "Stop and DELETE all data", Category: "Stack",
-		Desc: "Stop everything AND delete all data volumes — passwords, files, settings. This is how you wipe the stack to start over. There is no undo.",
-		Args: []string{"down", "--volumes"}, Danger: dangerDestructive,
-		Confirm: "DELETE ALL DATA? Every service's data volume will be destroyed. This cannot be undone."},
+		Desc: "Stop every app AND delete its data — passwords, files, settings. This is how you wipe the stack to start over. There is no undo. The HTTPS proxy keeps running, with its certificate, so this dashboard stays reachable and devices stay trusted.",
+		Args: []string{"down", "--volumes", "--keep-proxy"}, Danger: dangerDestructive,
+		Confirm: "DELETE ALL DATA? Every app's data volume will be destroyed. This cannot be undone."},
 
 	// ---- Setup & certificates ------------------------------------------------
-	{Slug: "setup", Title: "Generate missing configs", Category: "Setup",
-		Desc: "Create any service config (.env) that doesn't exist yet, from your saved settings, and generate logins for new services. Existing configs and secrets are left untouched.",
+	{Slug: "setup", Title: "Apply settings / generate missing configs", Category: "Setup",
+		Desc: "Apply your saved settings (setup.conf: server IP, timezone, signups, …) to every service config, and create any config (.env) that doesn't exist yet with fresh logins. Existing secrets are never changed. Afterwards, Start all services so the apps pick the changes up.",
 		Args: []string{"setup", "--yes"}, Danger: dangerCaution},
-	{Slug: "setup-force", Title: "Regenerate ALL secrets", Category: "Setup",
-		Desc: "Rebuild every service config and generate brand-new passwords/secrets for ALL services. Destructive: current logins stop working and data tied to old secrets can become unreadable. Only for a fresh start.",
+	{Slug: "setup-force", Title: "Regenerate secrets", Category: "Setup",
+		Desc: "Generate new secrets: the Vaultwarden /admin token and the Pi-hole and Redis passwords (plus Nextcloud's database and admin passwords, but only while Nextcloud has no data yet — those are kept otherwise, because rotating them would lock Nextcloud out of its own database). The new logins appear in the output once; the old ones stop working.",
 		Args: []string{"setup", "--yes", "--force"}, Danger: dangerDestructive,
-		Confirm: "Regenerate ALL secrets? Current logins will stop working. Only do this for a clean re-setup."},
+		Confirm: "Regenerate secrets? The current Vaultwarden admin token and Pi-hole password stop working."},
 	{Slug: "get-ca", Title: "Export the HTTPS certificate", Category: "Setup",
 		Desc: "Write caddy-root-ca.crt — the certificate you install on each phone/laptop so the apps load over HTTPS without warnings. Read-only on the stack.",
 		Args: []string{"get-ca"}, Danger: dangerNone},
@@ -96,12 +96,16 @@ var webCmds = []webCmd{
 		Args: []string{"backup", "list"}, Danger: dangerNone},
 	{Slug: "backup-forget", Title: "Prune old snapshots", Category: "Backups",
 		Desc: "Apply the retention policy (keep N daily/weekly/monthly) and delete + prune everything older. Frees space; old snapshots beyond the policy are gone for good.",
-		Args: []string{"backup", "forget"}, Danger: dangerCaution, NeedsRoot: true},
+		Args: []string{"backup", "forget"}, Danger: dangerCaution, NeedsRoot: true,
+		Confirm: "Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good."},
 	{Slug: "backup-verify", Title: "Self-test backups", Category: "Backups",
 		Desc: "Prove backups actually work end-to-end: back up and restore throwaway data (incl. a real Vaultwarden + Postgres round-trip). Never touches your live data. Takes a minute or two.",
 		Args: []string{"backup", "verify"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
+	{Slug: "backup-check", Title: "Check the backup repository", Category: "Backups",
+		Desc: "Check your real backups are intact: restic verifies the repository's structure and re-reads a sample (5%) of the stored data. Read-only. Where the self-test proves the backup mechanism on throwaway data, this checks the backups you'd actually restore from.",
+		Args: []string{"backup", "check"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
 	{Slug: "backup-replicate", Title: "Copy backups off-site", Category: "Backups",
-		Desc: "Copy every snapshot to the off-site replica (set it on the Backups page). Incremental and encrypted with the same password; first run creates the replica repo. Needs the primary repo reachable.",
+		Desc: "Copy every snapshot to the off-site replica now (set it on the Backups page) — every backup also does this on its own. Incremental and encrypted with the same password; the first run creates the replica repo. Needs the primary repo reachable.",
 		Args: []string{"backup", "replicate"}, Danger: dangerNone, NeedsRoot: true, Slow: true},
 
 	// ---- Secrets -------------------------------------------------------------
@@ -110,7 +114,8 @@ var webCmds = []webCmd{
 		Args: []string{"secrets", "show"}, Danger: dangerNone},
 	{Slug: "secrets-rotate-vw", Title: "New Vaultwarden admin token", Category: "Secrets",
 		Desc: "Generate a fresh Vaultwarden /admin token, store it hashed, and recreate the container. Shown once in the output — save it. The old token stops working.",
-		Args: []string{"secrets", "rotate-vw-admin"}, Danger: dangerCaution},
+		Args: []string{"secrets", "rotate-vw-admin"}, Danger: dangerCaution,
+		Confirm: "Make a new Vaultwarden admin token? The current one stops working — save the new one from the output."},
 }
 
 // webCmdCategories is the display order of the Command Center sections.
@@ -142,25 +147,10 @@ func lookupWebCmd(slug string) (webCmd, bool) {
 	return webCmd{}, false
 }
 
-// flushWriter writes to the HTTP response and flushes after each chunk, so the browser
-// sees command output live instead of buffered until the end.
-type flushWriter struct {
-	w http.ResponseWriter
-	f http.Flusher
-}
-
-func (fw flushWriter) Write(p []byte) (int, error) {
-	n, err := fw.w.Write(p)
-	if fw.f != nil {
-		fw.f.Flush()
-	}
-	return n, err
-}
-
-// handleRun streams one registry command's combined output back to the browser as it
-// runs. The page-level confirmation (and Danger styling) lives in the template; here we
-// only validate the slug is real and then exec. POST-only so it isn't triggerable by a
-// plain link/GET.
+// handleRun starts one registry command as a background job (see jobs.go) and returns its ID as
+// JSON; the page then follows the job's output. The page-level confirmation (and Danger styling)
+// lives in the template; here we validate the slug and, for destructive commands, the explicit
+// confirmation token. POST-only so it isn't triggerable by a plain link/GET.
 func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -179,40 +169,14 @@ func (s *uiServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this command is destructive — confirmation required", http.StatusForbidden)
 		return
 	}
-	uiLog.Info("command run", "slug", c.Slug, "from", remoteIP(r))
-	s.streamHsctl(w, c.Args...)
+	if j, ok := s.startJob(w, r, c.Slug, c.Title, c.Args); ok {
+		writeJobID(w, j)
+	}
 }
 
-// streamHsctl re-execs this binary with args and streams the combined output to
-// the browser live, ending with "[done]" on success (the page JS keys off it).
-func (s *uiServer) streamHsctl(w http.ResponseWriter, args ...string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+// writeJobID answers a job-starting POST with the new job's ID for the page to follow.
+func writeJobID(w http.ResponseWriter, j job) {
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	fl, _ := w.(http.Flusher)
-	fw := flushWriter{w: w, f: fl}
-
-	if err := s.runHsctl(fw, args...); err != nil {
-		uiLog.Warn("command failed", "args", strings.Join(args, " "), "err", err)
-		fmt.Fprintf(fw, "\n[command exited with error: %v]\n", err)
-		return
-	}
-	fmt.Fprintf(fw, "\n[done]\n")
-}
-
-// runHsctl re-execs this binary and writes its combined output to out. It is shared by
-// live command streaming and setup's reconnectable background run.
-func (s *uiServer) runHsctl(out io.Writer, args ...string) error {
-	fmt.Fprintf(out, "$ hsctl %s\n\n", strings.Join(args, " "))
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("cannot locate hsctl binary: %w", err)
-	}
-	cmd := exec.Command(exe, args...)
-	cmd.Dir = s.repo
-	cmd.Env = append(os.Environ(), "HOMESERVER_DIR="+s.repo)
-	// Same writer for both streams: os/exec then serialises the two, so interleaved
-	// stdout/stderr stay coherent without a mutex.
-	cmd.Stdout, cmd.Stderr = out, out
-	return cmd.Run()
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": j.ID})
 }

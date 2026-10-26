@@ -1,5 +1,5 @@
 [Unit]
-Description=hsctl homeserver web UI
+Description=hsctl homeserver web UI (dashboard)
 After=docker.service
 Wants=docker.service
 
@@ -7,11 +7,15 @@ Wants=docker.service
 # Runs as root so it can control Docker and read the data volumes.
 # With no --addr, hsctl ui binds only loopback + the docker bridge gateway (so Caddy can reach
 # it via host.docker.internal) — NOT the LAN, since the dashboard grants a root shell. Reach it
-# over HTTPS at https://<server-ip> through Caddy. __DIR__ is filled in by `make install-services`.
+# over HTTPS at https://<server-ip> through Caddy. `sudo hsctl install` writes this unit, with
+# __DIR__ (the repo) and __BIN__ (the hsctl binary) filled in.
 WorkingDirectory=__DIR__
-ExecStart=/usr/local/bin/hsctl ui
+ExecStart=__BIN__ ui
 Restart=on-failure
 User=root
+# Restarting the dashboard (an upgrade, say) must not kill a backup or restore it started:
+# only the dashboard process itself is stopped, its jobs run on.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

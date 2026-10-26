@@ -72,13 +72,18 @@ matters:
 | `backup.conf` | `0600` | backup destination + retention |
 | `.restic-password` | `0600` | **the backup encryption password** |
 | `.backup-env` | `0600` | cloud credentials for the off-site replica (S3 keys) |
-| `WELCOME.txt` | `0644` | the human-readable handout of the same logins |
+| `WELCOME.txt` | `0644` | a handout of the addresses (dashboard, apps, certificate) — no secrets |
+
+These files belong to you (the repo's owner) even when root writes them — `sudo hsctl`, the
+dashboard service and the backup timer all hand them back — so they're readable by you and by
+root, and by nobody else.
 
 Two things to act on:
 
-- **`WELCOME.txt` is world-readable** — it's a handout, printed once for you to save into
-  Vaultwarden. Delete it (or move it off the box) once you have. You can always regenerate the
-  same information with `hsctl secrets show`.
+- **Save the logins setup prints.** They're shown once, at the end of `hsctl setup` (or on the
+  wizard's *Your logins* step). All but one can be shown again with `hsctl secrets show`; the
+  **Vaultwarden admin token** is stored only as a hash, so if you didn't save it, make a new one
+  with `hsctl secrets rotate-vw-admin`.
 - **Back up `.restic-password` somewhere else.** It encrypts your backups; without it they are
   mathematically unrecoverable. Write it down or store it in Vaultwarden — not only on the
   machine the backups protect.
@@ -108,8 +113,8 @@ it in the app, the `.env` value is stale (and for Nextcloud you can blank it).
   After that the `.env` value does nothing — you can blank it.
 - **Pi-hole** — the admin password is re-applied from the env on each start, so edit
   `PIHOLE_PASSWORD` in `pihole/.env` then `cd pihole && docker compose up -d --force-recreate`.
-- **Dashboard admin** — `.ui-password`, or set `HSCTL_UI_PASSWORD` in the environment. See
-  [configuration.md](configuration.md#dashboard-admin-password--ui-password).
+- **Dashboard admin** — `hsctl secrets set-ui-password ['new-password']`, which also restarts
+  the dashboard. See [configuration.md](configuration.md#dashboard-admin-password--ui-password).
 - **Postgres / Redis** (the machine passwords) — these are never typed by a human, so leave
   them as the long random values `hsctl` generated. Rotating them is a **coordinated** change
   (and note `POSTGRES_PASSWORD` only sets the password on the *first* DB init — changing it in
@@ -122,7 +127,8 @@ it in the app, the `.env` value is stale (and for Nextcloud you can blank it).
 
 See your current generated logins anytime with `hsctl secrets show`.
 
-To rotate **every** secret at once, `hsctl setup --force` regenerates all the `.env` files —
-but note this is destructive: existing logins stop working and data tied to old secrets (the
-Postgres password in particular) can become unreadable. It's for a fresh start, not routine
-maintenance.
+To rotate the secrets that are safe to rotate in one go, `hsctl setup --force` (it asks you to
+type `REGENERATE`) generates a new Vaultwarden admin token and new Pi-hole and Redis passwords, in
+place, and prints them. Nextcloud's database and admin passwords are kept while Nextcloud has
+data — rotating them would lock it out of its own database — so for a completely fresh start,
+delete the data first (`hsctl down --volumes`).

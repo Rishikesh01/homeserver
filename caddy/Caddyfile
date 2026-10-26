@@ -16,10 +16,12 @@
 		root * /data/caddy/pki/authorities/local
 		file_server
 		header Content-Type "application/x-x509-ca-cert"
+		# Same file name the dashboard's download and the setup guide use.
+		header Content-Disposition `attachment; filename="homeserver-ca.crt"`
 	}
 	handle {
 		header Content-Type "text/html; charset=utf-8"
-		respond `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Home server</title><h1>Home server</h1><p>Install the <a href="/root.crt"><b>certificate</b></a> once on this device, then open the dashboard.</p>` 200
+		respond `<!doctype html><html lang="en"><meta name=viewport content="width=device-width,initial-scale=1"><title>Home server</title><body style="font:17px/1.5 system-ui,sans-serif;max-width:640px;margin:0 auto;padding:24px 16px"><h1>Home server</h1><p><b>1.</b> <a href="/root.crt">Download the certificate (homeserver-ca.crt)</a> and install it on this device — once per device. Step-by-step for each kind of phone and computer: <a href="https://{$SERVER_IP}/help">the setup guide</a> (open it after step 1).</p><p><b>2.</b> Then open the dashboard: <a href="https://{$SERVER_IP}/">https://{$SERVER_IP}</a></p></body></html>` 200
 	}
 }
 
