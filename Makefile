@@ -95,7 +95,7 @@ sandbox-purge: sandbox-down ## also delete the cached nested images/data volume
 	@echo "purged $(DATA_VOL)."
 
 # ---- uninstall -------------------------------------------------------------------------
-# Single implementation: `sudo hsctl uninstall` (hsctl/uninstall.go). These targets are
+# Single implementation: `sudo hsctl uninstall` (hsctl/internal/install/uninstall.go). These targets are
 # thin wrappers so the old `make uninstall` muscle memory keeps working — the installed
 # hsctl is used when present, else one is built from this checkout (needs Go).
 # DATA=yes -> --data (also delete app volumes), ALL=yes -> --all (volumes + backups),

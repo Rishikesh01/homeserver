@@ -213,7 +213,7 @@ Full walkthrough: **[docs/setup.md](docs/setup.md)**.
   shell, so `hsctl ui` binds only to loopback and the Docker bridge gateway, not the LAN
   (if the bridge can't be detected it warns and falls back to all interfaces). Caddy reaches
   it through `host.docker.internal`.
-- **Start order** is fixed in [`hsctl/lifecycle.go`](hsctl/lifecycle.go): apps first, Caddy
+- **Start order** is fixed in [`hsctl/internal/layout/layout.go`](hsctl/internal/layout/layout.go): apps first, Caddy
   last; `hsctl down` reverses it.
 
 More on the security posture: **[docs/security.md](docs/security.md)**.

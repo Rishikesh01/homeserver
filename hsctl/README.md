@@ -16,6 +16,10 @@ make test               # go test ./...
 make install            # -> /usr/local/bin/hsctl (uses sudo); restarts hsctl-ui if it's running
 ```
 
+The code is one package per service under `internal/` (backup, stack, web, …): each is a struct
+built with `New`, taking what it depends on as interfaces. `main` only wires them together
+(`app.go`) and defines the Cobra commands (`main.go`, `cli_*.go`).
+
 `make build`/`make install` bake the version into `hsctl --version` from the git tag via
 `-ldflags` (e.g. `v1.1.0`, or `v1.1.0-3-gabc123` past a tag). A bare `go build .` (no ldflags)
 reports `dev` — fine for local hacking; use `make` for anything you install.
@@ -160,8 +164,8 @@ sudo hsctl install   # installs + enables the dashboard service and the nightly 
 
 The app **containers** already come back on reboot (`restart: unless-stopped`); `hsctl
 install` does the same for the dashboard process, and installs the nightly backup timer
-(switched on once a backup destination is set up). It writes the units from `systemd/`,
-filling in this repo's path and the binary's. `make install-services` builds, installs and runs
+(switched on once a backup destination is set up). It writes the units from
+`internal/install/systemd/`, filling in this repo's path and the binary's. `make install-services` builds, installs and runs
 it in one go.
 
 ## Files it creates (all gitignored)

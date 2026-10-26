@@ -34,8 +34,8 @@ make -C hsctl vet       # go vet ./...
 make -C hsctl test      # go test ./...
 ```
 
-The suite is plain Go unit tests — no Docker required. `replica_test.go` exercises a real
-restic repo round-trip and skips itself if `restic` isn't installed, so install restic if you
+The suite is plain Go unit tests — no Docker required. The backup package's `TestReplicate`
+exercises a real restic repo round-trip and skips itself if `restic` isn't installed, so install restic if you
 touch backup code. CI runs both commands on every push and pull request.
 
 If you changed anything that touches the stack itself — a compose file, the Caddyfile, the
@@ -64,7 +64,7 @@ Nothing the sandbox does can reach your real Docker, containers, or volumes. See
 
 ### A note on `ONBOARDING.md`
 
-That file is **read at runtime** by the dashboard (`hsctl/ui.go`) and served as a rendered
+That file is **read at runtime** by the dashboard (`hsctl/internal/web`) and served as a rendered
 page at `/help`. Two consequences:
 
 - it must stay at the repo root,

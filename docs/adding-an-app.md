@@ -47,8 +47,9 @@ Then, in [`caddy/docker-compose.yml`](../caddy/docker-compose.yml):
 - add the upstream default — `MYAPP_UPSTREAM: ${MYAPP_UPSTREAM:-myapp:80}`,
 - add the port variable — `MYAPP_HTTPS: ${MYAPP_HTTPS:-8449}`.
 
-Finally add the new `MYAPP_HTTPS` line to `hsctl/env.go` so a fresh `hsctl setup` writes it
-into `caddy/.env` too.
+Finally add the new `MYAPP_HTTPS` line to the `caddy/.env` defaults in
+[`hsctl/internal/provision/provision.go`](../hsctl/internal/provision/provision.go) so a fresh
+`hsctl setup` writes it into `caddy/.env` too.
 
 ## 3. The tile
 
@@ -69,8 +70,8 @@ hsctl up
 ```
 
 `hsctl up` brings up every service directory it knows about, then Caddy last. The start order
-lives in [`hsctl/lifecycle.go`](../hsctl/lifecycle.go) — add your service there so it starts
-before the proxy.
+lives in [`hsctl/internal/layout/layout.go`](../hsctl/internal/layout/layout.go) — add your
+service there so it starts before the proxy.
 
 ## Try it in the sandbox first
 
