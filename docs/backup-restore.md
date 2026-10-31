@@ -73,9 +73,15 @@ or tick **Also save the app images themselves in every backup** on the dashboard
 (there's a **Back up now, with the app images** button for a one-off). Each image on the machine
 is saved with `docker save` into `backups/staging/images/`, backed up, and deleted from staging
 again. The first such backup adds a few GB (Nextcloud's image alone is over 1 GB); after that,
-restic's deduplication stores an unchanged image again in next to no space. An app that's
-switched off and has never pulled its image is noted and skipped; an image that can't be saved
-is reported as a problem with the backup (the snapshot is still taken).
+restic's deduplication stores an unchanged image again in next to no space — but the server's own
+disk needs room for the images while they're staged.
+
+**A backup that's asked for the images doesn't happen without them.** If one can't be saved (the
+disk fills up, `docker save` fails) or an app that's switched on doesn't have its image on the
+machine, the backup stops before Vaultwarden is paused or anything is written: no snapshot, the
+run is recorded as failed, and the failure alert goes out if you set one up. The same goes for a
+backup that can't record the versions. The images are saved before anything else, so a failure
+stops the run early. The only image left out is a switched-off app's that was never pulled.
 
 **A restore puts them back.** `backup restore --into-volumes` (and the dashboard's Restore) lists
 the versions the backup was taken with next to what the server pins now, then:

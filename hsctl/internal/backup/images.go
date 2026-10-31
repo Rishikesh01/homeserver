@@ -9,9 +9,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Rishikesh01/homeserver/hsctl/internal/config"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/envfile"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/fsutil"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/images"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/layout"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/paths"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/registry"
 )
@@ -25,9 +27,9 @@ const ImageManifestFile = "images.json"
 
 // ImageArchiveDir is where, inside staging, a backup that includes the images themselves
 // (BACKUP_IMAGES=yes, or `backup run --images`) saves them with `docker save`, so a restore doesn't
-// depend on a registry still serving those exact tags. They're deleted again once the snapshot holds
-// them: the stack's images are a few GB, and restic deduplicates an unchanged image to almost
-// nothing on the next run.
+// depend on a registry still serving those exact tags. An image that can't be saved stops the
+// backup. They're deleted again once the snapshot holds them: the stack's images are a few GB, and
+// restic deduplicates an unchanged image to almost nothing on the next run.
 const ImageArchiveDir = "images"
 
 // ImageRecord is one compose pin as it stood when the backup was taken.
@@ -50,29 +52,31 @@ type ImageManifest struct {
 
 // stageImages records the image every compose pin resolves to — the compose default, or the .env
 // override `hsctl updates --apply` wrote — in staging/images.json and, with save, saves each one
-// that's on this machine into staging/images/. It returns what went wrong; the snapshot is still
-// worth taking without the images. Whatever happens, the last run's saved images are cleared first
-// and a record that can't be written is removed: a snapshot must never carry another run's images or
-// versions, which a restore would put back.
-func (s *Service) stageImages(staging string, save bool) (problems []string) {
+// into staging/images/. Any failure is the backup's failure: a backup asked to carry the images
+// doesn't happen without one of them, and one that can't record the versions would restore onto
+// whatever the server pins by then. The only image it may leave out is a switched-off app's that
+// was never pulled. The last run's record and images are cleared first, so nothing of an earlier
+// run's can end up in this snapshot.
+func (s *Service) stageImages(staging string, save bool) error {
 	dir := filepath.Join(staging, ImageArchiveDir)
 	manifest := filepath.Join(staging, ImageManifestFile)
 	if err := os.RemoveAll(dir); err != nil {
-		_ = os.Remove(manifest)
-		return []string{"app images: clearing the last run's saved images failed: " + err.Error()}
+		return fmt.Errorf("app images: clearing the last run's saved images: %w", err)
+	}
+	if err := os.Remove(manifest); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("app images: clearing the last run's record of their versions: %w", err)
 	}
 	pins, err := (&images.Checker{Repo: s.Repo}).Pins()
 	if err != nil {
-		_ = os.Remove(manifest)
-		return []string{"app images: reading the image pins failed, so this snapshot doesn't record their versions: " + err.Error()}
+		return fmt.Errorf("app images: reading the image pins to record their versions: %w", err)
 	}
+	stopped := "the backup was stopped before anything was saved"
+	off := s.disabledApps()
 	if save {
 		if err := fsutil.MkdirAllOwned(dir, 0700); err != nil {
-			problems = append(problems, "app images: not saved: "+err.Error())
-			save = false
-		} else {
-			fmt.Fprintln(s.Out, "app images: saving the images themselves into the snapshot...")
+			return fmt.Errorf("app images: %w — %s", err, stopped)
 		}
+		fmt.Fprintln(s.Out, "app images: saving the images themselves into the snapshot...")
 	}
 	m := ImageManifest{Platform: s.dockerPlatform()}
 	saved := map[string]string{} // ref -> archive: an image two pins share is saved once
@@ -81,17 +85,20 @@ func (s *Service) stageImages(staging string, save bool) (problems []string) {
 		r := ImageRecord{Folder: filepath.Dir(p.File), Var: p.Var, Ref: p.Image}
 		r.ID, r.Digest = s.localImage(p.Image)
 		if save {
-			switch a, done := saved[r.Ref]; {
-			case done:
+			if a, done := saved[r.Ref]; done {
 				r.Archive = a
-			case r.ID == "":
-				fmt.Fprintf(s.Out, "  not on this machine, so not saved: %s (is %s switched off?)\n", r.Ref, r.Folder)
-			default:
+			} else if r.ID == "" {
+				// Only an app that's switched on is started — and so pulled — by `hsctl up`.
+				if !slices.Contains(layout.Services, r.Folder) || off[r.Folder] {
+					fmt.Fprintf(s.Out, "  not saved: %s isn't on this machine (%s is switched off)\n", r.Ref, r.Folder)
+				} else {
+					return fmt.Errorf("app images: %s (%s) isn't on this machine, so it can't be saved — %s. "+
+						"Start the stack (hsctl up) so it's pulled, or switch %s off", r.Ref, r.Folder, stopped, r.Folder)
+				}
+			} else {
 				name, size, err := s.saveImage(dir, r.Ref, taken)
 				if err != nil {
-					fmt.Fprintf(s.Err, "  couldn't save %s: %v\n", r.Ref, err)
-					problems = append(problems, fmt.Sprintf("app images: %s wasn't saved: %s", r.Ref, FirstLine(err.Error())))
-					break
+					return fmt.Errorf("app images: saving %s failed — %s: %w", r.Ref, stopped, err)
 				}
 				fmt.Fprintf(s.Out, "  saved %s (%s)\n", r.Ref, humanSize(size))
 				saved[r.Ref], r.Archive = name, name
@@ -104,11 +111,22 @@ func (s *Service) stageImages(staging string, save bool) (problems []string) {
 		err = fsutil.WritePrivate(manifest, string(b)+"\n")
 	}
 	if err != nil {
-		_ = os.Remove(manifest)
-		return append(problems, "app images: recording their versions failed: "+err.Error())
+		return fmt.Errorf("app images: recording their versions: %w — %s", err, stopped)
 	}
 	fmt.Fprintf(s.Out, "app images: recorded the version of all %d pinned images\n", len(m.Images))
-	return problems
+	return nil
+}
+
+// disabledApps are the apps switched off in setup.conf. `hsctl up` never starts them, so their
+// images are only here if they once ran.
+func (s *Service) disabledApps() map[string]bool {
+	off := map[string]bool{}
+	if kv, err := envfile.Read(s.Repo.Path(paths.SetupConf)); err == nil {
+		for _, d := range config.SplitCSV(kv["DISABLED_APPS"]) {
+			off[d] = true
+		}
+	}
+	return off
 }
 
 // saveImage writes `docker save ref` into dir under a name of its own, and returns that name and

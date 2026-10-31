@@ -157,8 +157,8 @@ hsctl backup config --repo /mnt/restic \
 - **`BACKUP_IMAGES`** is off by default: every backup records which image each app ran either
   way, and a restore pins those versions again. With it on, the images come from the backup too,
   so a restore doesn't depend on a registry still serving them — a few GB the first time,
-  deduplicated after that. `hsctl backup run --images` (or `--images=false`) overrides it for one
-  run. Details: [Backup & restore → App versions and images](backup-restore.md#app-versions-and-images).
+  deduplicated after that. An image that can't be saved stops the backup (no snapshot, the run
+  fails). `hsctl backup run --images` (or `--images=false`) overrides it for one run. Details: [Backup & restore → App versions and images](backup-restore.md#app-versions-and-images).
 - **`REPLICA_REPO`** is the off-site copy. Every backup copies itself there (the first copy
   creates it), incrementally, with the **same** encryption password, and applies `RETENTION` to
   it as well. Details: [Backup & restore → Off-site replica](backup-restore.md#off-site-replica).

@@ -191,16 +191,6 @@ func (s *Service) Run(o RunOptions) error {
 	if err := fsutil.MkdirAllOwned(staging, 0700); err != nil {
 		return err
 	}
-	var problems []string // things that went wrong but still left a usable snapshot
-	if err := s.dumpNextcloudDB(staging); err != nil {
-		fmt.Fprintln(s.Err, err)
-		problems = append(problems, err.Error())
-	}
-	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments, keys
-	// and config are static files backed up live with the volume below — so the stop stays ~1s no
-	// matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
-	vwExclude := s.stageVaultwardenDB(staging)
-
 	vols, err := s.Volumes()
 	if err != nil {
 		return fmt.Errorf("discovering docker volumes: %w", err)
@@ -223,6 +213,29 @@ func (s *Service) Run(o RunOptions) error {
 		}
 		targets = append(targets, mp)
 	}
+	// The app images before the databases: an image that can't be saved stops the backup, and it
+	// should stop before Vaultwarden is stopped for its copy — and saving takes minutes, which
+	// shouldn't sit between the database copies and restic reading the volumes. They land in
+	// staging, and leave it again once restic has them: they're GBs of the server's disk.
+	saveImages := cfg.Images
+	if o.Images != nil {
+		saveImages = *o.Images
+	}
+	defer os.RemoveAll(filepath.Join(staging, ImageArchiveDir))
+	if err := s.stageImages(staging, saveImages); err != nil {
+		return err
+	}
+
+	var problems []string // things that went wrong but still left a usable snapshot
+	if err := s.dumpNextcloudDB(staging); err != nil {
+		fmt.Fprintln(s.Err, err)
+		problems = append(problems, err.Error())
+	}
+	// Stage ONLY Vaultwarden's SQLite DB (the one thing unsafe to copy live). Its attachments, keys
+	// and config are static files backed up live with the volume below — so the stop stays ~1s no
+	// matter how big attachments grow. vwExclude is the live DB path to skip (it'd be torn).
+	vwExclude := s.stageVaultwardenDB(staging)
+
 	targets = append(targets, staging)
 	for _, svc := range layout.Services { // every app's .env: secrets, settings and any applied image update
 		if p := s.Repo.Path(svc, ".env"); fsutil.Exists(p) {
@@ -234,14 +247,6 @@ func (s *Service) Run(o RunOptions) error {
 			targets = append(targets, p)
 		}
 	}
-	// The app images last, once nothing else can stop the backup: saving them takes a while. They
-	// land in staging, and leave it again once restic has them — they're GBs of the server's disk.
-	saveImages := cfg.Images
-	if o.Images != nil {
-		saveImages = *o.Images
-	}
-	defer os.RemoveAll(filepath.Join(staging, ImageArchiveDir))
-	problems = append(problems, s.stageImages(staging, saveImages)...)
 
 	args := []string{"backup", "--tag", "homeserver"}
 	if vwExclude != "" {
