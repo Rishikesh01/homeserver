@@ -2,9 +2,11 @@
 
 Backups are **encrypted** (restic: AES-256, client-side — the destination only ever sees
 ciphertext) and cover a **consistent Postgres dump + a consistent Vaultwarden DB snapshot +
-every data volume + your config**.
+every data volume + your config + the app versions it all ran on** — and, if you opt in, the
+app images themselves.
 
 - [What gets backed up, and how](#what-gets-backed-up-and-how)
+- [App versions and images](#app-versions-and-images)
 - [Choose a destination](#choose-a-destination)
 - [Set it up and run](#set-it-up-and-run)
 - [Check it actually works](#check-it-actually-works)
@@ -36,10 +38,61 @@ Every snapshot also carries hsctl's config: each app's `.env`, `setup.conf`, `ba
 `.backup-env`, `.ui-password`, `pihole/custom.list` and `services.json` — everything a rebuild on
 new hardware needs except `.restic-password` (keep that somewhere else — see below).
 
+Every snapshot also records which image each app ran — see
+[App versions and images](#app-versions-and-images).
+
 `backup run` needs `sudo` because it reads the Docker volume files, which are owned by root; run
 without it, it refuses instead of saving a snapshot that's missing every file it couldn't read.
 One state-changing hsctl operation runs at a time — a backup, a restore, a dashboard job or a
 terminal command — so a backup can never read volumes a restore is wiping.
+
+---
+
+## App versions and images
+
+Data belongs with the app version that wrote it. Nextcloud refuses to start on data from a
+newer version than its image, and Postgres can't open another major version's data at all — so
+restoring last month's backup onto this month's images (or a new machine's checkout) can leave an
+app that won't start.
+
+**Every backup records the versions.** `backup run` writes `backups/staging/images.json` into the
+snapshot: for every image pin in the compose files, the image it resolved to (the compose
+default, or the `.env` override `hsctl updates --apply` wrote), its local image ID and registry
+digest, and the server's platform (`linux/amd64`). It's a few hundred bytes, so it's always on.
+
+**Opt in to saving the images themselves.** A recorded version is only as good as the registry
+that still serves it — tags get deleted, rebuilt, or the server is offline when you need it. With
+the images in the backup, a restore needs nothing but the backup:
+
+```bash
+hsctl backup config --images          # every backup, the nightly one included (--images=false turns it off)
+sudo hsctl backup run --images        # just this once — e.g. before a major update
+```
+
+or tick **Also save the app images themselves in every backup** on the dashboard's Backups page
+(there's a **Back up now, with the app images** button for a one-off). Each image on the machine
+is saved with `docker save` into `backups/staging/images/`, backed up, and deleted from staging
+again. The first such backup adds a few GB (Nextcloud's image alone is over 1 GB); after that,
+restic's deduplication stores an unchanged image again in next to no space. An app that's
+switched off and has never pulled its image is noted and skipped; an image that can't be saved
+is reported as a problem with the backup (the snapshot is still taken).
+
+**A restore puts them back.** `backup restore --into-volumes` (and the dashboard's Restore) lists
+the versions the backup was taken with next to what the server pins now, then:
+
+1. loads the images the backup saved — before stopping anything, skipping any already here as
+   the very same build. Saved images for a different platform (a PC's backup restored onto a
+   Raspberry Pi) aren't loaded; the same versions are pulled for this machine instead;
+2. once every volume is back, pins each app to the version the backup was taken with, in its
+   `.env` — the same override `hsctl updates --apply` writes, so no tracked file changes;
+3. starts the stack on those versions. Anything not loaded from the backup is pulled.
+
+Afterwards, `hsctl updates` shows what's newer, so you can move forward again once the restore
+checks out. To start the restored data on the versions the server pins now instead, add
+`--current-images` (or pick **The versions this server runs now** on the Restore page). A backup
+taken before hsctl recorded versions starts on the current pins, as it always did. A
+`docker-compose.override.yml` (the [sandbox](../sandbox/README.md) writes these to try a new
+version) still wins over the pins.
 
 ---
 
@@ -215,7 +268,9 @@ thing.
 
 **One command** restores the whole stack: it extracts the snapshot, checks it, stops
 everything, repopulates every volume — Vaultwarden's database from its consistent staged copy,
-Nextcloud's database rebuilt from its dump — and brings the stack back up.
+Nextcloud's database rebuilt from its dump — and brings the stack back up on the app versions the
+backup was taken with (loading the images, if the backup saved them — see
+[App versions and images](#app-versions-and-images)).
 
 ```bash
 sudo hsctl backup restore latest --into-volumes   # add --yes to skip the confirm prompt
@@ -262,6 +317,11 @@ done
 #     lose your passwords. Its path inside the extraction is the repo's path at backup time:
 sudo cp -a "$(sudo find ~/restore -type d -path '*backups/staging/vaultwarden')"/db.sqlite3* \
            /var/lib/docker/volumes/vaultwarden_vw-data/_data/
+
+# 3c. Optional: the app versions the backup was taken with are in …/backups/staging/images.json.
+#     Pin one in its service's .env (e.g. NEXTCLOUD_IMAGE=nextcloud:35.0.2-apache in nextcloud/.env),
+#     and if the backup saved the images, load them first:
+sudo find ~/restore -path '*backups/staging/images/*.tar' -exec docker load -i {} \;
 
 # 4. Start everything
 hsctl up

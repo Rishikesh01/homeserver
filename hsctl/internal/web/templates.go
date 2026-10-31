@@ -177,6 +177,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <div class="k">Destination</div><div><code>{{.Repo}}</code>{{if .SystemDisk}}<br><span style="color:var(--bad)">⚠ This is on the same disk as {{.SystemDisk}} — that protects against mistakes, not against the disk dying. Point it at an external disk or another machine.</span>{{end}}{{if .GuardWarn}}<br><span style="color:var(--bad)">⚠ {{.GuardWarn}}</span>{{end}}</div>
   <div class="k">Retention</div><div>{{.Retention}}{{if .RetentionErr}}<br><span style="color:var(--bad)">⚠ {{.RetentionErr}} — nothing is pruned until it's fixed below.</span>{{end}}</div>
   <div class="k">Disk guard</div><div>{{if .GuardPath}}<code>{{.GuardPath}}</code> — {{if .GuardOK}}<span class="tag ok">mounted</span>{{else}}<span class="tag bad">NOT mounted</span> (backups will refuse to run until you mount it on the <a href="/admin/devices">Drives</a> page){{end}}{{else}}none (backups go to the path above as-is){{end}}</div>
+  <div class="k">App images</div><div>{{if .Images}}<span class="tag ok">saved</span> in every backup, with their versions{{else}}versions recorded in every backup; the images themselves aren't saved — tick the box below to include them{{end}}</div>
   <div class="k">Off-site replica</div><div>{{if .Replica}}<code>{{.Replica}}</code> — {{if .ReplicaAge}}last copied {{.ReplicaAge}}{{else}}<span style="color:var(--bad)">never copied yet</span>{{end}} (copied after every backup){{else}}none — set one below for fire/theft-proof backups{{end}}</div>
   {{if .Stats}}<div class="k">Repo size</div><div><span class="foot">{{.Stats}}</span></div>{{end}}
 </div>
@@ -205,6 +206,9 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
   <p>Tell me when a backup fails (optional — a URL that gets a message, e.g. an <a href="https://ntfy.sh">ntfy</a> topic):<br>
   <input class="in" name="notify" value="{{.Notify}}" placeholder="https://ntfy.sh/your-secret-topic"></p>
   <p class="foot">Clearing the replica or notification box and saving turns it off.</p>
+  <input type="hidden" name="images_shown" value="1">
+  <p><label><input type="checkbox" name="images" value="1"{{if .Images}} checked{{end}}> Also save the app images themselves in every backup</label></p>
+  <p class="foot">Every backup records which app versions it was taken on, and a restore starts your data on those versions again. With this ticked, the images come from the backup too, so a restore works even if their download sites no longer have them. It costs a few GB the first time; unchanged images take next to no space after that.</p>
   <button class="btn gray">Save</button>
 </form>
 
@@ -222,6 +226,7 @@ Install it: <code>sudo apt-get install -y restic</code>, then reload this page.<
 <p class="foot">Output appears below as each one runs, and it keeps running if you leave this page. Reading Docker volumes needs root — these run with the dashboard's privileges.</p>
 {{if .Busy}}<div class="note" role="status">⏳ Running now: {{.Busy}}</div>{{end}}
 <button class="btn green" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-run" data-confirm="" data-reload="1">Back up now</button>
+{{if not .Images}}<button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-run-images" data-confirm="" data-reload="1">Back up now, with the app images</button>{{end}}
 <button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-init" data-confirm="" data-reload="1">Initialize repo</button>
 <button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-list" data-confirm="">List snapshots</button>
 <button class="btn gray" {{if not .ResticOK}}data-off="1" disabled {{end}}data-slug="backup-forget" data-confirm="Prune old snapshots beyond the retention policy? Pruned snapshots are gone for good." data-reload="1">Prune old snapshots</button>
@@ -264,6 +269,12 @@ when it's done, so you don't need to reload or do anything.</div>
   onsubmit="return confirm('Really restore? All services will stop and their data will be overwritten from the backup.')">
   <p>Snapshot to restore (blank = latest):<br>
   <input class="in" name="snapshot" placeholder="latest" autocomplete="off"></p>
+  <fieldset style="border:1px solid #2a2f3a;border-radius:8px;padding:8px 12px;margin:12px 0">
+  <legend>App versions to start the restored data on</legend>
+  <label><input type="radio" name="versions" value="backup" checked> The versions the backup was taken with (recommended)</label><br>
+  <label><input type="radio" name="versions" value="current"> The versions this server runs now</label>
+  <p class="foot" style="margin-top:6px">Data belongs with the app version that wrote it: Nextcloud won't start on data from a newer version, and a database can't read another major version's files. If the backup saved the images themselves, they're loaded from it; otherwise those versions are downloaded. Afterwards, <b>Check for app updates</b> shows what's newer.</p>
+  </fieldset>
   <p>Type <b>RESTORE</b> to confirm:<br>
   <input class="in" name="confirm" autocomplete="off"></p>
   <button class="btn red">♻️ Restore now</button>

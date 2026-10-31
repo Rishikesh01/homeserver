@@ -37,3 +37,9 @@ RETENTION=--keep-daily 7 --keep-weekly 4 --keep-monthly 6
 # topic, say: https://ntfy.sh/<your-secret-topic>). Set/clear it via:
 #   hsctl backup config --notify-url https://ntfy.sh/<topic>
 # NOTIFY_URL=
+
+# Optional: save the app images themselves into every backup, not just their versions (every
+# backup records those). A restore then loads them instead of pulling, so it doesn't depend on a
+# registry still serving those exact tags. A few GB the first time; restic deduplicates unchanged
+# images after that. Set/clear it via:  hsctl backup config --images   (--images=false turns it off)
+# BACKUP_IMAGES=yes

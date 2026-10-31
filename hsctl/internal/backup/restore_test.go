@@ -3,6 +3,7 @@
 package backup_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,25 +63,29 @@ func TestPlanRestore(t *testing.T) {
 		wantVols    []string
 		wantStaging string // suffix, "" = none
 		wantDump    bool
+		wantImages  bool
 	}{
-		{"empty snapshot", nil, "no volume data", nil, "", false},
+		{"empty snapshot", nil, "no volume data", nil, "", false, false},
 		{"vault on a different machine's path",
 			[]file{vol("vaultwarden_vw-data", "rsa_key.pem"), vol("nextcloud_nc-data", "a.txt"),
 				{"home/olduser/homeserver/backups/staging/vaultwarden/db.sqlite3", "db"}},
-			"", []string{"nextcloud_nc-data", "vaultwarden_vw-data"}, "home/olduser/homeserver/backups/staging/vaultwarden", false},
-		{"vault files without their database", []file{vol("vaultwarden_vw-data", "rsa_key.pem")}, "not its database", nil, "", false},
+			"", []string{"nextcloud_nc-data", "vaultwarden_vw-data"}, "home/olduser/homeserver/backups/staging/vaultwarden", false, false},
+		{"vault files without their database", []file{vol("vaultwarden_vw-data", "rsa_key.pem")}, "not its database", nil, "", false, false},
 		{"vault stopped at backup time (database in the volume)",
-			[]file{vol("vaultwarden_vw-data", "db.sqlite3")}, "", []string{"vaultwarden_vw-data"}, "", false},
+			[]file{vol("vaultwarden_vw-data", "db.sqlite3")}, "", []string{"vaultwarden_vw-data"}, "", false, false},
 		{"the dump without Vaultwarden's staging",
 			[]file{vol("nextcloud_db-data-v18", "PG_VERSION"), {"srv/hs/backups/staging/nextcloud-db.sql", dump}},
-			"", []string{"nextcloud_db-data-v18"}, "", true},
+			"", []string{"nextcloud_db-data-v18"}, "", true, false},
 		{"a truncated dump isn't trusted",
 			[]file{vol("nextcloud_db-data-v18", "PG_VERSION"), {"srv/hs/backups/staging/nextcloud-db.sql", "CREATE TABLE x();\n"}},
-			"", []string{"nextcloud_db-data-v18"}, "", false},
-		{"database only in the pre-18 volume", []file{vol("nextcloud_db-data", "PG_VERSION")}, "old nextcloud_db-data volume", nil, "", false},
+			"", []string{"nextcloud_db-data-v18"}, "", false, false},
+		{"database only in the pre-18 volume", []file{vol("nextcloud_db-data", "PG_VERSION")}, "old nextcloud_db-data volume", nil, "", false, false},
 		{"legacy layout: the whole vault in staging",
 			[]file{vol("caddy_caddy-data", "x"), {"opt/homeserver/backups/staging/vaultwarden/db.sqlite3", "db"}},
-			"", []string{"caddy_caddy-data"}, "opt/homeserver/backups/staging/vaultwarden", false},
+			"", []string{"caddy_caddy-data"}, "opt/homeserver/backups/staging/vaultwarden", false, false},
+		{"the app versions it was taken with",
+			[]file{vol("caddy_caddy-data", "x"), {"srv/hs/backups/staging/" + backup.ImageManifestFile, `{"images":[]}`}},
+			"", []string{"caddy_caddy-data"}, "", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,6 +111,42 @@ func TestPlanRestore(t *testing.T) {
 			}
 			if (p.NCDump != "") != tc.wantDump {
 				t.Errorf("dump = %q, want one: %v", p.NCDump, tc.wantDump)
+			}
+			if (p.Images != "") != tc.wantImages {
+				t.Errorf("image record = %q, want one: %v", p.Images, tc.wantImages)
+			}
+		})
+	}
+}
+
+// TestReadImageManifest: a snapshot's record of its app versions is used only when every entry is
+// what a backup writes — a restore puts its values into .env files and loads the files it names.
+func TestReadImageManifest(t *testing.T) {
+	entry := func(folder, varName, ref, archive string) string {
+		return fmt.Sprintf(`{"platform":"linux/amd64","images":[{"folder":%q,"var":%q,"ref":%q,"archive":%q}]}`, folder, varName, ref, archive)
+	}
+	cases := []struct {
+		name, body string
+		wantErr    string
+	}{
+		{"a backup's record", entry("stirling", "STIRLING_IMAGE", "ghcr.io/stirling-tools/stirling-pdf:3.2.2", "ghcr.io_stirling-tools_stirling-pdf_3.2.2.tar"), ""},
+		{"by digest, not saved", entry("nextcloud", "NEXTCLOUD_IMAGE", "nextcloud:35.0.2-apache@sha256:0123abcd", ""), ""},
+		{"a bare pin", entry("caddy", "", "caddy:2.11.7-alpine", ""), ""},
+		{"not JSON", "images: []", "images.json"},
+		{"a folder outside the checkout", entry("../etc", "X_IMAGE", "busybox:1.37.0", ""), "isn't a service folder"},
+		{"a variable that isn't one", entry("caddy", "CADDY_IMAGE=evil", "busybox:1.37.0", ""), "isn't a variable name"},
+		{"a reference that would add a line to .env", entry("caddy", "CADDY_IMAGE", "busybox:1.37.0\nVW_ADMIN_TOKEN=x", ""), "isn't an image reference"},
+		{"an archive outside the images folder", entry("caddy", "CADDY_IMAGE", "busybox:1.37.0", "../../etc/shadow"), "isn't a saved image's file name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := itest.WriteFile(t, t.TempDir(), backup.ImageManifestFile, tc.body)
+			m, err := backup.ReadImageManifest(p)
+			if (err == nil) != (tc.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("ReadImageManifest = %v, want %q", err, tc.wantErr)
+			}
+			if err == nil && (m.Platform != "linux/amd64" || len(m.Images) != 1) {
+				t.Errorf("manifest = %+v", m)
 			}
 		})
 	}

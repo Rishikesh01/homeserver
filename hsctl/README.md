@@ -83,10 +83,11 @@ secrets that are safe to rotate (after you type `REGENERATE`).
 ```bash
 hsctl backup config --repo <dest>     # set destination (also: --retention, --password)
 sudo hsctl backup init                # create the encrypted repo (first time)
-sudo hsctl backup run                 # snapshot: Postgres dump + Vaultwarden DB + data volumes + config
+sudo hsctl backup run                 # snapshot: Postgres dump + Vaultwarden DB + data volumes + config + app versions
+                                      #   (--images: the app images themselves too; `backup config --images` for every run)
 hsctl backup list                     # list snapshots
 sudo hsctl backup restore [snap] --target <dir>   # extract a snapshot (default: latest, into backups/restore)
-sudo hsctl backup restore latest --into-volumes   # one-command DR: check -> stop -> restore all volumes -> up
+sudo hsctl backup restore latest --into-volumes   # one-command DR: check -> stop -> restore all volumes -> up on the backup's app versions
 sudo hsctl backup forget              # apply the retention policy + prune
 sudo hsctl backup replicate           # copy every snapshot to the off-site replica (every run does this too)
 sudo hsctl backup verify              # self-test the backup mechanism on throwaway data
@@ -96,7 +97,8 @@ sudo hsctl backup check               # check the real repository (restic check 
 Three config files (gitignored, in the repo root):
 
 - **`backup.conf`** — `RESTIC_REPO` (the destination), `RETENTION` (restic forget policy),
-  and optionally `REQUIRE_MOUNT`, `RESTIC_VERSION` and `REPLICA_REPO`. Written by
+  and optionally `REQUIRE_MOUNT`, `RESTIC_VERSION`, `REPLICA_REPO`, `NOTIFY_URL` and
+  `BACKUP_IMAGES` (save the app images themselves in every backup). Written by
   `backup config`; see [`backup.conf.example`](../backup.conf.example). Destinations: local
   path / USB (`/mnt/restic`), another host (`sftp:user@host:/path`), or S3 (`s3:…`).
 - **`.restic-password`** — the repo encryption password. Set your own with

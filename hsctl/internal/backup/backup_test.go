@@ -16,6 +16,7 @@ import (
 	"github.com/Rishikesh01/homeserver/hsctl/internal/backup"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/config"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/docker"
+	"github.com/Rishikesh01/homeserver/hsctl/internal/envfile"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/itest"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/layout"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/paths"
@@ -58,6 +59,11 @@ func newFixture(t *testing.T) *fixture {
 	prov := provision.New(repo, f.dk)
 	prov.Out, prov.Err = f.out, f.out
 	if _, err := prov.Generate(c, false); err != nil {
+		t.Fatal(err)
+	}
+	// The pin says what the stand-in app runs, so the backups record — and, with the images, save — it
+	// rather than the 1.4 GB image the compose file pins.
+	if err := envfile.Upsert(repo.Path("nextcloud", ".env"), "NEXTCLOUD_IMAGE", itest.Busybox); err != nil {
 		t.Fatal(err)
 	}
 	st := stack.New(repo, f.dk, store, prov)
@@ -117,6 +123,47 @@ func (f *fixture) psql(sql string) string {
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
+// pin overrides an image pin in folder's .env, as `hsctl updates --apply` would.
+func (f *fixture) pin(folder, varName, ref string) {
+	f.t.Helper()
+	if err := envfile.Upsert(f.repo.Path(folder, ".env"), varName, ref); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// alias tags image under a throwaway name of the test's own (removed when the test ends), so the test
+// can move a tag without touching the real one in the harness's image cache.
+func (f *fixture) alias(image, name string) string {
+	f.t.Helper()
+	ref := "hsctl-itest/" + name + ":" + strings.TrimPrefix(itest.Name("t"), "hsctl-it-t-")
+	itest.Docker(f.t, "tag", image, ref)
+	f.t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", "-f", ref).Run() })
+	return ref
+}
+
+// imageID is a local image's ID, "" when it isn't there.
+func imageID(ref string) string {
+	out, _ := exec.Command("docker", "image", "inspect", "-f", "{{.Id}}", ref).Output()
+	return strings.TrimSpace(string(out))
+}
+
+// staged returns the image record the last backup left in staging for folder's pin varName.
+func (f *fixture) staged(folder, varName string) (backup.ImageRecord, error) {
+	m, err := backup.ReadImageManifest(f.repo.Path(paths.Staging, backup.ImageManifestFile))
+	if err != nil {
+		return backup.ImageRecord{}, err
+	}
+	if m.Platform == "" {
+		return backup.ImageRecord{}, fmt.Errorf("no platform recorded: %+v", m)
+	}
+	for _, r := range m.Images {
+		if r.Folder == folder && r.Var == varName {
+			return r, nil
+		}
+	}
+	return backup.ImageRecord{}, fmt.Errorf("no %s/%s in %+v", folder, varName, m.Images)
+}
+
 // markers reads every piece of data the test puts in the stack.
 func (f *fixture) markers() string {
 	return strings.Join([]string{
@@ -131,11 +178,19 @@ func (f *fixture) markers() string {
 // TestBackupAndRestore backs a real, running stack up, changes all of its data, and restores it into
 // the volumes: every database and file comes back as it was — Vaultwarden's SQLite (written live, in
 // WAL mode), Nextcloud's Postgres (rebuilt from its dump), plain volume files — and what was added
-// since is gone. Along the way: the repository check and prune, the off-site replica, an extraction
+// since is gone, and the apps start on the image versions the backup was taken with. Then the same
+// with the images themselves in the backup: a restore loads them, or keeps this server's own pins
+// when asked to. Along the way: the repository check and prune, the off-site replica, an extraction
 // that leaves the stack alone, the self-test and a password change. The steps run in order.
 func TestBackupAndRestore(t *testing.T) {
 	f := newFixture(t)
 	s := f.svc
+	run := func() error { return s.Run(backup.RunOptions{}) }
+	vwImage := itest.Image(t, "vaultwarden", "vaultwarden")
+	redis := f.alias(itest.Image(t, "nextcloud", "redis"), "redis") // the pin the image-carrying backup records
+	vwAlias := f.alias(vwImage, "vaultwarden")                      // this server's own pin, later on
+	var redisID string
+	yes := true
 	dest := filepath.Join(t.TempDir(), "restic")
 	replica := filepath.Join(t.TempDir(), "replica")
 	extract := filepath.Join(t.TempDir(), "extract")
@@ -184,9 +239,15 @@ func TestBackupAndRestore(t *testing.T) {
 			}
 			return nil
 		}},
-		{"back up", s.Run, []string{"staged the SQLite fileset", "volumes to back up"}, func() error {
+		{"back up", run, []string{"staged the SQLite fileset", "volumes to back up", "recorded the version of all"}, func() error {
 			if f.dk.ContainerState(layout.Vaultwarden) != "running" {
 				return fmt.Errorf("Vaultwarden was left stopped")
+			}
+			if r, err := f.staged("vaultwarden", "VAULTWARDEN_IMAGE"); err != nil || r.Ref != vwImage || r.ID != imageID(vwImage) || r.Archive != "" {
+				return fmt.Errorf("the Vaultwarden image record: %+v %v", r, err)
+			}
+			if fileExists(f.repo.Path(paths.Staging, backup.ImageArchiveDir)) {
+				return fmt.Errorf("the images were saved without being asked")
 			}
 			if !backup.DumpComplete(f.repo.Path(paths.Staging, backup.NextcloudDumpFile)) {
 				return fmt.Errorf("no complete Nextcloud dump in staging")
@@ -210,6 +271,9 @@ func TestBackupAndRestore(t *testing.T) {
 			f.psql("UPDATE itest SET v='after'")
 			itest.WriteFile(t, f.volume("nextcloud_nc-data"), "itest.txt", "after")
 			itest.WriteFile(t, f.volume("nextcloud_nc-data"), "extra.txt", "added since")
+			// And the app version: a tag nobody publishes, so the stack only starts again if the
+			// restore puts the backup's version back.
+			f.pin("vaultwarden", "VAULTWARDEN_IMAGE", "vaultwarden/server:0.0.0-hsctl-itest")
 			return nil
 		}, nil, func() error {
 			if got := f.markers(); got != "vw-db=after vw-file= nc-db=after nc-file=after nc-extra=true" {
@@ -227,6 +291,7 @@ func TestBackupAndRestore(t *testing.T) {
 		}},
 		{"restore into the volumes", func() error { return s.Restore(backup.RestoreOptions{IntoVolumes: true, Yes: true}) },
 			[]string{"restored vaultwarden SQLite fileset", "rebuilt the nextcloud database from its consistent dump",
+				"pinned VAULTWARDEN_IMAGE=" + vwImage + " in vaultwarden/.env (was vaultwarden/server:0.0.0-hsctl-itest)",
 				"removed the extracted copy"}, func() error {
 				f.waitReady()
 				if got := f.markers(); got != before {
@@ -235,8 +300,64 @@ func TestBackupAndRestore(t *testing.T) {
 				if fileExists(f.repo.Path(paths.RestoreDir)) {
 					return fmt.Errorf("the plaintext extraction was left behind")
 				}
+				if got := f.dk.ContainerImage(layout.Vaultwarden); got != vwImage {
+					return fmt.Errorf("Vaultwarden runs %s, the backup ran %s", got, vwImage)
+				}
 				return nil
 			}},
+		{"back up with the app images", func() error {
+			f.pin("nextcloud", "NEXTCLOUD_REDIS_IMAGE", redis)
+			redisID = imageID(redis)
+			if err := s.Configure(backup.Options{Images: &yes}); err != nil {
+				return err
+			}
+			return run()
+		}, []string{"saved " + vwImage + " (", "saved " + redis + " ("}, func() error {
+			r, err := f.staged("nextcloud", "NEXTCLOUD_REDIS_IMAGE")
+			if err != nil || r.Ref != redis || r.ID != redisID || r.Archive == "" {
+				return fmt.Errorf("the Redis image record: %+v %v", r, err)
+			}
+			if fileExists(f.repo.Path(paths.Staging, backup.ImageArchiveDir)) {
+				return fmt.Errorf("the saved images were left in staging")
+			}
+			if ls, err := s.Restic.Output(dest, "ls", "latest"); err != nil || !strings.Contains(ls, "/backups/staging/images/"+r.Archive+"\n") {
+				return fmt.Errorf("the snapshot doesn't hold %s: %v\n%s", r.Archive, err, ls)
+			}
+			return nil
+		}},
+		{"a restore can keep this server's versions", func() error {
+			f.pin("vaultwarden", "VAULTWARDEN_IMAGE", vwAlias)
+			return s.Restore(backup.RestoreOptions{IntoVolumes: true, Yes: true, CurrentImages: true})
+		}, []string{"keeping the images this server pins now (--current-images)"}, func() error {
+			f.waitReady()
+			if got := f.markers(); got != before {
+				return fmt.Errorf("markers after the restore: %s", got)
+			}
+			if got := f.dk.ContainerImage(layout.Vaultwarden); got != vwAlias {
+				return fmt.Errorf("Vaultwarden runs %s, this server pins %s", got, vwAlias)
+			}
+			return nil
+		}},
+		{"a restore loads the images the backup saved", func() error {
+			itest.Docker(t, "tag", itest.Busybox, redis) // the tag now names another build
+			return s.Restore(backup.RestoreOptions{IntoVolumes: true, Yes: true})
+		}, []string{"loading the images saved in the backup", redis + " — loaded", vwImage + " — already on this machine",
+			"pinned VAULTWARDEN_IMAGE=" + vwImage + " in vaultwarden/.env (was " + vwAlias + ")"}, func() error {
+			f.waitReady()
+			if got := f.markers(); got != before {
+				return fmt.Errorf("markers after the restore: %s", got)
+			}
+			if got := imageID(redis); got != redisID {
+				return fmt.Errorf("%s is %s, the backup saved %s", redis, got, redisID)
+			}
+			if !docker.Wait(30*time.Second, func() bool { return f.dk.ContainerState("nextcloud-redis") == "running" }) {
+				return fmt.Errorf("Redis isn't running: %s", f.dk.ContainerState("nextcloud-redis"))
+			}
+			if got := f.dk.ContainerImage(layout.Vaultwarden); got != vwImage {
+				return fmt.Errorf("Vaultwarden runs %s, the backup ran %s", got, vwImage)
+			}
+			return nil
+		}},
 		{"check the repository", func() error { return s.Check("100%") }, []string{"the backup repository is intact"}, nil},
 		{"prune", s.Forget, nil, nil},
 		{"replicate off-site", func() error {
@@ -250,12 +371,19 @@ func TestBackupAndRestore(t *testing.T) {
 			}
 			return nil
 		}},
-		{"the next backup goes off-site too", s.Run, []string{"== off-site replica =="}, nil},
+		{"the next backup goes off-site too", run, []string{"== off-site replica =="}, nil},
 		{"extract without touching the stack", func() error {
 			return s.Restore(backup.RestoreOptions{Target: extract})
-		}, []string{"delete it when you're done"}, func() error {
+		}, []string{"delete it when you're done", "docker load -i"}, func() error {
 			if !fileExists(filepath.Join(extract, "var/lib/docker/volumes/nextcloud_nc-data/_data/itest.txt")) {
 				return fmt.Errorf("nothing extracted to %s", extract)
+			}
+			staging := filepath.Join(extract, f.repo.Path(paths.Staging))
+			if _, err := backup.ReadImageManifest(filepath.Join(staging, backup.ImageManifestFile)); err != nil {
+				return fmt.Errorf("the extraction has no record of the app versions: %v", err)
+			}
+			if tars, _ := filepath.Glob(filepath.Join(staging, backup.ImageArchiveDir, "*.tar")); len(tars) == 0 {
+				return fmt.Errorf("the extraction has no saved images")
 			}
 			return nil
 		}},

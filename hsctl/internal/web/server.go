@@ -828,6 +828,7 @@ type backupData struct {
 	ReplicaAge                 string // when the off-site replica last got a copy, "" if never
 	HasPassword                bool   // .restic-password exists
 	GuardWarn                  string // the repo isn't on the guarded disk
+	Images                     bool   // every backup saves the app images themselves (BACKUP_IMAGES)
 }
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
@@ -835,7 +836,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	d := backupData{Repo: cfg.Repo, Retention: cfg.Retention, Replica: cfg.ReplicaRepo,
 		ResticOK: s.Restic.Installed(), Flash: takeFlash(w, r), GuardPath: cfg.RequireMount,
 		Notify: cfg.NotifyURL, Last: s.Backup.Freshness(), Timer: s.Backup.Timer(),
-		ReplicaAge: s.Backup.ReplicaAge(), HasPassword: fsutil.Exists(s.Repo.Path(paths.ResticPassword))}
+		ReplicaAge: s.Backup.ReplicaAge(), HasPassword: fsutil.Exists(s.Repo.Path(paths.ResticPassword)), Images: cfg.Images}
 	if cfg.RequireMount != "" {
 		d.GuardOK = s.Backup.RequireMount(cfg) == nil // is the backup disk actually mounted now?
 	}
@@ -926,6 +927,10 @@ func (s *Server) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Form.Has("replica") {
 		cfg.ReplicaRepo = strings.TrimSpace(r.FormValue("replica")) // an empty box clears it
 	}
+	// An unticked box sends nothing, so the form says it showed the box.
+	if r.Form.Has("images_shown") {
+		cfg.Images = r.FormValue("images") != ""
+	}
 	if r.Form.Has("notify") {
 		v := strings.TrimSpace(r.FormValue("notify"))
 		if v != "" && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://") {
@@ -992,6 +997,9 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		args := []string{"backup", "restore", "--into-volumes", "--yes"}
+		if r.FormValue("versions") == "current" {
+			args = append(args, "--current-images")
+		}
 		snap := strings.TrimSpace(r.FormValue("snapshot"))
 		if snap != "" {
 			if strings.HasPrefix(snap, "-") || strings.ContainsAny(snap, " \t/") {

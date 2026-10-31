@@ -27,12 +27,12 @@ func TestRefusals(t *testing.T) {
 	}{
 		{"restic missing", func(t *testing.T, repo paths.Repo, s *backup.Service) { t.Setenv("PATH", t.TempDir()) },
 			(*backup.Service).List, "restic not installed"},
-		{"no password", initialized(false), (*backup.Service).Run, "no backup password"},
+		{"no password", initialized(false), backUp, "no backup password"},
 		{"no repository yet", func(t *testing.T, repo paths.Repo, s *backup.Service) {
 			itest.WriteFile(t, repo.Root, paths.ResticPassword, "pw-123456789\n")
 			configure(t, s, filepath.Join(t.TempDir(), "restic"))
 		}, (*backup.Service).List, "there's no backup repository at"},
-		{"nothing to back up", initialized(true), (*backup.Service).Run, "no stack data volumes found"},
+		{"nothing to back up", initialized(true), backUp, "no stack data volumes found"},
 		{"a broken retention policy", func(t *testing.T, repo paths.Repo, s *backup.Service) {
 			initialized(true)(t, repo, s)
 			itest.WriteFile(t, repo.Root, paths.BackupConf, itest.ReadFile(repo.Path(paths.BackupConf))+"RETENTION=7 daily\n")
@@ -44,7 +44,7 @@ func TestRefusals(t *testing.T) {
 			if err := s.Configure(backup.Options{RequireMount: &guard}); err != nil {
 				t.Fatal(err)
 			}
-		}, (*backup.Service).Run, "backup disk is NOT mounted"},
+		}, backUp, "backup disk is NOT mounted"},
 		{"a second repository over an existing one", func(t *testing.T, repo paths.Repo, s *backup.Service) {
 			initialized(true)(t, repo, s)
 			if err := exec.Command("rm", repo.Path(paths.ResticPassword)).Run(); err != nil {
@@ -76,6 +76,9 @@ func TestRefusals(t *testing.T) {
 		})
 	}
 }
+
+// backUp takes a backup the way the nightly timer does.
+func backUp(s *backup.Service) error { return s.Run(backup.RunOptions{}) }
 
 // configure points the backups at dest.
 func configure(t *testing.T, s *backup.Service, dest string) {

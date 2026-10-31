@@ -160,9 +160,17 @@ func (s *Service) Check(subset string) error {
 	return nil
 }
 
+// RunOptions are `hsctl backup run`'s choices.
+type RunOptions struct {
+	// Images saves the app images themselves into this snapshot (true) or leaves them out (false),
+	// whatever BACKUP_IMAGES says; nil follows the setting. Their versions are recorded either way.
+	Images *bool
+}
+
 // Run takes a snapshot: a fresh Nextcloud database dump, Vaultwarden's database fileset, every data
-// volume and the config, then applies the retention policy and copies to the off-site replica.
-func (s *Service) Run() error {
+// volume, the config and the app images' versions (with the images themselves, if asked), then
+// applies the retention policy and copies to the off-site replica.
+func (s *Service) Run(o RunOptions) error {
 	cfg, err := s.preflight()
 	if err != nil {
 		return err
@@ -226,6 +234,14 @@ func (s *Service) Run() error {
 			targets = append(targets, p)
 		}
 	}
+	// The app images last, once nothing else can stop the backup: saving them takes a while. They
+	// land in staging, and leave it again once restic has them — they're GBs of the server's disk.
+	saveImages := cfg.Images
+	if o.Images != nil {
+		saveImages = *o.Images
+	}
+	defer os.RemoveAll(filepath.Join(staging, ImageArchiveDir))
+	problems = append(problems, s.stageImages(staging, saveImages)...)
 
 	args := []string{"backup", "--tag", "homeserver"}
 	if vwExclude != "" {

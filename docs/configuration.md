@@ -142,6 +142,7 @@ hsctl backup config --repo /mnt/restic \
 | `RESTIC_VERSION` | Pinned restic version; `backup verify` **fails** if the installed one differs | `--pin-restic` |
 | `REPLICA_REPO` | Optional second repo every backup copies itself to | `--replica` |
 | `NOTIFY_URL` | Optional URL that gets a plain-text POST when a backup run fails (e.g. an ntfy topic) | `--notify-url` |
+| `BACKUP_IMAGES` | `yes` saves the app images themselves into every backup, not just their versions | `--images` |
 
 - **`RETENTION`** only accepts restic's `--keep-*` options and `--group-by`; anything else is
   refused (restic would take a stray word for a snapshot ID to delete). Snapshots are grouped by
@@ -153,6 +154,11 @@ hsctl backup config --repo /mnt/restic \
   `hsctl backup config --require-mount /mnt/backup` (empty string disables).
 - **`RESTIC_VERSION`** is recorded by `hsctl backup config --pin-restic`. It catches a system
   upgrade that swaps restic out from under you, instead of silently changing your backup tool.
+- **`BACKUP_IMAGES`** is off by default: every backup records which image each app ran either
+  way, and a restore pins those versions again. With it on, the images come from the backup too,
+  so a restore doesn't depend on a registry still serving them — a few GB the first time,
+  deduplicated after that. `hsctl backup run --images` (or `--images=false`) overrides it for one
+  run. Details: [Backup & restore → App versions and images](backup-restore.md#app-versions-and-images).
 - **`REPLICA_REPO`** is the off-site copy. Every backup copies itself there (the first copy
   creates it), incrementally, with the **same** encryption password, and applies `RETENTION` to
   it as well. Details: [Backup & restore → Off-site replica](backup-restore.md#off-site-replica).
@@ -237,6 +243,8 @@ For a **remote** repo, also export the backend's credentials before running rest
 | `var/lib/docker/volumes/<name>/_data/` | every data volume — Nextcloud files, the Postgres DB volume, Pi-hole config, Caddy certs, Vaultwarden attachments/keys |
 | `<repo>/backups/staging/vaultwarden/db.sqlite3*` | Vaultwarden's **consistent DB fileset** (`db.sqlite3` + `-wal` + `-shm`) — excluded from the volume, lives only here |
 | `<repo>/backups/staging/nextcloud-db.sql` | consistent Postgres dump (the DB volume was copied live; restore the database from this) |
+| `<repo>/backups/staging/images.json` | the image every app ran when the backup was taken (pin these in each service's `.env` before starting it) |
+| `<repo>/backups/staging/images/*.tar` | the app images themselves, when the backup included them — `docker load -i <file>` |
 | `<repo>/*/.env`, `<repo>/setup.conf`, `<repo>/backup.conf`, … | per-service config, the main server config, and the rest of hsctl's config |
 
 `<repo>` is the absolute path the server used, e.g. `/home/you/homeserver`.

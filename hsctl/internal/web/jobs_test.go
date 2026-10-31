@@ -240,6 +240,30 @@ func TestBackupPages(t *testing.T) {
 			}
 			return ""
 		}},
+		{"save the app images in every backup", func() (int, string) {
+			return flash("/admin/backup/config", url.Values{"images_shown": {"1"}, "images": {"1"}})
+		}, []string{"Saved.", "in every backup, with their versions"}, func() string {
+			if kv, _ := envfile.Read(repo.Path(paths.BackupConf)); kv["BACKUP_IMAGES"] != "yes" {
+				return fmt.Sprintf("backup.conf: %v", kv)
+			}
+			return ""
+		}},
+		{"another form leaves that alone", func() (int, string) {
+			return flash("/admin/backup/config", url.Values{"keep_daily": {"14"}, "keep_weekly": {"4"}, "keep_monthly": {"12"}, "keep_rest": {""}})
+		}, []string{"Saved."}, func() string {
+			if kv, _ := envfile.Read(repo.Path(paths.BackupConf)); kv["BACKUP_IMAGES"] != "yes" {
+				return fmt.Sprintf("backup.conf: %v", kv)
+			}
+			return ""
+		}},
+		{"an unticked box turns it off", func() (int, string) {
+			return flash("/admin/backup/config", url.Values{"images_shown": {"1"}})
+		}, []string{"Saved.", "Back up now, with the app images"}, func() string {
+			if kv, _ := envfile.Read(repo.Path(paths.BackupConf)); kv["BACKUP_IMAGES"] != "" {
+				return fmt.Sprintf("backup.conf: %v", kv)
+			}
+			return ""
+		}},
 		{"a notification address that isn't a URL", func() (int, string) {
 			return flash("/admin/backup/config", url.Values{"notify": {"ntfy.sh/x"}})
 		}, []string{"must be an http(s):// URL"}, nil},
@@ -274,7 +298,16 @@ func TestBackupPages(t *testing.T) {
 			}
 			st := d.waitJob(strings.TrimPrefix(loc, "/admin/backup/restore/progress?id="))
 			return 200, st.Out
-		}, []string{"$ hsctl backup restore --into-volumes --yes", "repository does not exist", "[command exited with error"}, nil},
+		}, []string{"$ hsctl backup restore --into-volumes --yes\n", "repository does not exist", "[command exited with error"}, nil},
+		{"restore on the versions this server runs now", func() (int, string) {
+			resp, body := d.post("/admin/backup/restore", url.Values{"confirm": {"RESTORE"}, "versions": {"current"}})
+			loc := resp.Header.Get("Location")
+			if resp.StatusCode != 303 || !strings.HasPrefix(loc, "/admin/backup/restore/progress?id=") {
+				return resp.StatusCode, body
+			}
+			st := d.waitJob(strings.TrimPrefix(loc, "/admin/backup/restore/progress?id="))
+			return 200, st.Out
+		}, []string{"$ hsctl backup restore --into-volumes --yes --current-images\n", "[command exited with error"}, nil},
 	}
 	for _, st := range steps {
 		code, body := st.do()

@@ -18,11 +18,12 @@ func (a *app) backupCmd() *cobra.Command {
 	cfgCmd.Flags().String("require-mount", "", "refuse backups unless this path is a real mount (empty string disables)")
 	cfgCmd.Flags().String("replica", "", "off-site replica repository for 'backup replicate' (empty string disables)")
 	cfgCmd.Flags().String("notify-url", "", "URL to POST a message to when a backup fails, e.g. https://ntfy.sh/<topic> (empty string disables)")
+	cfgCmd.Flags().Bool("images", false, "save the app images themselves into every backup, not just their versions (--images=false turns it off)")
 
 	initCmd := &cobra.Command{Use: "init", Short: "Create the encrypted restic repo (first time)", Args: cobra.NoArgs,
 		RunE: a.inRepo(a.locked("backup init", 0, func(*cobra.Command, []string) error { return a.backup.Init() }))}
 
-	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config) [root]", Args: cobra.NoArgs,
+	runCmd := &cobra.Command{Use: "run", Short: "Take a snapshot (DB dump + data volumes + config + app versions) [root]", Args: cobra.NoArgs,
 		RunE: a.inRepo(func(cmd *cobra.Command, args []string) error {
 			// The nightly timer passes --wait, so it waits out a dashboard job or a terminal
 			// command instead of skipping the night's backup.
@@ -30,14 +31,20 @@ func (a *app) backupCmd() *cobra.Command {
 			// Record every outcome — including a run refused before it started (another operation
 			// holding the lock, disk not mounted, no password) — so a failing nightly backup shows
 			// on the dashboard and, if configured, sends a notification.
+			var o backup.RunOptions
+			if cmd.Flags().Changed("images") {
+				v, _ := cmd.Flags().GetBool("images")
+				o.Images = &v
+			}
 			err := backup.RequireRoot("backup run", "it reads Docker's volume files")
 			if err == nil {
-				err = a.locked("backup run", wait, func(*cobra.Command, []string) error { return a.backup.Run() })(cmd, args)
+				err = a.locked("backup run", wait, func(*cobra.Command, []string) error { return a.backup.Run(o) })(cmd, args)
 			}
 			a.backup.RecordRun(err)
 			return err
 		})}
 	runCmd.Flags().Duration("wait", 0, "if another hsctl operation is running, wait up to this long for it (e.g. 30m)")
+	runCmd.Flags().Bool("images", false, "save the app images themselves into this snapshot, whatever `backup config --images` says (--images=false leaves them out)")
 
 	listCmd := &cobra.Command{Use: "list", Aliases: []string{"snapshots"}, Short: "List snapshots", Args: cobra.NoArgs,
 		RunE: a.inRepo(func(*cobra.Command, []string) error { return a.backup.List() })}
@@ -54,11 +61,13 @@ func (a *app) backupCmd() *cobra.Command {
 			o.Target, _ = c.Flags().GetString("target")
 			o.IntoVolumes, _ = c.Flags().GetBool("into-volumes")
 			o.Yes, _ = c.Flags().GetBool("yes")
+			o.CurrentImages, _ = c.Flags().GetBool("current-images")
 			return a.backup.Restore(o)
 		}))}
 	restoreCmd.Flags().String("target", "", "directory to restore into (default: <repo>/"+paths.RestoreDir+")")
 	restoreCmd.Flags().Bool("into-volumes", false, "DR put-back: stop the stack, restore every volume in place (incl. Vaultwarden from staging), bring it up")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt for --into-volumes")
+	restoreCmd.Flags().Bool("current-images", false, "with --into-volumes: start the restored data on the images this server pins now, not the app versions the backup was taken with")
 
 	verifyCmd := &cobra.Command{Use: "verify", Aliases: []string{"selftest", "test"},
 		Short: "Self-test backup+restore on a throwaway Docker volume (never touches live data) [root]",
@@ -98,6 +107,10 @@ func (a *app) runBackupConfig(cmd *cobra.Command, _ []string) error {
 	o := backup.Options{Repo: str("repo"), Retention: str("retention"), RequireMount: str("require-mount"),
 		Replica: str("replica"), NotifyURL: str("notify-url")}
 	o.PinRestic, _ = f.GetBool("pin-restic")
+	if f.Changed("images") {
+		v, _ := f.GetBool("images")
+		o.Images = &v
+	}
 	if v, _ := f.GetString("password"); v != "" {
 		pw, err := backup.ReadPasswordArg(v)
 		if err != nil {

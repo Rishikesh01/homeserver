@@ -274,8 +274,11 @@ double confirmation.
 
 Encrypted, deduplicated [restic](https://restic.net) snapshots — the destination only ever
 sees ciphertext. A snapshot holds a consistent Postgres dump, a consistent Vaultwarden SQLite
-fileset, every data volume, and your config. Vaultwarden pauses for about a second so its
-database is captured cleanly; nothing else goes offline.
+fileset, every data volume, your config, and which version of each app it ran on — a restore
+starts your data on those versions again. Opt in (`hsctl backup config --images`) and the app
+images themselves go in too, so a restore doesn't depend on a registry still having them.
+Vaultwarden pauses for about a second so its database is captured cleanly; nothing else goes
+offline.
 
 ```bash
 hsctl backup config --repo /mnt/restic     # off the box: also sftp:, s3:

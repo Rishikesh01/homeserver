@@ -3,6 +3,7 @@ package backup
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/Rishikesh01/homeserver/hsctl/internal/envfile"
 	"github.com/Rishikesh01/homeserver/hsctl/internal/fsutil"
@@ -20,6 +21,9 @@ type Settings struct {
 	RequireMount  string // if set, a path that MUST be on a mounted backup disk (see RequireMount)
 	ReplicaRepo   string // optional second restic repo (off-site) every backup copies to
 	NotifyURL     string // optional URL that gets a POST when a backup run fails (ntfy-style)
+	// Images saves the app images themselves into every backup (BACKUP_IMAGES=yes), not just their
+	// versions — which every backup records anyway.
+	Images bool
 }
 
 // ConfigFiles are the backup settings a run depends on. If one exists but can't be read, loading
@@ -50,6 +54,10 @@ func (s *Service) Settings() Settings {
 		c.RequireMount = kv["REQUIRE_MOUNT"]   // empty = no mount guard (e.g. default repo on root disk)
 		c.ReplicaRepo = kv["REPLICA_REPO"]     // empty = no off-site replica configured
 		c.NotifyURL = kv["NOTIFY_URL"]         // empty = no failure notifications
+		switch strings.ToLower(kv["BACKUP_IMAGES"]) {
+		case "yes", "true", "on", "1":
+			c.Images = true
+		}
 	}
 	return c
 }
@@ -78,6 +86,11 @@ func (s *Service) SaveSettings(c Settings) error {
 		out += "# POSTed a plain-text message when a backup run fails (e.g. an ntfy topic URL).\n" +
 			"NOTIFY_URL=" + c.NotifyURL + "\n"
 	}
+	if c.Images {
+		out += "# Save the app images themselves into every backup (not just their versions), so a\n" +
+			"# restore doesn't need their registries to still serve them.\n" +
+			"BACKUP_IMAGES=yes\n"
+	}
 	return fsutil.WritePrivate(s.Repo.Path(paths.BackupConf), out)
 }
 
@@ -86,6 +99,7 @@ type Options struct {
 	Repo, Retention, RequireMount, Replica, NotifyURL *string
 	Password                                          string // "" = keep; see SetPassword
 	PinRestic                                         bool
+	Images                                            *bool // save the app images into every backup
 }
 
 // Configure applies opts to backup.conf (and the password file).
@@ -124,6 +138,9 @@ func (s *Service) Configure(opts Options) error {
 	}
 	if opts.NotifyURL != nil {
 		cfg.NotifyURL = *opts.NotifyURL // empty string turns notifications off
+	}
+	if opts.Images != nil {
+		cfg.Images = *opts.Images
 	}
 	if opts.Password != "" {
 		if err := s.SetPassword(cfg, opts.Password, s.Out); err != nil {

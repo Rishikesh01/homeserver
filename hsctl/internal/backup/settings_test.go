@@ -15,6 +15,8 @@ import (
 
 func ptr(s string) *string { return &s }
 
+func boolPtr(b bool) *bool { return &b }
+
 // TestSettings: what SaveSettings writes, Settings reads back — and Configure changes only what it's
 // given, gives an external-disk destination its guard, and refuses a bad retention policy.
 func TestSettings(t *testing.T) {
@@ -28,12 +30,15 @@ func TestSettings(t *testing.T) {
 		wantOut string
 	}{
 		{"defaults", nil, backup.Settings{Retention: backup.DefaultRetention}, "", ""},
+		{"the images stay as they are unless given", []backup.Options{{Images: boolPtr(true)}, {Repo: ptr("/srv/restic")}},
+			backup.Settings{Repo: "/srv/restic", Retention: backup.DefaultRetention, Images: true}, "", ""},
 		{"everything", []backup.Options{{Repo: ptr("/srv/restic"), Retention: ptr("--keep-last 3"), Replica: ptr("sftp:nas:/b"),
-			NotifyURL: ptr("https://ntfy.sh/x"), RequireMount: ptr("/srv")}},
-			backup.Settings{Repo: "/srv/restic", Retention: "--keep-last 3", ReplicaRepo: "sftp:nas:/b", NotifyURL: "https://ntfy.sh/x", RequireMount: "/srv"},
+			NotifyURL: ptr("https://ntfy.sh/x"), RequireMount: ptr("/srv"), Images: boolPtr(true)}},
+			backup.Settings{Repo: "/srv/restic", Retention: "--keep-last 3", ReplicaRepo: "sftp:nas:/b", NotifyURL: "https://ntfy.sh/x", RequireMount: "/srv",
+				Images: true},
 			"", "saved backup.conf (repo=/srv/restic)"},
-		{"cleared again", []backup.Options{{Repo: ptr("/srv/restic"), Replica: ptr("sftp:nas:/b"), NotifyURL: ptr("https://x")},
-			{Replica: ptr(""), NotifyURL: ptr("")}},
+		{"cleared again", []backup.Options{{Repo: ptr("/srv/restic"), Replica: ptr("sftp:nas:/b"), NotifyURL: ptr("https://x"), Images: boolPtr(true)},
+			{Replica: ptr(""), NotifyURL: ptr(""), Images: boolPtr(false)}},
 			backup.Settings{Repo: "/srv/restic", Retention: backup.DefaultRetention}, "", ""},
 		{"an external disk gets its guard", []backup.Options{{Repo: ptr("/mnt/usb/restic")}},
 			backup.Settings{Repo: "/mnt/usb/restic", Retention: backup.DefaultRetention, RequireMount: "/mnt/usb"}, "", "set the backup-disk guard to /mnt/usb"},
